@@ -1,206 +1,725 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>个人关系图谱应用设计文档</title>
-    <style>
-        :root { --bg-color:#f8f9fa; --text-color:#333; --heading-color:#1a1a1a; --accent-color:#2563eb; --border-color:#e5e7eb; --code-bg:#f1f5f9; --table-header-bg:#f3f4f6; --table-row-alt:#fafafa; }
-        @media (prefers-color-scheme: dark) { :root { --bg-color:#0f172a; --text-color:#e2e8f0; --heading-color:#f8fafc; --accent-color:#60a5fa; --border-color:#334155; --code-bg:#1e293b; --table-header-bg:#1e293b; --table-row-alt:#1e293b; } }
-        body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; line-height:1.7; color:var(--text-color); background-color:var(--bg-color); max-width:960px; margin:0 auto; padding:2rem 1.5rem; }
-        h1 { color:var(--heading-color); font-size:2rem; border-bottom:3px solid var(--accent-color); padding-bottom:.5rem; margin-bottom:1.5rem; }
-        h2 { color:var(--heading-color); font-size:1.5rem; margin-top:2.5rem; margin-bottom:1rem; border-bottom:1px solid var(--border-color); padding-bottom:.4rem; }
-        h3 { color:var(--heading-color); font-size:1.2rem; margin-top:1.8rem; margin-bottom:.8rem; }
-        p { margin:.8rem 0; }
-        ul,ol { padding-left:1.8rem; margin:.8rem 0; }
-        li { margin:.35rem 0; }
-        code { background-color:var(--code-bg); padding:.2rem .4rem; border-radius:4px; font-family:"SF Mono",Monaco,"Cascadia Code",monospace; font-size:.9em; }
-        pre { background-color:var(--code-bg); padding:1rem; border-radius:8px; overflow-x:auto; border:1px solid var(--border-color); }
-        pre code { background:none; padding:0; }
-        table { width:100%; border-collapse:collapse; margin:1.2rem 0; border:1px solid var(--border-color); }
-        th,td { padding:.75rem; text-align:left; border-bottom:1px solid var(--border-color); vertical-align:top; }
-        th { background-color:var(--table-header-bg); font-weight:600; }
-        tr:nth-child(even) { background-color:var(--table-row-alt); }
-        blockquote { border-left:4px solid var(--accent-color); margin:1rem 0; padding:.5rem 1rem; background-color:var(--code-bg); border-radius:0 8px 8px 0; }
-        .meta { color:#64748b; font-size:.95rem; margin-bottom:1.5rem; }
-        .callout { border:1px solid var(--border-color); border-left:4px solid var(--accent-color); border-radius:8px; padding:1rem; background:var(--code-bg); }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>个人关系图谱应用设计文档 v1.3</title>
+  <style>
+    :root { --bg-color:#f8f9fa; --text-color:#333; --heading-color:#1a1a1a; --accent-color:#2563eb; --border-color:#e5e7eb; --code-bg:#f1f5f9; --table-header-bg:#f3f4f6; --table-row-alt:#fafafa; }
+    @media (prefers-color-scheme: dark) { :root { --bg-color:#0f172a; --text-color:#e2e8f0; --heading-color:#f8fafc; --accent-color:#60a5fa; --border-color:#334155; --code-bg:#1e293b; --table-header-bg:#1e293b; --table-row-alt:#1e293b; } }
+    body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; line-height:1.7; color:var(--text-color); background-color:var(--bg-color); max-width:1040px; margin:0 auto; padding:2rem 1.5rem; }
+    h1 { color:var(--heading-color); font-size:2rem; border-bottom:3px solid var(--accent-color); padding-bottom:.5rem; margin-bottom:1.5rem; }
+    h2 { color:var(--heading-color); font-size:1.5rem; margin-top:2.5rem; margin-bottom:1rem; border-bottom:1px solid var(--border-color); padding-bottom:.4rem; }
+    h3 { color:var(--heading-color); font-size:1.2rem; margin-top:1.8rem; margin-bottom:.8rem; }
+    p { margin:.8rem 0; }
+    ul,ol { padding-left:1.8rem; margin:.8rem 0; }
+    li { margin:.35rem 0; }
+    code { background-color:var(--code-bg); padding:.2rem .4rem; border-radius:4px; font-family:"SF Mono",Monaco,"Cascadia Code",monospace; font-size:.9em; }
+    pre { background-color:var(--code-bg); padding:1rem; border-radius:8px; overflow-x:auto; border:1px solid var(--border-color); }
+    pre code { background:none; padding:0; }
+    table { width:100%; border-collapse:collapse; margin:1.2rem 0; border:1px solid var(--border-color); }
+    th,td { padding:.75rem; text-align:left; border-bottom:1px solid var(--border-color); vertical-align:top; }
+    th { background-color:var(--table-header-bg); font-weight:600; }
+    tr:nth-child(even) { background-color:var(--table-row-alt); }
+    blockquote { border-left:4px solid var(--accent-color); margin:1rem 0; padding:.5rem 1rem; background-color:var(--code-bg); border-radius:0 8px 8px 0; }
+  </style>
 </head>
 <body>
-    <h1>个人关系图谱应用设计文档</h1>
-    <div class="meta">更新方向：远程 Linux 服务端承载核心服务，Windows 和手机作为客户端。</div>
+<h1>个人关系图谱应用设计文档 v1.3</h1>
+<blockquote><p>版本：v1.3  </p>
+<p>日期：2026-07-30  </p>
+<p>本版本用途：在 v1.2 技术需求文档基础上，补齐分级存储、统一自然语言入口、关系推断、路径生成、批量导入、提醒机制和 Open 问题。</p></blockquote>
+<h2>1. 项目背景</h2>
+<p>日常工作中需要维护大量弱关系联系人：今天认识的某公司工程师、经谁介绍、聊了什么、后续是否需要跟进。传统通讯录只能存基础信息，无法表达“经谁介绍”“聊过什么话题”“当前状态”“谁能帮上忙”等关系维度。</p>
+<p>本项目目标是把个人或团队核心成员脑子里的人脉资产，整理成可以持续维护、自然语言检索和图谱化调用的私有知识库。</p>
+<p>相比早期“Windows 本地电脑同时承担客户端和服务端”的方向，v1.3 的目标架构调整为：</p>
+<ul>
+<li>中低敏感数据：通过远程 Linux 服务端提供 Web/PWA 多端访问能力。</li>
+<li>高敏感数据：原则上本地加密保存，不上传服务端。</li>
+<li>Windows 端：既可以访问远程服务端，也可以承担高敏感本地数据访问能力。</li>
+<li>手机端：优先访问远程中低敏感数据；是否访问高敏感数据暂不做承诺。</li>
+</ul>
+<p>其中“高敏感数据只在本地保存会带来换电脑丢失风险”目前标记为 Open，需要后续进一步评估备份、迁移和加密恢复方案。</p>
+<h2>2. 目标</h2>
+<p>构建一款以 Web/PWA 为优先形态、可扩展 Windows 增强客户端的个人关系图谱系统，核心能力包括：</p>
+<ul>
+<li>维护联系人基础信息、关系链路、互动记录和下一步跟进。</li>
+<li>通过统一自然语言入口完成录入、更新、检索和路径查询。</li>
+<li>支持文字、语音、名片图片、聊天记录和表格等多种录入方式。</li>
+<li>支持自然语言查询，从数据库中检索匹配联系人及互动摘要。</li>
+<li>以图谱方式可视化人和人、人与项目、人与机会之间的关系。</li>
+<li>支持项目/机会场景下的关联路径生成。</li>
+<li>对不同敏感级别的数据采用不同存储路径、展示策略、访问控制和审计日志。</li>
+<li>支持后续扩展为手机 PWA / App、Windows 桌面壳、浏览器插件或其他客户端。</li>
+</ul>
+<h2>3. 核心设计原则</h2>
+<h3>3.1 低摩擦维护优先</h3>
+<p>长期核心交互不是表单，而是自然语言和语音更新。</p>
+<p>用户不应为了维护关系而被迫填写复杂表单。第一版可以保留简化表单作为兜底和调试入口，但主流程应是：</p>
+<pre><code>用户说一句话或输入一段文字
+→ 系统判断意图
+→ LLM/规则引擎提炼结构化草稿
+→ 用户确认或修正
+→ 写入联系人、互动记录、关系或项目数据</code></pre>
+<h3>3.2 LLM 做解读，不直接做关键写入决策</h3>
+<p>需要 LLM 来理解自然语言、提取字段、生成摘要、识别代称、整理名片和解释查询结果。但 LLM 的角色是“辅助解读和生成候选结果”，不是直接操作数据库的主体。</p>
+<p>关键原则：</p>
+<ul>
+<li>LLM 可以生成结构化草稿。</li>
+<li>应用层负责字段白名单、枚举校验、权限判断和写入控制。</li>
+<li>用户对新增联系人、修改字段、合并联系人、确认关系等关键动作有最终确认权。</li>
+<li>NLQ 不允许 LLM 直接生成任意 SQL，应使用 QueryIntent 中间层。</li>
+</ul>
+<h3>3.3 分级存储优先</h3>
+<p>不同敏感级别的数据走不同存储路径：</p>
+<table>
+<thead><tr><th>敏感级别</th><th>内容示例</th><th>存储方式</th><th>手机可访问</th></tr></thead>
+<tbody>
+<tr><td>高敏感</td><td>核心合伙人、政商关系、家族关系、高敏感互动记录</td><td>本地加密，原则上不上传服务端</td><td>暂不支持</td></tr>
+<tr><td>中敏感</td><td>行业人脉、潜在合作方、一般商务互动</td><td>远程服务端，字段级加密</td><td>支持</td></tr>
+<tr><td>低敏感</td><td>公开信息、普通行业联系人</td><td>远程服务端</td><td>支持</td></tr>
+</tbody>
+</table>
+<p>Open：高敏感数据如果只保存在一台电脑上，换电脑、电脑损坏或重装系统时存在数据丢失风险。后续需要确认是否采用加密备份、用户自持恢复密钥、私有云同步、移动硬盘备份或其他方案。</p>
+<h2>4. 典型用户场景</h2>
+<h3>4.1 初次认识并记录</h3>
+<p>用户刚认识一个人，打开手机或 Windows 客户端，说：</p>
+<blockquote><p>“刚认识了一个人，叫张明，是做地产融资的，上海人，老李介绍的，后面可能能聊园区项目。”</p></blockquote>
+<p>系统识别为“新建联系人”，提取姓名、标签、城市、介绍人、潜在合作方向和当前状态，展示关系卡片草稿。用户确认后保存。</p>
+<h3>4.2 持续维护沟通记录</h3>
+<p>用户和某个人又沟通了一些事情，不需要打开复杂表单，只要说：</p>
+<blockquote><p>“刚和张明聊了，他说下周来上海，可以约他聊一下园区项目。”</p></blockquote>
+<p>系统识别为“更新已有联系人互动记录”，自动匹配张明。如果“张明/老张”有多个候选，系统展示候选列表，用户确认后保存 Interaction，并更新上次互动时间、摘要、话题和下一步行动。</p>
+<h3>4.3 查询时顺手更新</h3>
+<p>用户查询某个联系人时，系统发现上次互动时间较久，可主动问：</p>
+<blockquote><p>“你上次和张明的互动记录是 45 天前，最近有联系吗？”</p></blockquote>
+<p>用户回复后，系统自动追加互动记录。这是语音打标记之外的兜底维护方式。</p>
+<h3>4.4 自然语言查询</h3>
+<p>用户打开应用直接提问：</p>
+<ul>
+<li>“谁在上海做地产，和我关系比较近？”</li>
+<li>“上次聊过融资的人里，还没跟进的有谁？”</li>
+<li>“这个懂车帝的投标，谁能帮上忙？”</li>
+<li>“最近 3 个月没联系但标记了‘待跟进’的人有哪些？”</li>
+</ul>
+<p>系统返回匹配联系人、上次互动摘要、当前状态、建议下一步和必要的关系路径。</p>
+<h3>4.5 项目路径生成</h3>
+<p>用户输入：</p>
+<blockquote><p>“这个园区项目，我通过谁能联系到王局长？”</p></blockquote>
+<p>系统在关系图谱中查找从“我”到目标人的可行路径，优先选择强关系和最近有互动的节点，输出推荐路径、依据和建议行动。</p>
+<h2>5. 架构设计</h2>
+<h3>5.1 整体形态</h3>
+<p>v1.3 采用“远程服务端 + 本地高敏感库”的分级架构。</p>
+<pre><code>手机浏览器 / PWA
+  └── HTTPS 访问远程服务端
+      └── 中低敏感数据、AI、ASR、OCR、NLQ
 
-    <h2>1. 项目背景</h2>
-    <p>日常工作中需要维护大量弱关系联系人：今天认识的某公司工程师、经谁介绍、聊了什么、后续是否需要跟进。传统通讯录只能存基础信息，无法表达“经谁介绍”“聊过什么话题”“当前状态”“谁能帮上忙”等关系维度。因此需要一款以“人”为中心、以“关系”和“互动记录”为线索的个人关系图谱应用。</p>
-    <p>最新目标已经从“Windows 本地电脑同时承担客户端和服务端”调整为：<strong>远程 Linux 服务器承载主要控制逻辑、数据服务、AI/ASR/OCR 能力；Windows 电脑和手机都作为客户端访问服务端</strong>。这样更符合多端长期使用、低客户端部署成本和后续扩展需求。</p>
+Windows 浏览器 / PWA
+  └── HTTPS 访问远程服务端
+      └── 中低敏感数据、AI、ASR、OCR、NLQ
 
-    <h2>2. 目标</h2>
-    <p>构建一款以 Web/PWA 为优先形态的个人关系图谱系统，核心能力包括：</p>
-    <ul>
-        <li>维护联系人基础信息、关系链路、互动记录。</li>
-        <li>Windows 电脑和手机都作为客户端，角色尽量一致。</li>
-        <li>服务端统一负责业务逻辑、数据库、AI 信息抽取、语音转文字、OCR 和自然语言查询。</li>
-        <li>支持文字、语音、图片等多种录入方式。</li>
-        <li>支持自然语言查询，从数据库中检索匹配联系人及互动摘要。</li>
-        <li>以图谱方式可视化人和人之间的关系。</li>
-        <li>对敏感联系人和敏感字段提供脱敏展示、访问控制、审计日志和加密存储。</li>
-        <li>支持后续扩展为手机 PWA / App、Windows 桌面壳、浏览器插件或其他客户端。</li>
-    </ul>
-
-    <h2>3. 典型用户场景</h2>
-    <h3>场景 1：初次认识并记录</h3>
-    <p>用户今天认识了某公司的工程师，打开手机或 Windows 客户端，新增联系人，填写姓名、电话、邮箱、公司、职位，标记“经谁介绍认识”，并记录第一次见面聊的内容。</p>
-    <h3>场景 2：持续维护沟通记录</h3>
-    <p>若干天后再次沟通，用户通过文字或语音追加一条互动记录。客户端负责采集和展示确认界面，服务端负责语音转文字、摘要、话题、待办和人物提及提取，用户确认后写入数据库，并更新“上次互动”和“当前状态”。</p>
-    <h3>场景 3：自然语言查询</h3>
-    <p>用户打开应用直接提问：</p>
-    <ul>
-        <li>“谁在上海做地产，和我关系比较近？”</li>
-        <li>“上次聊过融资的人里，还没跟进的有谁？”</li>
-        <li>“这个懂车帝的投标，谁能帮上忙？”</li>
-        <li>“最近 3 个月没联系但标记了‘待跟进’的人有哪些？”</li>
-    </ul>
-    <p>系统返回匹配结果、上次互动摘要和建议下一步。</p>
-    <h3>场景 4：名片扫描录入</h3>
-    <p>用户在手机端拍照，或在 Windows 端上传名片图片/截图。服务端 OCR 识别文字后，再由 LLM 整理成结构化联系人信息，客户端展示候选字段和疑似重复联系人，用户确认后保存。</p>
-    <h3>场景 5：多端一致访问</h3>
-    <p>用户在手机上录入沟通内容，晚上在 Windows 电脑上继续整理联系人和关系图谱。所有客户端都通过 HTTPS 访问同一套远程 Linux 服务端，数据不需要在 Windows 与手机之间额外同步。</p>
-
-    <h2>4. 架构设计</h2>
-    <h3>4.1 整体形态</h3>
-    <p>目标架构调整为：远程 Linux 服务器是核心，Windows 和手机都是客户端。</p>
-    <pre><code>Windows 浏览器 / PWA / 可选桌面壳
-          ↓ HTTPS
-手机浏览器 / PWA / 可选原生 App
-          ↓ HTTPS
-远程 Linux Server
+Windows 增强客户端（Tauri 或本地助手，Open）
+  ├── HTTPS 访问远程服务端
+  └── 本地 SQLCipher 高敏感数据库</code></pre>
+<p>远程 Linux Server：</p>
+<pre><code>Linux Server
   ├── Web API
   ├── 身份认证 / 权限控制
   ├── 业务服务层
   │   ├── 联系人管理
   │   ├── 互动记录管理
+  │   ├── 项目/机会管理
   │   ├── 关系图谱构建
+  │   ├── 关系推断和确认
   │   ├── 自然语言查询（NLQ）
+  │   ├── 统一自然语言入口 Intent Router
   │   ├── 语音转文字（ASR）
   │   └── 名片 OCR / 图片处理
   ├── 数据库（PostgreSQL 优先，个人 MVP 可用 SQLite）
   ├── 字段级加密 / 备份加密
-  ├── LLM 服务（Ollama / vLLM / 其他兼容服务）
+  ├── LLM 服务（Ollama / vLLM / OpenAI-compatible API）
   ├── Whisper / faster-whisper
   ├── OCR 服务（PaddleOCR / Tesseract）
   └── 日志、审计、备份与监控</code></pre>
+<h3>5.2 客户端职责</h3>
+<p>手机和普通 Web/PWA 客户端：</p>
+<ul>
+<li>登录、会话保持和二次确认。</li>
+<li>展示联系人、互动记录、关系图谱、自然语言查询页面。</li>
+<li>采集文字、录音、拍照、上传图片/音频。</li>
+<li>展示服务端返回的识别结果、联系人候选和歧义确认。</li>
+<li>访问中低敏感数据。</li>
+</ul>
+<p>Windows 增强客户端：</p>
+<ul>
+<li>具备普通客户端的全部能力。</li>
+<li>访问本地高敏感 SQLCipher 数据库。</li>
+<li>在本机完成高敏感数据的解密、脱敏展示和二次确认。</li>
+<li>在本机合并展示“远程中低敏感结果 + 本地高敏感结果”。</li>
+</ul>
+<p>Open：Windows 增强客户端具体采用 Tauri，还是采用浏览器 + localhost helper，需要后续确认。考虑到现有原型已有 Tauri 基础，第一阶段可优先评估 Tauri。</p>
+<h3>5.3 服务端职责</h3>
+<p>远程 Linux 服务端负责：</p>
+<ul>
+<li>提供统一 REST API，后续可扩展 GraphQL。</li>
+<li>管理中低敏感数据库连接、迁移、备份和加密。</li>
+<li>执行核心业务逻辑和访问控制。</li>
+<li>执行 ASR、OCR、LLM 抽取、NLQ 意图解析和结果生成。</li>
+<li>维护联系人、关系、项目、互动记录、实体提及、提醒和审计日志。</li>
+<li>提供结构化日志和运行状态观测能力。</li>
+</ul>
+<p>服务端原则上不接收、不持久化高敏感联系人数据。</p>
+<p>Open：是否允许服务端保存高敏感数据的脱敏索引、不可逆摘要或加密备份，需要进一步确认。</p>
+<h3>5.4 Tauri 的定位</h3>
+<p>Tauri 在 v1.3 中不再只是可选桌面壳，也可能承担 Windows 端高敏感本地库访问能力。</p>
+<p>推荐暂定：</p>
+<ul>
+<li>Web/PWA 是中低敏感多端访问的主客户端。</li>
+<li>Tauri 是 Windows 增强客户端候选方案。</li>
+<li>Tauri 内嵌同一套 React 前端。</li>
+<li>中低敏感数据通过 HTTPS 调用远程服务端。</li>
+<li>高敏感数据通过本地 SQLCipher 保存和读取。</li>
+</ul>
+<p>这样可以在多端便利性和高敏感数据本地化之间取得相对稳妥的平衡。</p>
+<h2>6. 统一自然语言入口</h2>
+<h3>6.1 入口定位</h3>
+<p>应用应提供一个主输入框，支持文字和语音。用户可以直接输入自然语言，不需要先选择“新增”“查询”“更新”或“路径”。</p>
+<p>系统通过 Intent Router 判断意图：</p>
+<table>
+<thead><tr><th>意图</th><th>示例</th><th>处理方式</th></tr></thead>
+<tbody>
+<tr><td>create_person</td><td>“刚认识了张明，做地产融资”</td><td>生成联系人草稿</td></tr>
+<tr><td>update_person</td><td>“张明现在去了新公司”</td><td>生成字段更新草稿</td></tr>
+<tr><td>add_interaction</td><td>“刚和张明聊了园区项目”</td><td>追加互动记录</td></tr>
+<tr><td>search_people</td><td>“谁在上海做地产？”</td><td>走 QueryIntent 检索</td></tr>
+<tr><td>find_path</td><td>“我通过谁能联系到王局长？”</td><td>生成关系路径</td></tr>
+<tr><td>create_project</td><td>“新建一个懂车帝投标机会”</td><td>生成项目/机会草稿</td></tr>
+<tr><td>import_record</td><td>“这段微信聊天帮我整理一下”</td><td>创建导入任务</td></tr>
+</tbody>
+</table>
+<h3>6.2 判断规则</h3>
+<p>初版可采用规则 + LLM 的混合方式：</p>
+<ul>
+<li>疑问句或条件描述：优先识别为检索。</li>
+<li>已有联系人姓名 + 时间/事件描述：优先识别为互动更新。</li>
+<li>未知人名 + 职业/标签/背景描述：优先识别为新建联系人。</li>
+<li>包含“谁能帮忙”“通过谁联系”“怎么搭上线”：优先识别为路径生成。</li>
+<li>置信度低时不直接写入，要求用户选择意图。</li>
+</ul>
+<h3>6.3 表单定位</h3>
+<p>第一版可以保留表单，但表单不是核心体验。</p>
+<p>表单主要用于：</p>
+<ul>
+<li>管理员或早期测试时快速补数据。</li>
+<li>用户对 AI 提炼结果进行精确修正。</li>
+<li>LLM 不可用时的兜底录入。</li>
+<li>数据字段较复杂时的高级编辑。</li>
+</ul>
+<p>产品主流程应是自然语言/语音 → 结构化草稿 → 用户确认。</p>
+<h2>7. 数据模型</h2>
+<h3>7.1 Person（联系人）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>name</td><td>string</td><td>真实姓名，敏感字段</td></tr>
+<tr><td>aliases</td><td>string[]</td><td>昵称/代称，如 <code>[&quot;老张&quot;]</code></td></tr>
+<tr><td>avatar</td><td>string?</td><td>头像路径或对象存储引用</td></tr>
+<tr><td>phone</td><td>string?</td><td>电话，敏感字段</td></tr>
+<tr><td>email</td><td>string?</td><td>邮箱，敏感字段</td></tr>
+<tr><td>company</td><td>string?</td><td>公司</td></tr>
+<tr><td>title</td><td>string?</td><td>职位/角色</td></tr>
+<tr><td>location</td><td>string?</td><td>城市/地域</td></tr>
+<tr><td>background</td><td>text</td><td>认识背景，可能敏感</td></tr>
+<tr><td>introduction_channel</td><td>enum/string</td><td>直接认识 / 谁介绍的 / 活动认识等</td></tr>
+<tr><td>introduced_by_person_id</td><td>UUID?</td><td>介绍人，可关联另一个联系人</td></tr>
+<tr><td>core_resources</td><td>text?</td><td>对方核心资源/能力</td></tr>
+<tr><td>my_value_to_them</td><td>text?</td><td>我能为对方提供什么</td></tr>
+<tr><td>relationship_strength</td><td>enum</td><td>强 / 中 / 弱 / 待激活</td></tr>
+<tr><td>resource_tags</td><td>string[]</td><td>资源标签，如 <code>[&quot;地产&quot;, &quot;融资&quot;]</code></td></tr>
+<tr><td>sensitivity_level</td><td>enum</td><td>高 / 中 / 低</td></tr>
+<tr><td>status</td><td>enum</td><td>待跟进 / 活跃 / 冷却 / 已合作</td></tr>
+<tr><td>next_step</td><td>text</td><td>下一步计划，可能敏感</td></tr>
+<tr><td>notes</td><td>text</td><td>备注，敏感字段</td></tr>
+<tr><td>confidence_level</td><td>enum</td><td>已确认 / 推断 / 待核实</td></tr>
+<tr><td>verification_suggestion</td><td>text?</td><td>核实建议</td></tr>
+<tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr>
+<tr><td>updated_at</td><td>datetime</td><td>更新时间</td></tr>
+</tbody>
+</table>
+<h3>7.2 Relationship（关系）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>from_person_id</td><td>UUID</td><td>关系起点</td></tr>
+<tr><td>to_person_id</td><td>UUID</td><td>关系终点</td></tr>
+<tr><td>type</td><td>enum</td><td>介绍 / 同事 / 朋友 / 合作 / 其他</td></tr>
+<tr><td>strength</td><td>enum</td><td>强 / 中 / 弱</td></tr>
+<tr><td>description</td><td>text?</td><td>关系说明，可能敏感</td></tr>
+<tr><td>source</td><td>enum</td><td>manual / inferred / imported</td></tr>
+<tr><td>confidence</td><td>float</td><td>关系置信度</td></tr>
+<tr><td>confirmation_status</td><td>enum</td><td>confirmed / pending / rejected</td></tr>
+<tr><td>inference_reason</td><td>text?</td><td>推断依据，不记录敏感原文</td></tr>
+<tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr>
+<tr><td>updated_at</td><td>datetime</td><td>更新时间</td></tr>
+</tbody>
+</table>
+<h3>7.3 Interaction（互动记录）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>person_id</td><td>UUID</td><td>关联联系人</td></tr>
+<tr><td>timestamp</td><td>datetime</td><td>互动时间</td></tr>
+<tr><td>content</td><td>text</td><td>原始内容，敏感字段</td></tr>
+<tr><td>summary</td><td>text?</td><td>摘要，敏感字段</td></tr>
+<tr><td>topics</td><td>string[]</td><td>话题标签</td></tr>
+<tr><td>action_items</td><td>string[]</td><td>待办事项</td></tr>
+<tr><td>source</td><td>enum</td><td>text / audio / image / import / chat</td></tr>
+<tr><td>sensitivity_level</td><td>enum</td><td>高 / 中 / 低，默认继承联系人敏感级别</td></tr>
+<tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr>
+</tbody>
+</table>
+<p>Open：高敏感互动记录是否可以上传服务端暂不确定。当前设计原则是：高敏感互动记录应继承高敏感联系人策略，默认本地保存，不上传；但此点需要进一步确认。</p>
+<h3>7.4 Project / Opportunity（项目/机会）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>name</td><td>string</td><td>项目或机会名称</td></tr>
+<tr><td>description</td><td>text?</td><td>项目说明</td></tr>
+<tr><td>tags</td><td>string[]</td><td>行业、资源、场景标签</td></tr>
+<tr><td>target_people</td><td>UUID[]</td><td>目标联系人或决策人</td></tr>
+<tr><td>related_person_ids</td><td>UUID[]</td><td>相关联系人</td></tr>
+<tr><td>status</td><td>enum</td><td>线索 / 跟进中 / 已合作 / 暂停 / 关闭</td></tr>
+<tr><td>sensitivity_level</td><td>enum</td><td>高 / 中 / 低</td></tr>
+<tr><td>next_step</td><td>text?</td><td>下一步行动</td></tr>
+<tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr>
+<tr><td>updated_at</td><td>datetime</td><td>更新时间</td></tr>
+</tbody>
+</table>
+<h3>7.5 EntityMention（提及实体）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>interaction_id</td><td>UUID</td><td>所属互动记录</td></tr>
+<tr><td>person_id</td><td>UUID?</td><td>解析出的联系人</td></tr>
+<tr><td>mention_text</td><td>string</td><td>原文中的称呼，如“老张”</td></tr>
+<tr><td>confidence</td><td>float</td><td>匹配置信度</td></tr>
+<tr><td>resolved</td><td>boolean</td><td>是否已人工确认</td></tr>
+</tbody>
+</table>
+<h3>7.6 MediaAsset（媒体附件）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>owner_type</td><td>enum</td><td>person / interaction / import_task</td></tr>
+<tr><td>owner_id</td><td>UUID?</td><td>关联对象</td></tr>
+<tr><td>media_type</td><td>enum</td><td>audio / image</td></tr>
+<tr><td>storage_path</td><td>string</td><td>服务端存储路径、本地路径或对象存储 key</td></tr>
+<tr><td>original_filename</td><td>string?</td><td>原始文件名，可脱敏处理</td></tr>
+<tr><td>size_bytes</td><td>integer</td><td>文件大小</td></tr>
+<tr><td>duration_ms</td><td>integer?</td><td>音频时长</td></tr>
+<tr><td>retention_policy</td><td>enum</td><td>delete_after_processing / keep_encrypted</td></tr>
+<tr><td>sensitivity_level</td><td>enum</td><td>高 / 中 / 低</td></tr>
+<tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr>
+</tbody>
+</table>
+<h3>7.7 ImportTask（导入任务）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>import_type</td><td>enum</td><td>audio / business_card / chat_text / csv / excel / vcard / llm_extract</td></tr>
+<tr><td>status</td><td>enum</td><td>pending / running / succeeded / failed / needs_confirmation</td></tr>
+<tr><td>input_asset_id</td><td>UUID?</td><td>输入媒体</td></tr>
+<tr><td>source_filename</td><td>string?</td><td>文件名，必要时脱敏</td></tr>
+<tr><td>field_mapping</td><td>json?</td><td>导入字段和系统字段的映射关系</td></tr>
+<tr><td>result_json</td><td>json</td><td>结构化识别结果</td></tr>
+<tr><td>error_summary</td><td>text?</td><td>错误摘要，不包含敏感原文</td></tr>
+<tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr>
+<tr><td>updated_at</td><td>datetime</td><td>更新时间</td></tr>
+</tbody>
+</table>
+<h3>7.8 Tag（标签）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>name</td><td>string</td><td>标签名</td></tr>
+<tr><td>category</td><td>enum?</td><td>资源 / 话题 / 行业 / 场景 / 其他</td></tr>
+<tr><td>color</td><td>string?</td><td>显示颜色</td></tr>
+</tbody>
+</table>
+<h3>7.9 Reminder（提醒）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>person_id</td><td>UUID?</td><td>关联联系人</td></tr>
+<tr><td>project_id</td><td>UUID?</td><td>关联项目</td></tr>
+<tr><td>reminder_type</td><td>enum</td><td>relationship_cooling / follow_up / opportunity_match / activation_suggestion</td></tr>
+<tr><td>message</td><td>text</td><td>提醒文案</td></tr>
+<tr><td>due_at</td><td>datetime</td><td>计划提醒时间</td></tr>
+<tr><td>status</td><td>enum</td><td>pending / done / dismissed / snoozed</td></tr>
+<tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr>
+</tbody>
+</table>
+<h3>7.10 AuditLog（审计日志）</h3>
+<table>
+<thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>id</td><td>UUID</td><td>主键</td></tr>
+<tr><td>actor_user_id</td><td>UUID</td><td>操作用户</td></tr>
+<tr><td>action</td><td>string</td><td>操作类型</td></tr>
+<tr><td>resource_type</td><td>string</td><td>资源类型</td></tr>
+<tr><td>resource_id</td><td>UUID?</td><td>资源 ID</td></tr>
+<tr><td>sensitivity_level</td><td>enum?</td><td>相关敏感级别</td></tr>
+<tr><td>result</td><td>enum</td><td>success / denied / failed</td></tr>
+<tr><td>metadata</td><td>json</td><td>非敏感元数据</td></tr>
+<tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr>
+</tbody>
+</table>
+<h2>8. 核心功能</h2>
+<h3>8.1 联系人名片视图</h3>
+<p>每个联系人展示为一张名片，包含：</p>
+<ul>
+<li>姓名、昵称/代称、公司、职位。</li>
+<li>认识背景和认识渠道。</li>
+<li>介绍人或关联来源。</li>
+<li>对方核心资源/能力。</li>
+<li>我能为对方提供什么。</li>
+<li>关系强度。</li>
+<li>资源标签。</li>
+<li>敏感级别。</li>
+<li>上次互动时间和摘要。</li>
+<li>当前状态。</li>
+<li>下一步计划。</li>
+<li>备注和核实建议。</li>
+</ul>
+<p>高敏感联系人默认脱敏展示，查看详情需要二次确认。</p>
+<h3>8.2 自然语言录入和更新</h3>
+<p>主流程：</p>
+<ol>
+<li>用户输入文字或语音。</li>
+<li>系统识别意图。</li>
+<li>LLM 提取结构化字段、摘要、话题、待办和可能的人物提及。</li>
+<li>系统按字段白名单和枚举规则校验。</li>
+<li>客户端展示草稿。</li>
+<li>用户确认、修正或取消。</li>
+<li>服务端或本地库写入数据。</li>
+</ol>
+<p>这部分对应代码也需要随设计调整：现有联系人表单和互动表单应逐步让位给统一自然语言入口，后端需要增加 Intent Router、草稿确认和字段更新 API。</p>
+<h3>8.3 语音录入互动记录</h3>
+<p>语音入口在手机和 Windows 客户端都需要支持。</p>
+<ol>
+<li>用户录音或上传音频。</li>
+<li>系统创建 <code>ImportTask</code> 和 <code>MediaAsset</code>。</li>
+<li>ASR 转文字。</li>
+<li>LLM 提取人物、话题、摘要、待办事项。</li>
+<li>系统匹配别名库，识别“老张”等模糊代称。</li>
+<li>若匹配到多个联系人，按最近联系、上下文、关系强度排序，返回候选列表。</li>
+<li>用户确认/修正后保存 <code>Interaction</code> 和 <code>EntityMention</code>。</li>
+<li>原始音频默认处理后删除；如用户选择留档，则加密保存。</li>
+</ol>
+<h3>8.4 名片扫描录入</h3>
+<p>名片扫描入口在手机和 Windows 客户端都需要支持。</p>
+<ol>
+<li>用户拍照或上传图片。</li>
+<li>系统创建 <code>ImportTask</code> 和 <code>MediaAsset</code>。</li>
+<li>OCR 提取文字。</li>
+<li>LLM 整理为结构化字段。</li>
+<li>系统执行查重和相似联系人匹配。</li>
+<li>用户确认后创建或更新 <code>Person</code>。</li>
+<li>原始图片默认处理后删除；如留档，则加密保存。</li>
+</ol>
+<h3>8.5 微信聊天记录导入</h3>
+<p>P1 支持用户粘贴一段微信聊天记录，由系统判断是否需要更新或新建联系人卡片。</p>
+<ul>
+<li>识别联系人，更新互动记录。</li>
+<li>提取话题、摘要、待办事项。</li>
+<li>聊天记录中出现未在图谱中的人名且与具体事项相关联时，提示用户是否新建。</li>
+<li>不自动保存未确认的敏感内容。</li>
+</ul>
+<h3>8.6 CSV / Excel / vCard 批量导入</h3>
+<p>批量导入支持：</p>
+<ul>
+<li>CSV。</li>
+<li>Excel <code>.xlsx</code>。</li>
+<li>手机通讯录 vCard。</li>
+<li>微信通讯录暂列 P2 或待技术评估。</li>
+</ul>
+<p>Excel 字段和数据库不匹配时，不应直接导入失败，而是进入字段映射流程：</p>
+<ol>
+<li>系统读取表头和前几行样例。</li>
+<li>自动猜测字段映射，例如“手机”“联系电话”映射到 <code>phone</code>。</li>
+<li>未识别字段进入“自定义字段/备注/忽略”选择。</li>
+<li>用户确认字段映射。</li>
+<li>系统做格式校验和重复检测。</li>
+<li>展示导入预览，包括新增、可能重复、无法识别的记录。</li>
+<li>用户确认后批量写入。</li>
+<li>字段映射可以保存为模板，便于后续复用。</li>
+</ol>
+<p>导入后去重是必要能力：姓名 + 电话重复可自动合并；相似姓名、相同公司、相近电话等情况提示用户确认。</p>
+<h3>8.7 关系图谱可视化</h3>
+<ul>
+<li>节点：联系人、项目/机会。</li>
+<li>边：介绍关系、合作关系、共同项目、共同话题、系统推断关系。</li>
+<li>支持按关系强度、资源标签、敏感级别、项目筛选。</li>
+<li>支持点击节点查看联系人名片。</li>
+<li>高敏感节点默认以代称展示，必要时仅显示存在关系而不显示明文信息。</li>
+</ul>
+<p>图谱展示样式：</p>
+<ul>
+<li>实线：已确认关系。</li>
+<li>虚线：系统推断关系。</li>
+<li>灰色/待确认：需要用户确认的关系。</li>
+<li>不展示或隐藏：用户否认过的推断关系。</li>
+</ul>
+<h3>8.8 关系推断与确认</h3>
+<p>系统可以基于规则和 LLM 辅助推断潜在关系，但必须经过用户确认。</p>
+<p>初版推断规则：</p>
+<ul>
+<li>同一公司的人互相认识：置信度高。</li>
+<li>同一行业 + 同一城市的人可能认识：置信度中。</li>
+<li>通过同一介绍人认识的人可能互相认识：置信度中。</li>
+<li>多次出现在同一项目或互动上下文中：置信度中。</li>
+</ul>
+<p>用户操作：</p>
+<ul>
+<li>确认关系。</li>
+<li>否认关系。</li>
+<li>修改关系类型或强度。</li>
+<li>手动添加“A 认识 B”。</li>
+</ul>
+<h3>8.9 项目决策链路径生成</h3>
+<p>P1 增加路径生成能力。</p>
+<p>输入：</p>
+<ul>
+<li>目标人。</li>
+<li>项目/机会。</li>
+<li>关键词或资源需求。</li>
+</ul>
+<p>处理逻辑：</p>
+<ul>
+<li>从“我”出发查找路径。</li>
+<li>强关系优先。</li>
+<li>最近有互动的人优先。</li>
+<li>标签、项目、地域匹配度参与评分。</li>
+<li>限制最大跳数，初版建议 2~3 跳。</li>
+<li>对推断关系和已确认关系分别计算置信度。</li>
+</ul>
+<p>输出：</p>
+<pre><code>目标：王局长（某园区管委会）
 
-    <h3>4.2 客户端职责</h3>
-    <ul>
-        <li>登录、会话保持和二次确认。</li>
-        <li>联系人、互动记录、关系图谱、自然语言查询等页面展示。</li>
-        <li>文字输入、录音、拍照、上传图片/音频。</li>
-        <li>展示服务端返回的识别结果、联系人候选和歧义确认。</li>
-        <li>在用户确认后提交入库。</li>
-    </ul>
-    <p>客户端不直接访问数据库，不直接保存长期明文业务数据。离线能力可作为后续增强，不放入第一阶段。</p>
+路径一（2跳，推荐）：
+我 → 张明（直接认识）→ 王局长
+依据：张明标签含“政府资源”，且最近 30 天有互动
 
-    <h3>4.3 服务端职责</h3>
-    <ul>
-        <li>提供统一 REST API 或 GraphQL API。</li>
-        <li>管理数据库连接、迁移、备份和加密。</li>
-        <li>执行核心业务逻辑和访问控制。</li>
-        <li>执行 ASR、OCR、LLM 抽取、NLQ 意图解析和结果生成。</li>
-        <li>维护联系人、关系、互动记录、实体提及、任务和审计日志。</li>
-        <li>提供结构化日志和运行状态观测能力。</li>
-    </ul>
-
-    <h3>4.4 Tauri 的定位</h3>
-    <p>Tauri 不再作为核心架构依赖。后续如果需要 Windows 桌面体验，可以把 Tauri 作为“可选桌面壳”：内嵌同一套 React Web 前端，仍然通过 HTTPS 调用远程 Linux 服务端，不承载数据库和核心业务逻辑。</p>
-
-    <h3>4.5 部署与运行环境</h3>
-    <ul>
-        <li>生产服务端：Linux Server，推荐 Docker Compose 部署。</li>
-        <li>客户端：Windows 浏览器/PWA、手机浏览器/PWA；后续可封装移动 App 或桌面壳。</li>
-        <li>网络：公网或内网 HTTPS 访问，必须启用认证和访问控制。</li>
-        <li>数据存储：服务端数据库集中存储，定期加密备份。</li>
-        <li>AI 能力：优先服务端集中部署，客户端不强制安装 Ollama、Whisper、OCR 等依赖。</li>
-    </ul>
-
-    <h2>5. 数据模型</h2>
-    <h3>5.1 Person（联系人）</h3>
-    <table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td>id</td><td>UUID</td><td>主键</td></tr><tr><td>name</td><td>string</td><td>真实姓名，敏感字段</td></tr><tr><td>aliases</td><td>string[]</td><td>昵称/代称，如 ["老张"]</td></tr><tr><td>avatar</td><td>string?</td><td>头像路径或对象存储引用</td></tr><tr><td>phone</td><td>string?</td><td>电话，敏感字段</td></tr><tr><td>email</td><td>string?</td><td>邮箱，敏感字段</td></tr><tr><td>company</td><td>string?</td><td>公司</td></tr><tr><td>title</td><td>string?</td><td>职位</td></tr><tr><td>location</td><td>string?</td><td>城市/地域</td></tr><tr><td>background</td><td>text</td><td>认识背景，可能敏感</td></tr><tr><td>relationship_strength</td><td>enum</td><td>强 / 中 / 弱</td></tr><tr><td>resource_tags</td><td>string[]</td><td>资源标签，如 ["地产", "融资"]</td></tr><tr><td>sensitivity_level</td><td>enum</td><td>高 / 中 / 低</td></tr><tr><td>status</td><td>enum</td><td>待跟进 / 活跃 / 冷却</td></tr><tr><td>next_step</td><td>text</td><td>下一步计划，可能敏感</td></tr><tr><td>notes</td><td>text</td><td>备注，敏感字段</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr><tr><td>updated_at</td><td>datetime</td><td>更新时间</td></tr></table>
-
-    <h3>5.2 Relationship（关系）</h3>
-    <table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td>id</td><td>UUID</td><td>主键</td></tr><tr><td>from_person_id</td><td>UUID</td><td>关系起点</td></tr><tr><td>to_person_id</td><td>UUID</td><td>关系终点</td></tr><tr><td>type</td><td>enum</td><td>介绍 / 同事 / 朋友 / 合作 / 其他</td></tr><tr><td>strength</td><td>enum</td><td>强 / 中 / 弱</td></tr><tr><td>description</td><td>text?</td><td>关系说明，可能敏感</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr></table>
-
-    <h3>5.3 Interaction（互动记录）</h3>
-    <table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td>id</td><td>UUID</td><td>主键</td></tr><tr><td>person_id</td><td>UUID</td><td>关联联系人</td></tr><tr><td>timestamp</td><td>datetime</td><td>互动时间</td></tr><tr><td>content</td><td>text</td><td>原始内容，敏感字段</td></tr><tr><td>summary</td><td>text?</td><td>摘要，敏感字段</td></tr><tr><td>topics</td><td>string[]</td><td>话题标签</td></tr><tr><td>action_items</td><td>string[]</td><td>待办事项</td></tr><tr><td>source</td><td>enum</td><td>text / audio / image / import</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr></table>
-
-    <h3>5.4 EntityMention（提及实体）</h3>
-    <table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td>id</td><td>UUID</td><td>主键</td></tr><tr><td>interaction_id</td><td>UUID</td><td>所属互动记录</td></tr><tr><td>person_id</td><td>UUID?</td><td>解析出的联系人</td></tr><tr><td>mention_text</td><td>string</td><td>原文中的称呼，如“老张”</td></tr><tr><td>confidence</td><td>float</td><td>匹配置信度</td></tr><tr><td>resolved</td><td>boolean</td><td>是否已人工确认</td></tr></table>
-
-    <h3>5.5 MediaAsset（媒体附件）</h3>
-    <table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td>id</td><td>UUID</td><td>主键</td></tr><tr><td>owner_type</td><td>enum</td><td>person / interaction / import_task</td></tr><tr><td>owner_id</td><td>UUID?</td><td>关联对象</td></tr><tr><td>media_type</td><td>enum</td><td>audio / image</td></tr><tr><td>storage_path</td><td>string</td><td>服务端存储路径或对象存储 key</td></tr><tr><td>original_filename</td><td>string?</td><td>原始文件名，可脱敏处理</td></tr><tr><td>size_bytes</td><td>integer</td><td>文件大小</td></tr><tr><td>duration_ms</td><td>integer?</td><td>音频时长</td></tr><tr><td>retention_policy</td><td>enum</td><td>delete_after_processing / keep_encrypted</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr></table>
-
-    <h3>5.6 ImportTask（识别任务）</h3>
-    <table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td>id</td><td>UUID</td><td>主键</td></tr><tr><td>task_type</td><td>enum</td><td>asr / ocr / llm_extract</td></tr><tr><td>status</td><td>enum</td><td>pending / running / succeeded / failed / needs_confirmation</td></tr><tr><td>input_asset_id</td><td>UUID?</td><td>输入媒体</td></tr><tr><td>result_json</td><td>json</td><td>结构化识别结果</td></tr><tr><td>error_summary</td><td>text?</td><td>错误摘要，不包含敏感原文</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr><tr><td>updated_at</td><td>datetime</td><td>更新时间</td></tr></table>
-
-    <h3>5.7 Tag（标签）</h3>
-    <table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td>id</td><td>UUID</td><td>主键</td></tr><tr><td>name</td><td>string</td><td>标签名</td></tr><tr><td>category</td><td>enum?</td><td>资源 / 话题 / 其他</td></tr><tr><td>color</td><td>string?</td><td>显示颜色</td></tr></table>
-
-    <h3>5.8 AuditLog（审计日志）</h3>
-    <table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td>id</td><td>UUID</td><td>主键</td></tr><tr><td>actor_user_id</td><td>UUID</td><td>操作用户</td></tr><tr><td>action</td><td>string</td><td>操作类型</td></tr><tr><td>resource_type</td><td>string</td><td>资源类型</td></tr><tr><td>resource_id</td><td>UUID?</td><td>资源 ID</td></tr><tr><td>sensitivity_level</td><td>enum?</td><td>相关敏感级别</td></tr><tr><td>result</td><td>enum</td><td>success / denied / failed</td></tr><tr><td>metadata</td><td>json</td><td>非敏感元数据</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr></table>
-
-    <h2>6. 核心功能</h2>
-    <h3>6.1 联系人名片视图</h3>
-    <ul><li>姓名、昵称/代称、公司、职位。</li><li>认识背景。</li><li>关系强度。</li><li>资源标签。</li><li>敏感级别。</li><li>上次互动时间和摘要。</li><li>当前状态。</li><li>下一步计划。</li><li>备注。</li></ul>
-    <p>高敏感联系人默认脱敏展示，查看详情需要二次确认。</p>
-
-    <h3>6.2 语音录入互动记录</h3>
-    <p>语音入口在手机和 Windows 客户端都需要支持，但识别逻辑放在服务端。</p>
-    <ol><li>用户在手机或 Windows 客户端录音/上传音频。</li><li>客户端将音频通过 HTTPS 上传到服务端。</li><li>服务端创建 <code>ImportTask</code> 和 <code>MediaAsset</code>。</li><li>服务端使用 Whisper / faster-whisper 转文字。</li><li>服务端使用 LLM 提取人物、话题、摘要、待办事项。</li><li>服务端匹配别名库，识别“老张”等模糊代称。</li><li>若匹配到多个联系人，按“最近联系 + 上下文 + 关系强度”排序，返回候选列表。</li><li>客户端展示转写文本、摘要、候选联系人和待办事项。</li><li>用户确认/修正后，服务端保存 <code>Interaction</code> 和 <code>EntityMention</code>，更新联系人状态。</li><li>原始音频默认处理后删除；如用户选择留档，则加密保存。</li></ol>
-
-    <h3>6.3 名片扫描录入</h3>
-    <p>名片扫描入口在手机和 Windows 客户端都需要支持，但 OCR 和结构化放在服务端。</p>
-    <ol><li>用户在手机端拍照，或在 Windows 端上传图片/截图。</li><li>客户端将图片通过 HTTPS 上传到服务端。</li><li>服务端创建 <code>ImportTask</code> 和 <code>MediaAsset</code>。</li><li>服务端使用 OCR 提取文字。</li><li>服务端使用 LLM 整理为结构化字段：姓名、公司、职位、电话、邮箱、地址、备注。</li><li>服务端执行查重和相似联系人匹配。</li><li>客户端展示识别结果和候选联系人。</li><li>用户确认后创建或更新 <code>Person</code>。</li><li>原始图片默认处理后删除；如用户选择留档，则加密保存。</li></ol>
-
-    <h3>6.4 关系图谱可视化</h3>
-    <ul><li>节点：联系人。</li><li>边：介绍关系、共同话题、共同参与的项目等。</li><li>支持按关系强度、资源标签、敏感级别筛选。</li><li>支持点击节点查看联系人名片。</li><li>高敏感节点默认以代称展示，必要时仅显示存在关系而不显示明文信息。</li></ul>
-
-    <h3>6.5 自然语言查询（NLQ）</h3>
-    <p>自然语言查询不应让 LLM 直接生成 SQL。推荐流程：</p>
-    <ol><li>用户在搜索框用自然语言提问。</li><li>服务端将问题解析为 <code>QueryIntent</code> 中间表示。</li><li>应用层对 <code>QueryIntent</code> 做白名单校验：字段、枚举、limit、排序均受控。</li><li>服务端使用参数化 SQL 或安全查询构造器查询数据库。</li><li>服务端按关系强度、最近互动、话题匹配度等规则重排。</li><li>LLM 只负责辅助解释和生成自然语言摘要，不直接接触任意 SQL 生成权限。</li><li>客户端展示匹配联系人、上次互动摘要、当前状态和建议下一步。</li></ol>
-    <h4>初版支持的查询类型</h4>
-    <table><tr><th>类型</th><th>示例</th></tr><tr><td>按标签/地域/关系强度查人</td><td>“谁在上海做地产，和我关系比较近？”</td></tr><tr><td>按互动状态查人</td><td>“最近 3 个月没联系但标记了待跟进的人有哪些？”</td></tr><tr><td>按话题查人</td><td>“上次聊过融资的人里，还没跟进的有谁？”</td></tr><tr><td>按项目/需求匹配资源</td><td>“这个懂车帝的投标，谁能帮上忙？”</td></tr><tr><td>组合条件</td><td>“做设计、关系强、最近一个月联系过的上海人”</td></tr></table>
-
-    <h3>6.6 多端客户端</h3>
-    <p>第一阶段优先 Web/PWA：Windows 使用浏览器访问 Web 应用，后续可封装桌面壳；手机使用响应式 Web/PWA，后续可封装原生 App。所有客户端共享同一 API，不为不同端维护不同业务逻辑。</p>
-
-    <h2>7. 安全设计</h2>
-    <h3>7.1 身份认证与访问控制</h3>
-    <ul><li>所有客户端必须登录后访问。</li><li>服务端使用短期 access token + 可撤销 refresh token。</li><li>高敏感数据查看需要二次确认，例如重新输入密码、WebAuthn、TOTP 或一次性确认。</li><li>后续如支持多人使用，需要引入用户、角色、权限和资源隔离。</li></ul>
-    <h3>7.2 传输安全</h3>
-    <ul><li>所有公网访问必须使用 HTTPS。</li><li>上传音频、图片和查询请求不得走明文 HTTP。</li><li>API 默认启用 CSRF/CORS 策略，生产环境只允许可信域名。</li></ul>
-    <h3>7.3 数据加密</h3>
-    <p>推荐第一阶段采用“服务端可处理明文的字段级加密”方案：</p>
-    <ul><li>数据库所在磁盘启用服务端磁盘加密或云盘加密。</li><li>电话、邮箱、备注、沟通原文、摘要、关系说明、下一步计划等字段加密存储。</li><li>标签、状态、时间、关系强度等用于检索的低敏结构化字段可保留明文或保存规范化索引。</li><li>原始音频和图片默认处理后删除；如保留，必须加密保存。</li><li>数据库备份必须加密，并定期验证可恢复性。</li></ul>
-    <p>暂不建议第一阶段采用完整端到端加密，因为服务端需要执行 OCR、ASR、LLM 抽取、NLQ 和关系推理。后续如隐私要求提高，可对部分字段逐步引入客户端加密和可搜索索引。</p>
-    <h3>7.4 敏感级别访问控制</h3>
-    <table><tr><th>敏感级别</th><th>列表展示</th><th>详情查看</th><th>自然语言查询</th></tr><tr><td>低</td><td>正常显示</td><td>正常显示</td><td>正常返回</td></tr><tr><td>中</td><td>可显示代称和部分信息</td><td>点击后显示完整信息</td><td>返回结果但敏感字段脱敏</td></tr><tr><td>高</td><td>显示代称 + 脱敏提示</td><td>需二次确认</td><td>默认折叠，提示“存在 N 位高敏感联系人，是否查看”</td></tr></table>
-    <h3>7.5 审计与日志可观测性</h3>
-    <p>日志目标是方便排障、审计和性能观察，同时避免泄露隐私。</p>
-    <p>允许记录：请求 ID、用户 ID、接口名、状态码、耗时、查询类型、结果数量、候选数量、音频/图片大小、处理耗时、任务状态、敏感级别、二次确认状态、错误摘要和错误类型。</p>
-    <p>禁止记录：密码、token、密钥、电话、邮箱、完整姓名、完整沟通内容、完整语音转写文本、原始名片图片内容、OCR 全文、用户完整自然语言问题。</p>
-
-    <h2>8. 技术栈</h2>
-    <table><tr><th>层级</th><th>推荐选型</th></tr><tr><td>前端</td><td>React + TypeScript + Vite + Tailwind</td></tr><tr><td>客户端形态</td><td>Web/PWA 优先，Tauri/原生 App 可选</td></tr><tr><td>后端</td><td>Rust Axum（也可评估 FastAPI / NestJS）</td></tr><tr><td>API</td><td>REST API 优先，后续可补 GraphQL</td></tr><tr><td>数据库</td><td>PostgreSQL 优先；个人 MVP 可先用 SQLite</td></tr><tr><td>加密</td><td>字段级加密 + 加密备份 + 服务端密钥管理</td></tr><tr><td>LLM</td><td>Ollama / vLLM / OpenAI-compatible API</td></tr><tr><td>语音转文字</td><td>Whisper / faster-whisper</td></tr><tr><td>名片 OCR</td><td>PaddleOCR / Tesseract + LLM 结构化</td></tr><tr><td>图谱可视化</td><td>Cytoscape.js 或 vis-network</td></tr><tr><td>部署</td><td>Docker Compose + Caddy/Nginx + HTTPS</td></tr><tr><td>日志</td><td>structured logging + request_id + audit log</td></tr></table>
-
-    <h2>9. MVP 范围</h2>
-    <h3>包含</h3>
-    <ul><li>Linux 服务端基础 API。</li><li>Web/PWA 前端，可在 Windows 和手机浏览器访问。</li><li>用户登录和基础会话管理。</li><li>联系人 CRUD 和名片视图。</li><li>关系链路维护。</li><li>文字录入互动记录。</li><li>语音上传/录音入口，服务端 ASR，用户确认后入库。</li><li>图片上传/拍照入口，服务端 OCR，用户确认后创建/更新联系人。</li><li>互动记录列表和详情。</li><li>关系图谱可视化基础版本。</li><li>自然语言查询限定查询类型。</li><li>敏感级别访问控制。</li><li>字段级加密和加密备份设计落地。</li><li>隐私安全的结构化日志和审计日志。</li></ul>
-    <h3>不包含</h3>
-    <ul><li>完整原生手机 App。</li><li>复杂多用户组织权限系统。</li><li>完整端到端加密。</li><li>离线编辑和多端冲突合并。</li><li>自动化公网域名、证书和服务器采购流程。</li><li>复杂的关系权重自动计算。</li><li>与微信、通讯录、邮件等第三方系统深度集成。</li></ul>
-
-    <h2>10. 风险与待决策事项</h2>
-    <table><tr><th>风险</th><th>说明</th><th>应对</th></tr><tr><td>远程服务端隐私风险</td><td>数据集中在 Linux 服务器，安全边界从本地电脑转为服务端</td><td>HTTPS、认证、字段级加密、审计日志、加密备份、最小权限部署</td></tr><tr><td>LLM 解析不稳定</td><td>自然语言查询和信息抽取可能误判</td><td>使用 QueryIntent 中间层、白名单校验、用户确认、固定查询降级</td></tr><tr><td>ASR/OCR 资源消耗</td><td>语音和图片识别需要 CPU/GPU 资源</td><td>使用异步任务队列，限制文件大小，支持轻量模型和任务状态查询</td></tr><tr><td>媒体文件泄露</td><td>音频和名片图片包含高敏感信息</td><td>默认处理后删除；如留档，必须加密保存并审计访问</td></tr><tr><td>多端体验差异</td><td>手机拍照录音更方便，Windows 上传整理更方便</td><td>统一 API 和确认流程，按端优化采集入口，不分叉业务逻辑</td></tr><tr><td>模糊代指消解准确率</td><td>“老张”等代称容易匹配错误</td><td>低置信度强制人工确认，保留用户修正记录</td></tr><tr><td>部署复杂度</td><td>Linux 服务端涉及 Docker、HTTPS、模型服务</td><td>MVP 先支持单机 Docker Compose，AI 能力允许可选启用</td></tr></table>
-
-    <h2>11. 后续演进方向</h2>
-    <ol><li>Web/PWA 优先完善手机端体验。</li><li>增加服务端异步任务队列，用于 ASR、OCR、LLM 抽取。</li><li>增加更完整的 NLQ 查询类型和解释能力。</li><li>增加智能提醒和跟进计划。</li><li>增加关系强度自动评估。</li><li>增加加密备份、恢复演练和迁移工具。</li><li>视需要封装 Windows 桌面壳或原生手机 App。</li><li>评估部分字段的客户端加密或更强隐私模式。</li></ol>
+建议行动：联系张明，询问是否认识王局长，请求引荐</code></pre>
+<h3>8.10 自然语言查询（NLQ）</h3>
+<p>自然语言查询不应让 LLM 直接生成 SQL。推荐流程：</p>
+<ol>
+<li>用户在统一入口用自然语言提问。</li>
+<li>系统将问题解析为 <code>QueryIntent</code> 中间表示。</li>
+<li>应用层对 <code>QueryIntent</code> 做白名单校验：字段、枚举、limit、排序均受控。</li>
+<li>使用参数化 SQL 或安全查询构造器查询数据库。</li>
+<li>Windows 增强客户端可合并远程中低敏感结果和本地高敏感结果。</li>
+<li>按关系强度、最近互动、话题匹配度等规则重排。</li>
+<li>LLM 只负责辅助解释和生成自然语言摘要，不直接接触任意 SQL 生成权限。</li>
+<li>客户端展示匹配联系人、上次互动摘要、当前状态和建议下一步。</li>
+</ol>
+<p>初版支持的查询类型：</p>
+<table>
+<thead><tr><th>类型</th><th>示例</th></tr></thead>
+<tbody>
+<tr><td>按标签/地域/关系强度查人</td><td>“谁在上海做地产，和我关系比较近？”</td></tr>
+<tr><td>按互动状态查人</td><td>“最近 3 个月没联系但标记了待跟进的人有哪些？”</td></tr>
+<tr><td>按话题查人</td><td>“上次聊过融资的人里，还没跟进的有谁？”</td></tr>
+<tr><td>按项目/需求匹配资源</td><td>“这个懂车帝的投标，谁能帮上忙？”</td></tr>
+<tr><td>按路径查人</td><td>“我通过谁能联系到王局长？”</td></tr>
+<tr><td>组合条件</td><td>“做设计、关系强、最近一个月联系过的上海人”</td></tr>
+</tbody>
+</table>
+<h2>9. 主动提醒机制</h2>
+<p>主动提醒从“后续演进”提升为 P1 设计。</p>
+<table>
+<thead><tr><th>提醒类型</th><th>触发条件</th><th>推送内容</th></tr></thead>
+<tbody>
+<tr><td>关系冷却提醒</td><td>联系人超过 N 天没有互动记录更新，且状态=待跟进</td><td>“张明已 45 天没有互动记录——最近有联系吗？”</td></tr>
+<tr><td>跟进提醒</td><td>下一步行动有内容但超过 7 天未更新</td><td>“你计划联系王总，有进展吗？”</td></tr>
+<tr><td>新机会匹配</td><td>用户新建项目节点时</td><td>“图谱里有 3 个人可能和这个项目相关，要查看吗？”</td></tr>
+<tr><td>关系激活建议</td><td>强关系有至少一条互动记录且超过 60 天未更新</td><td>“老李是你的核心关系，已超过 60 天没有互动记录——要不要顺手说一句？”</td></tr>
+</tbody>
+</table>
+<p>提醒频率：用户可选每日固定推送、信号触发或关闭。</p>
+<h2>10. 安全设计</h2>
+<h3>10.1 身份认证与访问控制</h3>
+<ul>
+<li>所有远程客户端必须登录后访问。</li>
+<li>服务端使用短期 access token + 可撤销 refresh token。</li>
+<li>高敏感数据查看需要二次确认，例如重新输入密码、WebAuthn、TOTP 或一次性确认。</li>
+<li>后续如支持多人使用，需要引入用户、角色、权限和资源隔离。</li>
+</ul>
+<h3>10.2 传输安全</h3>
+<ul>
+<li>所有公网访问必须使用 HTTPS。</li>
+<li>上传音频、图片和查询请求不得走明文 HTTP。</li>
+<li>API 默认启用 CSRF/CORS 策略，生产环境只允许可信域名。</li>
+</ul>
+<h3>10.3 数据加密</h3>
+<p>中低敏感远程数据：</p>
+<ul>
+<li>数据库所在磁盘启用服务端磁盘加密或云盘加密。</li>
+<li>电话、邮箱、备注、沟通原文、摘要、关系说明、下一步计划等字段加密存储。</li>
+<li>标签、状态、时间、关系强度等用于检索的低敏结构化字段可保留明文或保存规范化索引。</li>
+<li>原始音频和图片默认处理后删除；如保留，必须加密保存。</li>
+<li>数据库备份必须加密，并定期验证可恢复性。</li>
+</ul>
+<p>高敏感本地数据：</p>
+<ul>
+<li>使用 SQLCipher 等方式本地加密。</li>
+<li>密钥不写入配置文件或日志。</li>
+<li>优先使用系统密钥链或用户主密码派生密钥。</li>
+<li>查看高敏感详情需要二次确认。</li>
+</ul>
+<p>Open：高敏感数据备份、迁移和换机恢复方案暂未定。</p>
+<h3>10.4 敏感级别访问控制</h3>
+<table>
+<thead><tr><th>敏感级别</th><th>列表展示</th><th>详情查看</th><th>自然语言查询</th></tr></thead>
+<tbody>
+<tr><td>低</td><td>正常显示</td><td>正常显示</td><td>正常返回</td></tr>
+<tr><td>中</td><td>可显示代称和部分信息</td><td>点击后显示完整信息</td><td>返回结果但敏感字段脱敏</td></tr>
+<tr><td>高</td><td>显示代称 + 脱敏提示</td><td>需二次确认</td><td>默认折叠，提示“存在 N 位高敏感联系人，是否查看”</td></tr>
+</tbody>
+</table>
+<h3>10.5 审计与日志可观测性</h3>
+<p>日志目标是方便排障、审计和性能观察，同时避免泄露隐私。</p>
+<p>允许记录：</p>
+<ul>
+<li>请求 ID、用户 ID、接口名、状态码、耗时。</li>
+<li>查询类型、结果数量、候选数量。</li>
+<li>音频/图片大小、处理耗时、任务状态。</li>
+<li>敏感级别、是否触发二次确认、是否拒绝访问。</li>
+<li>错误摘要和错误类型。</li>
+</ul>
+<p>禁止记录：</p>
+<ul>
+<li>密码、token、密钥。</li>
+<li>电话、邮箱、完整姓名。</li>
+<li>完整沟通内容、完整语音转写文本。</li>
+<li>原始名片图片内容或 OCR 全文。</li>
+<li>用户完整自然语言问题；可记录长度、查询类型和脱敏后的意图摘要。</li>
+</ul>
+<h2>11. 技术栈</h2>
+<table>
+<thead><tr><th>层级</th><th>推荐选型</th></tr></thead>
+<tbody>
+<tr><td>前端</td><td>React + TypeScript + Vite + Tailwind</td></tr>
+<tr><td>客户端形态</td><td>Web/PWA 优先，Windows Tauri 增强客户端待评估</td></tr>
+<tr><td>后端</td><td>Rust Axum（也可评估 FastAPI / NestJS）</td></tr>
+<tr><td>API</td><td>REST API 优先，后续可补 GraphQL</td></tr>
+<tr><td>远程数据库</td><td>PostgreSQL 优先；个人 MVP 可先用 SQLite</td></tr>
+<tr><td>本地高敏感库</td><td>SQLCipher</td></tr>
+<tr><td>加密</td><td>字段级加密 + 本地库加密 + 加密备份</td></tr>
+<tr><td>LLM</td><td>Ollama / vLLM / OpenAI-compatible API</td></tr>
+<tr><td>语音转文字</td><td>Whisper / faster-whisper</td></tr>
+<tr><td>名片 OCR</td><td>PaddleOCR / Tesseract + LLM 结构化</td></tr>
+<tr><td>图谱可视化</td><td>Cytoscape.js 或 vis-network</td></tr>
+<tr><td>部署</td><td>Docker Compose + Caddy/Nginx + HTTPS</td></tr>
+<tr><td>日志</td><td>structured logging + request_id + audit log</td></tr>
+</tbody>
+</table>
+<h2>12. MVP 范围</h2>
+<h3>12.1 P0：必须闭环</h3>
+<ul>
+<li>用户登录和基础会话管理。</li>
+<li>联系人 CRUD 和名片视图。</li>
+<li>统一自然语言入口的基础版本。</li>
+<li>文字自然语言录入联系人。</li>
+<li>文字追加互动记录。</li>
+<li>LLM 提取结构化草稿，用户确认后保存。</li>
+<li>基础 NLQ 查询。</li>
+<li>敏感级别字段、脱敏展示和二次确认。</li>
+<li>中低敏感数据服务端存储。</li>
+<li>高敏感数据本地存储策略明确，但备份迁移方案标记为 Open。</li>
+<li>隐私安全的结构化日志和审计日志。</li>
+</ul>
+<h3>12.2 P1：提升可用性</h3>
+<ul>
+<li>语音录入。</li>
+<li>名片 OCR。</li>
+<li>关系图谱可视化。</li>
+<li>关系推断和用户确认。</li>
+<li>项目/机会实体。</li>
+<li>项目路径生成基础版本。</li>
+<li>CSV / Excel / vCard 导入。</li>
+<li>导入字段映射和去重合并。</li>
+<li>微信聊天记录粘贴导入。</li>
+<li>主动提醒和跟进计划。</li>
+<li>字段级加密和加密备份完整落地。</li>
+</ul>
+<h3>12.3 P2：增强能力</h3>
+<ul>
+<li>人物背景联网搜集。</li>
+<li>微信通讯录导入。</li>
+<li>项目决策链路径生成完整版。</li>
+<li>关系强度自动评估。</li>
+<li>向量索引和语义检索。</li>
+<li>多用户组织权限体系。</li>
+<li>手机原生 App。</li>
+</ul>
+<h2>13. 代码调整影响</h2>
+<p>从当前原型演进到 v1.3，代码需要做结构性调整：</p>
+<ol>
+<li>后端从 Tauri Command 优先，逐步抽象出可被 REST API 和 Tauri 共用的 service 层。</li>
+<li>增加 Intent Router，用于区分录入、更新、检索、路径生成和导入。</li>
+<li>增加 Draft/Confirmation 流程，LLM 输出先成为草稿，用户确认后再写库。</li>
+<li>扩展 Person、Relationship、Interaction 数据模型。</li>
+<li>新增 Project/Opportunity、Reminder、ImportTask 字段映射等模型。</li>
+<li>图谱展示需要支持已确认关系、推断关系、待确认关系和已否认关系的不同样式。</li>
+<li>批量导入需要新增字段映射、预览、校验、去重和合并逻辑。</li>
+<li>Windows 增强客户端若承担高敏感本地库，需要保留或重构 Tauri 本地数据库能力。</li>
+<li>所有新增 API 和任务处理都需要遵守隐私安全日志规范。</li>
+</ol>
+<h2>14. Open 问题</h2>
+<p>以下问题暂不在 v1.3 中强行定案，后续需要进一步确认：</p>
+<ol>
+<li>高敏感数据只本地保存时，换电脑、电脑损坏、重装系统导致的数据丢失风险如何解决？</li>
+<li>是否允许服务端保存高敏感数据的脱敏索引、不可逆摘要或加密备份？</li>
+<li>高敏感互动记录是否绝对禁止上传服务端，还是允许用户显式选择加密备份？</li>
+<li>Windows 高敏感本地库由 Tauri 承担，还是由浏览器 + localhost helper 承担？</li>
+<li>微信通讯录导入的技术可行性和合规边界。</li>
+<li>多端使用场景下，是否需要多人账号、家庭/团队空间或权限分组？</li>
+</ol>
+<h2>15. 风险与应对</h2>
+<table>
+<thead><tr><th>风险</th><th>说明</th><th>应对</th></tr></thead>
+<tbody>
+<tr><td>分级存储复杂度</td><td>同一应用同时访问本地和远程数据，查询和展示会更复杂</td><td>明确数据边界，先支持简单合并展示</td></tr>
+<tr><td>高敏感数据丢失</td><td>本地不上传会带来换机和损坏风险</td><td>标记 Open，后续设计加密备份和恢复机制</td></tr>
+<tr><td>LLM 解析不稳定</td><td>自然语言录入、更新和查询可能误判</td><td>草稿确认、字段白名单、低置信度人工选择</td></tr>
+<tr><td>表单依赖过重</td><td>如果第一版只靠表单，维护成本高，用户容易放弃</td><td>统一自然语言入口作为主流程，表单只兜底</td></tr>
+<tr><td>ASR/OCR 资源消耗</td><td>语音和图片识别需要 CPU/GPU 资源</td><td>异步任务队列，限制文件大小，支持轻量模型</td></tr>
+<tr><td>媒体文件泄露</td><td>音频和名片图片包含敏感信息</td><td>默认处理后删除；如留档，必须加密保存并审计访问</td></tr>
+<tr><td>导入字段不匹配</td><td>Excel/CSV 表头不统一，容易导入失败</td><td>字段映射、预览、校验和模板复用</td></tr>
+<tr><td>图谱推断误导</td><td>AI 推断关系可能不准确</td><td>推断关系默认待确认，用户可否认</td></tr>
+<tr><td>部署复杂度</td><td>Linux 服务端涉及 Docker、HTTPS、模型服务</td><td>MVP 先支持单机 Docker Compose，AI 能力允许可选启用</td></tr>
+</tbody>
+</table>
+<h2>16. 后续演进方向</h2>
+<ol>
+<li>完善 Web/PWA 手机端体验。</li>
+<li>增加服务端异步任务队列，用于 ASR、OCR、LLM 抽取和批量导入。</li>
+<li>增加更完整的 NLQ 查询类型和解释能力。</li>
+<li>补齐高敏感数据备份、迁移和恢复方案。</li>
+<li>增强路径生成、机会匹配和关系激活建议。</li>
+<li>增加加密备份、恢复演练和迁移工具。</li>
+<li>视需要封装 Windows Tauri 增强客户端或原生手机 App。</li>
+<li>评估部分字段的客户端加密或更强隐私模式。</li>
+</ol>
 </body>
 </html>
