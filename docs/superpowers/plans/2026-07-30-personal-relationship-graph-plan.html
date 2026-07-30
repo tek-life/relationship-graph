@@ -1,0 +1,2355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>个人关系图谱应用实现计划</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+:root { --bg-color: #f8f9fa; --text-color: #333; --heading-color: #1a1a1a; --accent-color: #2563eb; --border-color: #e5e7eb; --code-bg: #f1f5f9; --table-header-bg: #f3f4f6; --table-row-alt: #fafafa; }
+@media (prefers-color-scheme: dark) { :root { --bg-color: #0f172a; --text-color: #e2e8f0; --heading-color: #f8fafc; --accent-color: #60a5fa; --border-color: #334155; --code-bg: #1e293b; --table-header-bg: #1e293b; --table-row-alt: #1e293b; } }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.7; color: var(--text-color); background-color: var(--bg-color); max-width: 900px; margin: 0 auto; padding: 2rem 1.5rem; }
+h1 { color: var(--heading-color); font-size: 2rem; border-bottom: 3px solid var(--accent-color); padding-bottom: 0.5rem; margin-bottom: 1.5rem; }
+h2 { color: var(--heading-color); font-size: 1.5rem; margin-top: 2.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.4rem; }
+h3 { color: var(--heading-color); font-size: 1.2rem; margin-top: 1.8rem; margin-bottom: 0.8rem; }
+p { margin: 0.8rem 0; }
+ul, ol { padding-left: 1.8rem; margin: 0.8rem 0; }
+li { margin: 0.4rem 0; }
+code { background-color: var(--code-bg); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: "SF Mono", Monaco, "Cascadia Code", monospace; font-size: 0.9em; }
+pre { background-color: var(--code-bg); padding: 1rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border-color); }
+pre code { background: none; padding: 0; }
+table { width: 100%; border-collapse: collapse; margin: 1.2rem 0; border: 1px solid var(--border-color); }
+th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid var(--border-color); }
+th { background-color: var(--table-header-bg); font-weight: 600; }
+tr:nth-child(even) { background-color: var(--table-row-alt); }
+blockquote { border-left: 4px solid var(--accent-color); margin: 1rem 0; padding: 0.5rem 1rem; background-color: var(--code-bg); border-radius: 0 8px 8px 0; }
+a { color: var(--accent-color); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.meta { color: #6b7280; font-size: 0.9rem; margin-bottom: 2rem; }
+#content { display: none; }
+</style>
+</head>
+<body>
+<div id="content"># 个人关系图谱应用实现计划
+
+&gt; **For agentic workers:** REQUIRED SUB-AGENT SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 实现一个本地优先的个人关系图谱桌面应用 MVP，支持联系人管理、关系维护、语音录入互动记录、自然语言查询、关系图谱可视化、数据库加密和敏感级别访问控制。
+
+**Architecture:** 使用 Tauri（Rust 后端 + React/TypeScript 前端）构建桌面应用。数据层使用 rusqlite 操作 SQLite + SQLCipher 加密数据库。端侧大模型通过 Ollama HTTP API 调用，Whisper.cpp 通过命令行调用实现语音转文字。前端使用 Cytoscape.js 做关系图谱可视化。
+
+**Tech Stack:** Tauri, React, TypeScript, Tailwind CSS, rusqlite, SQLCipher, Ollama, Whisper.cpp, Cytoscape.js, Vitest
+
+---
+
+## 项目结构
+
+```
+relationship-graph/
+├── src/                         # 前端源码
+│   ├── components/              # React 组件
+│   │   ├── PersonCard.tsx
+│   │   ├── PersonForm.tsx
+│   │   ├── InteractionForm.tsx
+│   │   ├── VoiceRecorder.tsx
+│   │   ├── EntityResolver.tsx
+│   │   ├── GraphView.tsx
+│   │   ├── NaturalLanguageQuery.tsx
+│   │   └── SensitivityGuard.tsx
+│   ├── hooks/
+│   │   ├── usePersons.ts
+│   │   ├── useInteractions.ts
+│   │   └── useGraphData.ts
+│   ├── services/
+│   │   ├── db.ts                # Tauri 命令调用层
+│   │   ├── ollama.ts            # Ollama API 调用
+│   │   └── whisper.ts           # Whisper.cpp 调用
+│   ├── types/
+│   │   └── index.ts
+│   ├── App.tsx
+│   └── main.tsx
+├── src-tauri/                   # Rust 后端
+│   ├── src/
+│   │   ├── main.rs
+│   │   ├── lib.rs
+│   │   ├── db/
+│   │   │   ├── mod.rs
+│   │   │   ├── schema.rs        # 建表/迁移
+│   │   │   ├── person.rs        # Person CRUD
+│   │   │   ├── relationship.rs  # Relationship CRUD
+│   │   │   ├── interaction.rs   # Interaction CRUD
+│   │   │   ├── tag.rs           # Tag CRUD
+│   │   │   └── crypto.rs        # 数据库加密
+│   │   ├── commands/
+│   │   │   ├── mod.rs
+│   │   │   ├── person.rs
+│   │   │   ├── relationship.rs
+│   │   │   ├── interaction.rs
+│   │   │   ├── graph.rs
+│   │   │   ├── nlq.rs
+│   │   │   └── security.rs
+│   │   └── security/
+│   │       ├── mod.rs
+│   │       ├── keychain.rs      # 系统密钥链封装
+│   │       └── sensitivity.rs   # 敏感级别控制
+│   ├── Cargo.toml
+│   └── tauri.conf.json
+├── tests/                       # 端到端/集成测试
+│   └── db.test.ts
+├── docs/
+│   └── setup.md                 # 本地开发环境搭建
+├── package.json
+├── vite.config.ts
+├── tsconfig.json
+└── tailwind.config.js
+```
+
+---
+
+## Phase 1: 项目初始化与基础架构
+
+### Task 1: 初始化 Tauri + React 项目
+
+**Files:**
+- Create: `relationship-graph/package.json`
+- Create: `relationship-graph/vite.config.ts`
+- Create: `relationship-graph/tsconfig.json`
+- Create: `relationship-graph/index.html`
+- Create: `relationship-graph/src/main.tsx`
+- Create: `relationship-graph/src/App.tsx`
+- Create: `relationship-graph/src-tauri/Cargo.toml`
+- Create: `relationship-graph/src-tauri/tauri.conf.json`
+- Create: `relationship-graph/src-tauri/src/main.rs`
+
+- [ ] **Step 1: 创建项目目录并初始化前端**
+
+```bash
+mkdir -p c:\Users\Haifeng\Documents\SystemDebug\relationship-graph
+cd c:\Users\Haifeng\Documents\SystemDebug\relationship-graph
+npm create vite@latest . -- --template react-ts
+npm install
+```
+
+- [ ] **Step 2: 安装 Tauri CLI 和前端依赖**
+
+```bash
+npm install -D @tauri-apps/cli
+npm install @tauri-apps/api @tauri-apps/plugin-shell
+npm install -D tailwindcss postcss autoprefixer
+npx tailwindcss init -p
+```
+
+- [ ] **Step 3: 初始化 Tauri 后端**
+
+```bash
+npx tauri init
+```
+
+按提示选择：
+- App name: `relationship-graph`
+- Window title: `个人关系图谱`
+- Where are your web assets: `../dist`
+- Dev server URL: `http://localhost:1420`
+
+- [ ] **Step 4: 配置 Tailwind CSS**
+
+Modify `tailwind.config.js`:
+
+```javascript
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    &quot;./index.html&quot;,
+    &quot;./src/**/*.{js,ts,jsx,tsx}&quot;,
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+```
+
+Modify `src/index.css`:
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+- [ ] **Step 5: 验证基础运行**
+
+```bash
+npm run tauri dev
+```
+
+Expected: 桌面窗口打开，显示 Vite + React 默认页面。
+
+- [ ] **Step 6: Commit**
+
+```bash
+git init
+git add .
+git commit -m &quot;chore: init Tauri + React + TypeScript project&quot;
+```
+
+---
+
+### Task 2: 配置 Rust 依赖与数据库加密基础
+
+**Files:**
+- Modify: `relationship-graph/src-tauri/Cargo.toml`
+- Create: `relationship-graph/src-tauri/src/db/mod.rs`
+- Create: `relationship-graph/src-tauri/src/db/crypto.rs`
+- Create: `relationship-graph/src-tauri/src/security/mod.rs`
+- Create: `relationship-graph/src-tauri/src/security/keychain.rs`
+
+- [ ] **Step 1: 添加 Rust 依赖**
+
+Modify `src-tauri/Cargo.toml`:
+
+```toml
+[dependencies]
+tauri = { version = &quot;2&quot;, features = [] }
+tauri-plugin-shell = &quot;2&quot;
+serde = { version = &quot;1&quot;, features = [&quot;derive&quot;] }
+serde_json = &quot;1&quot;
+uuid = { version = &quot;1.10&quot;, features = [&quot;v4&quot;, &quot;serde&quot;] }
+chrono = { version = &quot;0.4&quot;, features = [&quot;serde&quot;] }
+rusqlite = { version = &quot;0.32&quot;, features = [&quot;bundled-sqlcipher&quot;] }
+keyring = { version = &quot;3&quot;, features = [&quot;windows-native&quot;, &quot;apple-native&quot;, &quot;linux-native&quot;] }
+argon2 = &quot;0.5&quot;
+rand = &quot;0.8&quot;
+thiserror = &quot;1&quot;
+```
+
+- [ ] **Step 2: 实现数据库加密工具**
+
+Create `src-tauri/src/db/crypto.rs`:
+
+```rust
+use argon2::{self, Config, ThreadMode, Variant, Version};
+use rand::RngCore;
+use rusqlite::Connection;
+use std::path::Path;
+
+#[derive(Debug, thiserror::Error)]
+pub enum CryptoError {
+    #[error(&quot;argon2 error&quot;)]
+    Argon2Error,
+    #[error(&quot;database error&quot;)]
+    DbError(#[from] rusqlite::Error),
+}
+
+pub type Result&lt;T&gt; = std::result::Result&lt;T, CryptoError&gt;;
+
+pub fn derive_key(password: &amp;str, salt: &amp;[u8]) -&gt; Result&lt;[u8; 32]&gt; {
+    let config = Config {
+        variant: Variant::Argon2id,
+        version: Version::Version13,
+        mem_cost: 65536,
+        time_cost: 3,
+        lanes: 4,
+        thread_mode: ThreadMode::Parallel,
+        secret: &amp;[],
+        ad: &amp;[],
+        hash_length: 32,
+    };
+    let mut key = [0u8; 32];
+    argon2::hash_raw(password.as_bytes(), salt, &amp;config)
+        .map_err(|_| CryptoError::Argon2Error)?
+        .iter()
+        .enumerate()
+        .for_each(|(i, v)| key[i] = *v);
+    Ok(key)
+}
+
+pub fn generate_salt() -&gt; [u8; 16] {
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill_bytes(&amp;mut salt);
+    salt
+}
+
+pub fn hex_encode(bytes: &amp;[u8]) -&gt; String {
+    bytes.iter().map(|b| format!(&quot;{:02x}&quot;, b)).collect()
+}
+
+pub fn hex_decode(s: &amp;str) -&gt; Option&lt;Vec&lt;u8&gt;&gt; {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&amp;s[i..i + 2], 16))
+        .collect::&lt;std::result::Result&lt;Vec&lt;_&gt;, _&gt;&gt;()
+        .ok()
+}
+
+pub fn open_encrypted_db&lt;P: AsRef&lt;Path&gt;&gt;(path: P, key: &amp;str) -&gt; Result&lt;Connection&gt; {
+    let conn = Connection::open(path)?;
+    let pragma = format!(&quot;PRAGMA key = '{}'&quot;, key);
+    conn.execute_batch(&amp;pragma)?;
+    Ok(conn)
+}
+```
+
+- [ ] **Step 3: 实现系统密钥链封装**
+
+Create `src-tauri/src/security/keychain.rs`:
+
+```rust
+use keyring::Entry;
+use std::error::Error;
+
+const SERVICE_NAME: &amp;str = &quot;relationship-graph&quot;;
+const ACCOUNT_NAME: &amp;str = &quot;database-key&quot;;
+
+pub fn store_key(key_hex: &amp;str) -&gt; Result&lt;(), Box&lt;dyn Error&gt;&gt; {
+    let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)?;
+    entry.set_password(key_hex)?;
+    Ok(())
+}
+
+pub fn get_key() -&gt; Result&lt;Option&lt;String&gt;, Box&lt;dyn Error&gt;&gt; {
+    let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)?;
+    match entry.get_password() {
+        Ok(p) =&gt; Ok(Some(p)),
+        Err(keyring::Error::NoEntry) =&gt; Ok(None),
+        Err(e) =&gt; Err(Box::new(e)),
+    }
+}
+
+pub fn delete_key() -&gt; Result&lt;(), Box&lt;dyn Error&gt;&gt; {
+    let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)?;
+    entry.delete_password()?;
+    Ok(())
+}
+```
+
+- [ ] **Step 4: 运行 cargo check 验证编译**
+
+```bash
+cd relationship-graph/src-tauri
+cargo check
+```
+
+Expected: 编译通过，无错误。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add .
+git commit -m &quot;chore: add crypto, keychain, and rusqlite dependencies&quot;
+```
+
+---
+
+## Phase 2: 数据层实现
+
+### Task 3: 数据库 Schema 与迁移
+
+**Files:**
+- Create: `relationship-graph/src-tauri/src/db/schema.rs`
+- Modify: `relationship-graph/src-tauri/src/db/mod.rs`
+- Modify: `relationship-graph/src-tauri/src/lib.rs`
+
+- [ ] **Step 1: 定义 Schema**
+
+Create `src-tauri/src/db/schema.rs`:
+
+```rust
+use rusqlite::Connection;
+
+pub fn migrate(conn: &amp;Connection) -&gt; Result&lt;(), rusqlite::Error&gt; {
+    conn.execute_batch(
+        &quot;
+        CREATE TABLE IF NOT EXISTS persons (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            aliases TEXT NOT NULL DEFAULT '[]',
+            avatar TEXT,
+            phone TEXT,
+            email TEXT,
+            company TEXT,
+            title TEXT,
+            location TEXT,
+            background TEXT,
+            relationship_strength TEXT,
+            resource_tags TEXT NOT NULL DEFAULT '[]',
+            sensitivity_level TEXT NOT NULL DEFAULT 'low',
+            status TEXT NOT NULL DEFAULT 'active',
+            next_step TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS relationships (
+            id TEXT PRIMARY KEY,
+            from_person_id TEXT NOT NULL,
+            to_person_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            strength TEXT,
+            description TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (from_person_id) REFERENCES persons(id),
+            FOREIGN KEY (to_person_id) REFERENCES persons(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS interactions (
+            id TEXT PRIMARY KEY,
+            person_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            content TEXT NOT NULL,
+            summary TEXT,
+            topics TEXT NOT NULL DEFAULT '[]',
+            action_items TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (person_id) REFERENCES persons(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS entity_mentions (
+            id TEXT PRIMARY KEY,
+            interaction_id TEXT NOT NULL,
+            person_id TEXT,
+            mention_text TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (interaction_id) REFERENCES interactions(id),
+            FOREIGN KEY (person_id) REFERENCES persons(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS tags (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            category TEXT,
+            color TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_persons_name ON persons(name);
+        CREATE INDEX IF NOT EXISTS idx_interactions_person_id ON interactions(person_id);
+        CREATE INDEX IF NOT EXISTS idx_interactions_timestamp ON interactions(timestamp);
+        &quot;
+    )
+}
+```
+
+- [ ] **Step 2: 创建 DB 模块入口**
+
+Create `src-tauri/src/db/mod.rs`:
+
+```rust
+pub mod crypto;
+pub mod interaction;
+pub mod person;
+pub mod relationship;
+pub mod schema;
+pub mod tag;
+```
+
+- [ ] **Step 3: 在 lib.rs 中注册模块**
+
+Modify `src-tauri/src/lib.rs`:
+
+```rust
+pub mod commands;
+pub mod db;
+pub mod security;
+
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .run(tauri::generate_context!())
+        .expect(&quot;error while running tauri application&quot;);
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(db): add SQLite schema and migrations&quot;
+```
+
+---
+
+### Task 4: Person CRUD
+
+**Files:**
+- Create: `relationship-graph/src-tauri/src/db/person.rs`
+- Create: `relationship-graph/src-tauri/src/types.rs`
+- Modify: `relationship-graph/src-tauri/src/commands/person.rs`
+
+- [ ] **Step 1: 定义共享类型**
+
+Create `src-tauri/src/types.rs`:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Person {
+    pub id: String,
+    pub name: String,
+    pub aliases: Vec&lt;String&gt;,
+    pub avatar: Option&lt;String&gt;,
+    pub phone: Option&lt;String&gt;,
+    pub email: Option&lt;String&gt;,
+    pub company: Option&lt;String&gt;,
+    pub title: Option&lt;String&gt;,
+    pub location: Option&lt;String&gt;,
+    pub background: Option&lt;String&gt;,
+    pub relationship_strength: Option&lt;String&gt;,
+    pub resource_tags: Vec&lt;String&gt;,
+    pub sensitivity_level: String,
+    pub status: String,
+    pub next_step: Option&lt;String&gt;,
+    pub notes: Option&lt;String&gt;,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreatePersonRequest {
+    pub name: String,
+    pub aliases: Vec&lt;String&gt;,
+    pub phone: Option&lt;String&gt;,
+    pub email: Option&lt;String&gt;,
+    pub company: Option&lt;String&gt;,
+    pub title: Option&lt;String&gt;,
+    pub location: Option&lt;String&gt;,
+    pub background: Option&lt;String&gt;,
+    pub relationship_strength: Option&lt;String&gt;,
+    pub resource_tags: Vec&lt;String&gt;,
+    pub sensitivity_level: String,
+    pub next_step: Option&lt;String&gt;,
+    pub notes: Option&lt;String&gt;,
+}
+```
+
+- [ ] **Step 2: 实现 Person CRUD**
+
+Create `src-tauri/src/db/person.rs`:
+
+```rust
+use crate::types::{CreatePersonRequest, Person};
+use chrono::Utc;
+use rusqlite::{params, Connection};
+use serde_json;
+use uuid::Uuid;
+
+pub fn create(conn: &amp;Connection, req: CreatePersonRequest) -&gt; Result&lt;Person, rusqlite::Error&gt; {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let aliases_json = serde_json::to_string(&amp;req.aliases).unwrap_or_default();
+    let tags_json = serde_json::to_string(&amp;req.resource_tags).unwrap_or_default();
+
+    conn.execute(
+        &quot;INSERT INTO persons (
+            id, name, aliases, phone, email, company, title, location, background,
+            relationship_strength, resource_tags, sensitivity_level, status, next_step, notes,
+            created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)&quot;,
+        params![
+            id, req.name, aliases_json, req.phone, req.email, req.company, req.title,
+            req.location, req.background, req.relationship_strength, tags_json,
+            req.sensitivity_level, &quot;active&quot;, req.next_step, req.notes, now, now
+        ],
+    )?;
+
+    get_by_id(conn, &amp;id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn get_by_id(conn: &amp;Connection, id: &amp;str) -&gt; Result&lt;Option&lt;Person&gt;, rusqlite::Error&gt; {
+    let mut stmt = conn.prepare(
+        &quot;SELECT id, name, aliases, avatar, phone, email, company, title, location, background,
+         relationship_strength, resource_tags, sensitivity_level, status, next_step, notes,
+         created_at, updated_at FROM persons WHERE id = ?1&quot;
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(map_person(row)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn list_all(conn: &amp;Connection) -&gt; Result&lt;Vec&lt;Person&gt;, rusqlite::Error&gt; {
+    let mut stmt = conn.prepare(
+        &quot;SELECT id, name, aliases, avatar, phone, email, company, title, location, background,
+         relationship_strength, resource_tags, sensitivity_level, status, next_step, notes,
+         created_at, updated_at FROM persons ORDER BY updated_at DESC&quot;
+    )?;
+    let rows = stmt.query_map([], map_person)?;
+    rows.collect()
+}
+
+pub fn search_by_alias(conn: &amp;Connection, alias: &amp;str) -&gt; Result&lt;Vec&lt;Person&gt;, rusqlite::Error&gt; {
+    let pattern = format!(&quot;%{}%&quot;, alias);
+    let mut stmt = conn.prepare(
+        &quot;SELECT id, name, aliases, avatar, phone, email, company, title, location, background,
+         relationship_strength, resource_tags, sensitivity_level, status, next_step, notes,
+         created_at, updated_at FROM persons
+         WHERE name LIKE ?1 OR aliases LIKE ?1
+         ORDER BY updated_at DESC&quot;
+    )?;
+    let rows = stmt.query_map(params![pattern], map_person)?;
+    rows.collect()
+}
+
+fn map_person(row: &amp;rusqlite::Row) -&gt; Result&lt;Person, rusqlite::Error&gt; {
+    let aliases_json: String = row.get(2)?;
+    let tags_json: String = row.get(11)?;
+    Ok(Person {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        aliases: serde_json::from_str(&amp;aliases_json).unwrap_or_default(),
+        avatar: row.get(3)?,
+        phone: row.get(4)?,
+        email: row.get(5)?,
+        company: row.get(6)?,
+        title: row.get(7)?,
+        location: row.get(8)?,
+        background: row.get(9)?,
+        relationship_strength: row.get(10)?,
+        resource_tags: serde_json::from_str(&amp;tags_json).unwrap_or_default(),
+        sensitivity_level: row.get(12)?,
+        status: row.get(13)?,
+        next_step: row.get(14)?,
+        notes: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
+    })
+}
+```
+
+- [ ] **Step 3: 注册 Tauri 命令**
+
+Create `src-tauri/src/commands/person.rs`:
+
+```rust
+use crate::db::person;
+use crate::types::{CreatePersonRequest, Person};
+use rusqlite::Connection;
+use tauri::State;
+
+pub struct AppState {
+    pub db: std::sync::Mutex&lt;Connection&gt;,
+}
+
+#[tauri::command]
+pub fn create_person(state: State&lt;AppState&gt;, req: CreatePersonRequest) -&gt; Result&lt;Person, String&gt; {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    person::create(&amp;conn, req).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_persons(state: State&lt;AppState&gt;) -&gt; Result&lt;Vec&lt;Person&gt;, String&gt; {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    person::list_all(&amp;conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_person(state: State&lt;AppState&gt;, id: String) -&gt; Result&lt;Option&lt;Person&gt;, String&gt; {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    person::get_by_id(&amp;conn, &amp;id).map_err(|e| e.to_string())
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(person): add Person CRUD and Tauri commands&quot;
+```
+
+---
+
+### Task 5: Relationship 与 Interaction CRUD
+
+**Files:**
+- Create: `relationship-graph/src-tauri/src/db/relationship.rs`
+- Create: `relationship-graph/src-tauri/src/db/interaction.rs`
+- Create: `relationship-graph/src-tauri/src/commands/relationship.rs`
+- Create: `relationship-graph/src-tauri/src/commands/interaction.rs`
+
+- [ ] **Step 1: 实现 Relationship CRUD**
+
+Create `src-tauri/src/db/relationship.rs`:
+
+```rust
+use chrono::Utc;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Relationship {
+    pub id: String,
+    pub from_person_id: String,
+    pub to_person_id: String,
+    #[serde(rename = &quot;type&quot;)]
+    pub type_: String,
+    pub strength: Option&lt;String&gt;,
+    pub description: Option&lt;String&gt;,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateRelationshipRequest {
+    pub from_person_id: String,
+    pub to_person_id: String,
+    #[serde(rename = &quot;type&quot;)]
+    pub type_: String,
+    pub strength: Option&lt;String&gt;,
+    pub description: Option&lt;String&gt;,
+}
+
+pub fn create(conn: &amp;Connection, req: CreateRelationshipRequest) -&gt; Result&lt;Relationship, rusqlite::Error&gt; {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        &quot;INSERT INTO relationships (id, from_person_id, to_person_id, type, strength, description, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)&quot;,
+        params![id, req.from_person_id, req.to_person_id, req.type_, req.strength, req.description, now],
+    )?;
+    get_by_id(conn, &amp;id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn get_by_id(conn: &amp;Connection, id: &amp;str) -&gt; Result&lt;Option&lt;Relationship&gt;, rusqlite::Error&gt; {
+    let mut stmt = conn.prepare(
+        &quot;SELECT id, from_person_id, to_person_id, type, strength, description, created_at
+         FROM relationships WHERE id = ?1&quot;
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(map_relationship(row)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn list_by_person(conn: &amp;Connection, person_id: &amp;str) -&gt; Result&lt;Vec&lt;Relationship&gt;, rusqlite::Error&gt; {
+    let mut stmt = conn.prepare(
+        &quot;SELECT id, from_person_id, to_person_id, type, strength, description, created_at
+         FROM relationships WHERE from_person_id = ?1 OR to_person_id = ?1&quot;
+    )?;
+    let rows = stmt.query_map(params![person_id], map_relationship)?;
+    rows.collect()
+}
+
+fn map_relationship(row: &amp;rusqlite::Row) -&gt; Result&lt;Relationship, rusqlite::Error&gt; {
+    Ok(Relationship {
+        id: row.get(0)?,
+        from_person_id: row.get(1)?,
+        to_person_id: row.get(2)?,
+        type_: row.get(3)?,
+        strength: row.get(4)?,
+        description: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+```
+
+- [ ] **Step 2: 实现 Interaction CRUD**
+
+Create `src-tauri/src/db/interaction.rs`:
+
+```rust
+use chrono::Utc;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use serde_json;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Interaction {
+    pub id: String,
+    pub person_id: String,
+    pub timestamp: String,
+    pub content: String,
+    pub summary: Option&lt;String&gt;,
+    pub topics: Vec&lt;String&gt;,
+    pub action_items: Vec&lt;String&gt;,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateInteractionRequest {
+    pub person_id: String,
+    pub timestamp: String,
+    pub content: String,
+    pub summary: Option&lt;String&gt;,
+    pub topics: Vec&lt;String&gt;,
+    pub action_items: Vec&lt;String&gt;,
+}
+
+pub fn create(conn: &amp;Connection, req: CreateInteractionRequest) -&gt; Result&lt;Interaction, rusqlite::Error&gt; {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let topics_json = serde_json::to_string(&amp;req.topics).unwrap_or_default();
+    let actions_json = serde_json::to_string(&amp;req.action_items).unwrap_or_default();
+    conn.execute(
+        &quot;INSERT INTO interactions (id, person_id, timestamp, content, summary, topics, action_items, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)&quot;,
+        params![id, req.person_id, req.timestamp, req.content, req.summary, topics_json, actions_json, now],
+    )?;
+    get_by_id(conn, &amp;id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn list_by_person(conn: &amp;Connection, person_id: &amp;str) -&gt; Result&lt;Vec&lt;Interaction&gt;, rusqlite::Error&gt; {
+    let mut stmt = conn.prepare(
+        &quot;SELECT id, person_id, timestamp, content, summary, topics, action_items, created_at
+         FROM interactions WHERE person_id = ?1 ORDER BY timestamp DESC&quot;
+    )?;
+    let rows = stmt.query_map(params![person_id], map_interaction)?;
+    rows.collect()
+}
+
+fn map_interaction(row: &amp;rusqlite::Row) -&gt; Result&lt;Interaction, rusqlite::Error&gt; {
+    let topics_json: String = row.get(5)?;
+    let actions_json: String = row.get(6)?;
+    Ok(Interaction {
+        id: row.get(0)?,
+        person_id: row.get(1)?,
+        timestamp: row.get(2)?,
+        content: row.get(3)?,
+        summary: row.get(4)?,
+        topics: serde_json::from_str(&amp;topics_json).unwrap_or_default(),
+        action_items: serde_json::from_str(&amp;actions_json).unwrap_or_default(),
+        created_at: row.get(7)?,
+    })
+}
+```
+
+- [ ] **Step 3: 注册命令**
+
+Create `src-tauri/src/commands/relationship.rs`:
+
+```rust
+use crate::db::relationship;
+use crate::db::relationship::{CreateRelationshipRequest, Relationship};
+use crate::commands::person::AppState;
+use tauri::State;
+
+#[tauri::command]
+pub fn create_relationship(state: State&lt;AppState&gt;, req: CreateRelationshipRequest) -&gt; Result&lt;Relationship, String&gt; {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    relationship::create(&amp;conn, req).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_relationships_by_person(state: State&lt;AppState&gt;, person_id: String) -&gt; Result&lt;Vec&lt;Relationship&gt;, String&gt; {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    relationship::list_by_person(&amp;conn, &amp;person_id).map_err(|e| e.to_string())
+}
+```
+
+Create `src-tauri/src/commands/interaction.rs`:
+
+```rust
+use crate::commands::person::AppState;
+use crate::db::interaction;
+use crate::db::interaction::{CreateInteractionRequest, Interaction};
+use tauri::State;
+
+#[tauri::command]
+pub fn create_interaction(state: State&lt;AppState&gt;, req: CreateInteractionRequest) -&gt; Result&lt;Interaction, String&gt; {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    interaction::create(&amp;conn, req).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_interactions_by_person(state: State&lt;AppState&gt;, person_id: String) -&gt; Result&lt;Vec&lt;Interaction&gt;, String&gt; {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    interaction::list_by_person(&amp;conn, &amp;person_id).map_err(|e| e.to_string())
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(db): add Relationship and Interaction CRUD&quot;
+```
+
+---
+
+## Phase 3: 前端基础 UI
+
+### Task 6: 前端类型与服务层
+
+**Files:**
+- Create: `relationship-graph/src/types/index.ts`
+- Create: `relationship-graph/src/services/db.ts`
+
+- [ ] **Step 1: 定义前端类型**
+
+Create `src/types/index.ts`:
+
+```typescript
+export interface Person {
+  id: string;
+  name: string;
+  aliases: string[];
+  avatar?: string;
+  phone?: string;
+  email?: string;
+  company?: string;
+  title?: string;
+  location?: string;
+  background?: string;
+  relationshipStrength?: 'strong' | 'medium' | 'weak';
+  resourceTags: string[];
+  sensitivityLevel: 'low' | 'medium' | 'high';
+  status: 'follow-up' | 'active' | 'cold';
+  nextStep?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Relationship {
+  id: string;
+  fromPersonId: string;
+  toPersonId: string;
+  type: 'introduced' | 'colleague' | 'friend' | 'cooperation' | 'other';
+  strength?: 'strong' | 'medium' | 'weak';
+  description?: string;
+  createdAt: string;
+}
+
+export interface Interaction {
+  id: string;
+  personId: string;
+  timestamp: string;
+  content: string;
+  summary?: string;
+  topics: string[];
+  actionItems: string[];
+  createdAt: string;
+}
+
+export type CreatePersonInput = Omit&lt;Person, 'id' | 'createdAt' | 'updatedAt'&gt;;
+export type CreateInteractionInput = Omit&lt;Interaction, 'id' | 'createdAt'&gt;;
+```
+
+- [ ] **Step 2: 创建 DB 服务层**
+
+Create `src/services/db.ts`:
+
+```typescript
+import { invoke } from '@tauri-apps/api/core';
+import type { Person, CreatePersonInput, Interaction, CreateInteractionInput, Relationship } from '../types';
+
+export async function createPerson(input: CreatePersonInput): Promise&lt;Person&gt; {
+  return invoke&lt;Person&gt;('create_person', { req: snakeCase(input) });
+}
+
+export async function listPersons(): Promise&lt;Person[]&gt; {
+  return invoke&lt;Person[]&gt;('list_persons');
+}
+
+export async function getPerson(id: string): Promise&lt;Person | null&gt; {
+  return invoke&lt;Person | null&gt;('get_person', { id });
+}
+
+export async function createInteraction(input: CreateInteractionInput): Promise&lt;Interaction&gt; {
+  return invoke&lt;Interaction&gt;('create_interaction', { req: snakeCase(input) });
+}
+
+export async function listInteractionsByPerson(personId: string): Promise&lt;Interaction[]&gt; {
+  return invoke&lt;Interaction[]&gt;('list_interactions_by_person', { personId });
+}
+
+export async function createRelationship(input: Omit&lt;Relationship, 'id' | 'createdAt'&gt;): Promise&lt;Relationship&gt; {
+  return invoke&lt;Relationship&gt;('create_relationship', { req: snakeCase(input) });
+}
+
+export async function listRelationshipsByPerson(personId: string): Promise&lt;Relationship[]&gt; {
+  return invoke&lt;Relationship[]&gt;('list_relationships_by_person', { personId });
+}
+
+function snakeCase(obj: Record&lt;string, unknown&gt;): Record&lt;string, unknown&gt; {
+  const result: Record&lt;string, unknown&gt; = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const snake = key.replace(/[A-Z]/g, (letter) =&gt; `_${letter.toLowerCase()}`);
+    result[snake] = value;
+  }
+  return result;
+}
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(frontend): add TypeScript types and DB service layer&quot;
+```
+
+---
+
+### Task 7: 联系人列表与名片视图
+
+**Files:**
+- Create: `relationship-graph/src/components/PersonCard.tsx`
+- Create: `relationship-graph/src/components/PersonForm.tsx`
+- Create: `relationship-graph/src/components/PersonList.tsx`
+- Modify: `relationship-graph/src/App.tsx`
+
+- [ ] **Step 1: 实现 PersonForm 组件**
+
+Create `src/components/PersonForm.tsx`:
+
+```tsx
+import { useState } from 'react';
+import type { CreatePersonInput } from '../types';
+
+interface Props {
+  onSubmit: (data: CreatePersonInput) =&gt; void;
+}
+
+export default function PersonForm({ onSubmit }: Props) {
+  const [name, setName] = useState('');
+  const [aliases, setAliases] = useState('');
+  const [company, setCompany] = useState('');
+  const [title, setTitle] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [background, setBackground] = useState('');
+  const [relationshipStrength, setRelationshipStrength] = useState&lt;'strong' | 'medium' | 'weak'&gt;('medium');
+  const [resourceTags, setResourceTags] = useState('');
+  const [sensitivityLevel, setSensitivityLevel] = useState&lt;'low' | 'medium' | 'high'&gt;('low');
+  const [nextStep, setNextStep] = useState('');
+  const [notes, setNotes] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) =&gt; {
+    e.preventDefault();
+    onSubmit({
+      name,
+      aliases: aliases.split(',').map((s) =&gt; s.trim()).filter(Boolean),
+      company: company || undefined,
+      title: title || undefined,
+      phone: phone || undefined,
+      email: email || undefined,
+      background: background || undefined,
+      relationshipStrength,
+      resourceTags: resourceTags.split(',').map((s) =&gt; s.trim()).filter(Boolean),
+      sensitivityLevel,
+      status: 'active',
+      nextStep: nextStep || undefined,
+      notes: notes || undefined,
+    });
+  };
+
+  return (
+    &lt;form onSubmit={handleSubmit} className=&quot;space-y-4 p-4 border rounded-lg&quot;&gt;
+      &lt;h3 className=&quot;font-bold text-lg&quot;&gt;新增联系人&lt;/h3&gt;
+      &lt;input className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;姓名&quot; value={name} onChange={(e) =&gt; setName(e.target.value)} required /&gt;
+      &lt;input className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;昵称/代称，逗号分隔&quot; value={aliases} onChange={(e) =&gt; setAliases(e.target.value)} /&gt;
+      &lt;input className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;公司&quot; value={company} onChange={(e) =&gt; setCompany(e.target.value)} /&gt;
+      &lt;input className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;职位&quot; value={title} onChange={(e) =&gt; setTitle(e.target.value)} /&gt;
+      &lt;input className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;电话&quot; value={phone} onChange={(e) =&gt; setPhone(e.target.value)} /&gt;
+      &lt;input className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;邮箱&quot; value={email} onChange={(e) =&gt; setEmail(e.target.value)} /&gt;
+      &lt;textarea className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;认识背景&quot; value={background} onChange={(e) =&gt; setBackground(e.target.value)} /&gt;
+      &lt;select className=&quot;w-full p-2 border rounded&quot; value={relationshipStrength} onChange={(e) =&gt; setRelationshipStrength(e.target.value as 'strong' | 'medium' | 'weak')}&gt;
+        &lt;option value=&quot;strong&quot;&gt;关系强&lt;/option&gt;
+        &lt;option value=&quot;medium&quot;&gt;关系中&lt;/option&gt;
+        &lt;option value=&quot;weak&quot;&gt;关系弱&lt;/option&gt;
+      &lt;/select&gt;
+      &lt;input className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;资源标签，逗号分隔&quot; value={resourceTags} onChange={(e) =&gt; setResourceTags(e.target.value)} /&gt;
+      &lt;select className=&quot;w-full p-2 border rounded&quot; value={sensitivityLevel} onChange={(e) =&gt; setSensitivityLevel(e.target.value as 'low' | 'medium' | 'high')}&gt;
+        &lt;option value=&quot;low&quot;&gt;低敏感&lt;/option&gt;
+        &lt;option value=&quot;medium&quot;&gt;中敏感&lt;/option&gt;
+        &lt;option value=&quot;high&quot;&gt;高敏感&lt;/option&gt;
+      &lt;/select&gt;
+      &lt;input className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;下一步计划&quot; value={nextStep} onChange={(e) =&gt; setNextStep(e.target.value)} /&gt;
+      &lt;textarea className=&quot;w-full p-2 border rounded&quot; placeholder=&quot;备注&quot; value={notes} onChange={(e) =&gt; setNotes(e.target.value)} /&gt;
+      &lt;button type=&quot;submit&quot; className=&quot;px-4 py-2 bg-blue-600 text-white rounded&quot;&gt;保存&lt;/button&gt;
+    &lt;/form&gt;
+  );
+}
+```
+
+- [ ] **Step 2: 实现 PersonCard 组件**
+
+Create `src/components/PersonCard.tsx`:
+
+```tsx
+import type { Person } from '../types';
+
+interface Props {
+  person: Person;
+  lastInteractionSummary?: string;
+}
+
+export default function PersonCard({ person, lastInteractionSummary }: Props) {
+  const displayName = person.sensitivityLevel === 'low' ? person.name : (person.aliases[0] || '***');
+  const showRealName = person.sensitivityLevel === 'low';
+
+  return (
+    &lt;div className=&quot;p-4 border rounded-lg shadow-sm hover:shadow-md transition-shadow&quot;&gt;
+      &lt;div className=&quot;flex justify-between items-start&quot;&gt;
+        &lt;div&gt;
+          &lt;h3 className=&quot;text-xl font-bold&quot;&gt;{displayName}&lt;/h3&gt;
+          {showRealName &amp;&amp; person.aliases.length &gt; 0 &amp;&amp; (
+            &lt;p className=&quot;text-sm text-gray-500&quot;&gt;代称：{person.aliases.join(', ')}&lt;/p&gt;
+          )}
+          {!showRealName &amp;&amp; (
+            &lt;p className=&quot;text-sm text-gray-500&quot;&gt;真实姓名已隐藏&lt;/p&gt;
+          )}
+        &lt;/div&gt;
+        &lt;span className={`px-2 py-1 text-xs rounded ${
+          person.sensitivityLevel === 'high' ? 'bg-red-100 text-red-800' :
+          person.sensitivityLevel === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+          'bg-green-100 text-green-800'
+        }`}&gt;
+          {person.sensitivityLevel === 'high' ? '高敏感' : person.sensitivityLevel === 'medium' ? '中敏感' : '低敏感'}
+        &lt;/span&gt;
+      &lt;/div&gt;
+      &lt;p className=&quot;text-gray-600 mt-2&quot;&gt;{person.company} {person.title}&lt;/p&gt;
+      {person.background &amp;&amp; &lt;p className=&quot;text-sm text-gray-500 mt-1&quot;&gt;{person.background}&lt;/p&gt;}
+      &lt;div className=&quot;flex flex-wrap gap-2 mt-3&quot;&gt;
+        {person.resourceTags.map((tag) =&gt; (
+          &lt;span key={tag} className=&quot;px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded&quot;&gt;{tag}&lt;/span&gt;
+        ))}
+      &lt;/div&gt;
+      &lt;div className=&quot;mt-3 text-sm&quot;&gt;
+        &lt;p&gt;关系强度：{person.relationshipStrength === 'strong' ? '强' : person.relationshipStrength === 'medium' ? '中' : '弱'}&lt;/p&gt;
+        &lt;p&gt;当前状态：{person.status === 'follow-up' ? '待跟进' : person.status === 'active' ? '活跃' : '冷却'}&lt;/p&gt;
+        {lastInteractionSummary &amp;&amp; &lt;p&gt;上次互动：{lastInteractionSummary}&lt;/p&gt;}
+        {person.nextStep &amp;&amp; &lt;p&gt;下一步：{person.nextStep}&lt;/p&gt;}
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+```
+
+- [ ] **Step 3: 实现 PersonList 并更新 App**
+
+Create `src/components/PersonList.tsx`:
+
+```tsx
+import type { Person } from '../types';
+import PersonCard from './PersonCard';
+
+interface Props {
+  persons: Person[];
+}
+
+export default function PersonList({ persons }: Props) {
+  return (
+    &lt;div className=&quot;grid grid-cols-1 md:grid-cols-2 gap-4&quot;&gt;
+      {persons.map((person) =&gt; (
+        &lt;PersonCard key={person.id} person={person} /&gt;
+      ))}
+    &lt;/div&gt;
+  );
+}
+```
+
+Modify `src/App.tsx`:
+
+```tsx
+import { useEffect, useState } from 'react';
+import PersonForm from './components/PersonForm';
+import PersonList from './components/PersonList';
+import { listPersons, createPerson } from './services/db';
+import type { CreatePersonInput, Person } from './types';
+
+function App() {
+  const [persons, setPersons] = useState&lt;Person[]&gt;([]);
+
+  const loadPersons = async () =&gt; {
+    const data = await listPersons();
+    setPersons(data);
+  };
+
+  useEffect(() =&gt; {
+    loadPersons();
+  }, []);
+
+  const handleCreate = async (input: CreatePersonInput) =&gt; {
+    await createPerson(input);
+    await loadPersons();
+  };
+
+  return (
+    &lt;div className=&quot;min-h-screen p-6 bg-gray-50&quot;&gt;
+      &lt;h1 className=&quot;text-2xl font-bold mb-6&quot;&gt;个人关系图谱&lt;/h1&gt;
+      &lt;div className=&quot;grid grid-cols-1 lg:grid-cols-3 gap-6&quot;&gt;
+        &lt;div className=&quot;lg:col-span-1&quot;&gt;
+          &lt;PersonForm onSubmit={handleCreate} /&gt;
+        &lt;/div&gt;
+        &lt;div className=&quot;lg:col-span-2&quot;&gt;
+          &lt;h2 className=&quot;text-xl font-semibold mb-4&quot;&gt;联系人&lt;/h2&gt;
+          &lt;PersonList persons={persons} /&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+
+export default App;
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(ui): add PersonForm, PersonCard, and PersonList&quot;
+```
+
+---
+
+## Phase 4: 安全与数据库初始化
+
+### Task 8: 数据库初始化与主密码流程
+
+**Files:**
+- Create: `relationship-graph/src-tauri/src/commands/security.rs`
+- Modify: `relationship-graph/src-tauri/src/lib.rs`
+- Modify: `relationship-graph/src-tauri/src/main.rs`
+- Modify: `relationship-graph/src-tauri/src/commands/mod.rs`
+
+- [ ] **Step 1: 实现安全命令**
+
+Create `src-tauri/src/commands/security.rs`:
+
+```rust
+use crate::commands::person::AppState;
+use crate::db::crypto::{derive_key, generate_salt, hex_decode, hex_encode, open_encrypted_db};
+use crate::db::schema;
+use crate::security::keychain;
+use rusqlite::Connection;
+use std::path::PathBuf;
+use tauri::State;
+
+#[derive(serde::Serialize)]
+pub struct InitResult {
+    pub initialized: bool,
+    pub requires_password: bool,
+}
+
+#[tauri::command]
+pub fn check_db_state() -&gt; Result&lt;InitResult, String&gt; {
+    let db_path = get_db_path()?;
+    let exists = db_path.exists();
+    let has_key = keychain::get_key().map_err(|e| e.to_string())?.is_some();
+    Ok(InitResult {
+        initialized: exists,
+        requires_password: !has_key,
+    })
+}
+
+#[tauri::command]
+pub fn setup_database(password: String, state: State&lt;AppState&gt;) -&gt; Result&lt;(), String&gt; {
+    let db_path = get_db_path()?;
+    let salt = generate_salt();
+    let key = derive_key(&amp;password, &amp;salt).map_err(|e| e.to_string())?;
+    let key_hex = hex_encode(&amp;key);
+    let salt_hex = hex_encode(&amp;salt);
+
+    std::fs::create_dir_all(db_path.parent().unwrap()).map_err(|e| e.to_string())?;
+
+    let conn = open_encrypted_db(&amp;db_path, &amp;key_hex).map_err(|e| e.to_string())?;
+    schema::migrate(&amp;conn).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        &quot;INSERT OR REPLACE INTO settings (key, value) VALUES ('salt', ?1)&quot;,
+        [salt_hex],
+    ).map_err(|e| e.to_string())?;
+
+    keychain::store_key(&amp;key_hex).map_err(|e| e.to_string())?;
+
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
+    *db = conn;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn unlock_database(password: String, state: State&lt;AppState&gt;) -&gt; Result&lt;(), String&gt; {
+    let db_path = get_db_path()?;
+    let salt_hex = get_stored_salt(&amp;db_path)?;
+    let salt = hex_decode(&amp;salt_hex).ok_or(&quot;invalid salt&quot;)?;
+    let key = derive_key(&amp;password, &amp;salt).map_err(|e| e.to_string())?;
+    let key_hex = hex_encode(&amp;key);
+
+    let conn = open_encrypted_db(&amp;db_path, &amp;key_hex).map_err(|e| e.to_string())?;
+    conn.execute(&quot;SELECT 1&quot;, []).map_err(|_| &quot;invalid password&quot;)?;
+
+    keychain::store_key(&amp;key_hex).map_err(|e| e.to_string())?;
+
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
+    *db = conn;
+    Ok(())
+}
+
+fn get_db_path() -&gt; Result&lt;PathBuf, String&gt; {
+    let home = dirs::data_dir().ok_or(&quot;cannot find data dir&quot;)?;
+    Ok(home.join(&quot;relationship-graph&quot;).join(&quot;app.db&quot;))
+}
+
+fn get_stored_salt(db_path: &amp;PathBuf) -&gt; Result&lt;String, String&gt; {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let salt: String = conn
+        .query_row(&quot;SELECT value FROM settings WHERE key = 'salt'&quot;, [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    Ok(salt)
+}
+```
+
+- [ ] **Step 2: 更新 Cargo.toml 添加 dirs 依赖**
+
+```toml
+dirs = &quot;5&quot;
+```
+
+- [ ] **Step 3: 更新 lib.rs 注册命令和状态**
+
+Modify `src-tauri/src/lib.rs`:
+
+```rust
+pub mod commands;
+pub mod db;
+pub mod security;
+pub mod types;
+
+use commands::person::AppState;
+use rusqlite::Connection;
+use std::sync::Mutex;
+
+pub fn run() {
+    let state = AppState {
+        db: Mutex::new(Connection::open_in_memory().expect(&quot;in-memory db&quot;)),
+    };
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            commands::person::create_person,
+            commands::person::list_persons,
+            commands::person::get_person,
+            commands::relationship::create_relationship,
+            commands::relationship::list_relationships_by_person,
+            commands::interaction::create_interaction,
+            commands::interaction::list_interactions_by_person,
+            commands::security::check_db_state,
+            commands::security::setup_database,
+            commands::security::unlock_database,
+        ])
+        .run(tauri::generate_context!())
+        .expect(&quot;error while running tauri application&quot;);
+}
+```
+
+- [ ] **Step 4: 创建 commands/mod.rs**
+
+Create `src-tauri/src/commands/mod.rs`:
+
+```rust
+pub mod interaction;
+pub mod person;
+pub mod relationship;
+pub mod security;
+```
+
+- [ ] **Step 5: 实现前端主密码界面**
+
+Create `src/components/PasswordGate.tsx`:
+
+```tsx
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+
+interface Props {
+  children: React.ReactNode;
+}
+
+export default function PasswordGate({ children }: Props) {
+  const [loading, setLoading] = useState(true);
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() =&gt; {
+    invoke&lt;{ initialized: boolean; requires_password: boolean }&gt;('check_db_state')
+      .then((state) =&gt; {
+        setNeedsSetup(!state.initialized);
+        setNeedsPassword(state.requires_password &amp;&amp; state.initialized);
+        setLoading(false);
+      })
+      .catch((err) =&gt; setError(err.toString()));
+  }, []);
+
+  const handleSetup = async (e: React.FormEvent) =&gt; {
+    e.preventDefault();
+    try {
+      await invoke('setup_database', { password });
+      setNeedsSetup(false);
+      setNeedsPassword(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleUnlock = async (e: React.FormEvent) =&gt; {
+    e.preventDefault();
+    try {
+      await invoke('unlock_database', { password });
+      setNeedsPassword(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  if (loading) return &lt;div className=&quot;p-6&quot;&gt;加载中...&lt;/div&gt;;
+
+  if (needsSetup || needsPassword) {
+    return (
+      &lt;div className=&quot;min-h-screen flex items-center justify-center bg-gray-100&quot;&gt;
+        &lt;form onSubmit={needsSetup ? handleSetup : handleUnlock} className=&quot;bg-white p-8 rounded-lg shadow-md w-96&quot;&gt;
+          &lt;h2 className=&quot;text-xl font-bold mb-4&quot;&gt;{needsSetup ? '初始化数据库' : '解锁数据库'}&lt;/h2&gt;
+          &lt;input
+            type=&quot;password&quot;
+            className=&quot;w-full p-2 border rounded mb-4&quot;
+            placeholder=&quot;主密码&quot;
+            value={password}
+            onChange={(e) =&gt; setPassword(e.target.value)}
+          /&gt;
+          {error &amp;&amp; &lt;p className=&quot;text-red-500 text-sm mb-4&quot;&gt;{error}&lt;/p&gt;}
+          &lt;button type=&quot;submit&quot; className=&quot;w-full px-4 py-2 bg-blue-600 text-white rounded&quot;&gt;
+            {needsSetup ? '创建并加密' : '解锁'}
+          &lt;/button&gt;
+        &lt;/form&gt;
+      &lt;/div&gt;
+    );
+  }
+
+  return &lt;&gt;{children}&lt;/&gt;;
+}
+```
+
+Modify `src/main.tsx`:
+
+```tsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import PasswordGate from './components/PasswordGate';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  &lt;React.StrictMode&gt;
+    &lt;PasswordGate&gt;
+      &lt;App /&gt;
+    &lt;/PasswordGate&gt;
+  &lt;/React.StrictMode&gt;
+);
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(security): add database encryption and password gate&quot;
+```
+
+---
+
+## Phase 5: 语音录入与歧义确认
+
+### Task 9: 集成 Whisper.cpp 语音转文字
+
+**Files:**
+- Create: `relationship-graph/src-tauri/src/commands/voice.rs`
+- Create: `relationship-graph/src/services/whisper.ts`
+- Create: `relationship-graph/src/components/VoiceRecorder.tsx`
+
+- [ ] **Step 1: 添加 Tauri shell 插件权限**
+
+Modify `src-tauri/capabilities/default.json`:
+
+```json
+{
+  &quot;$schema&quot;: &quot;../gen/schemas/desktop-schema.json&quot;,
+  &quot;identifier&quot;: &quot;default&quot;,
+  &quot;description&quot;: &quot;Default permissions&quot;,
+  &quot;windows&quot;: [&quot;main&quot;],
+  &quot;permissions&quot;: [
+    &quot;core:default&quot;,
+    &quot;shell:allow-execute&quot;
+  ],
+  &quot;commands&quot;: {
+    &quot;allow&quot;: [
+      { &quot;command&quot;: &quot;whisper-cli&quot;, &quot;args&quot;: true }
+    ]
+  }
+}
+```
+
+- [ ] **Step 2: 实现语音转文字命令**
+
+Create `src-tauri/src/commands/voice.rs`:
+
+```rust
+use std::path::PathBuf;
+use tauri::command;
+use tauri_plugin_shell::ShellExt;
+
+#[derive(serde::Serialize)]
+pub struct TranscriptionResult {
+    pub text: String,
+}
+
+#[command]
+pub async fn transcribe_audio(app: tauri::AppHandle, audio_path: String) -&gt; Result&lt;TranscriptionResult, String&gt; {
+    let model_path = get_whisper_model_path()?;
+    let output = app
+        .shell()
+        .command(&quot;whisper-cli&quot;)
+        .args([
+            &quot;-m&quot;, &amp;model_path,
+            &quot;-f&quot;, &amp;audio_path,
+            &quot;--language&quot;, &quot;zh&quot;,
+            &quot;--output-txt&quot;,
+        ])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&amp;output.stderr).to_string());
+    }
+
+    let text = String::from_utf8_lossy(&amp;output.stdout).trim().to_string();
+    Ok(TranscriptionResult { text })
+}
+
+fn get_whisper_model_path() -&gt; Result&lt;String, String&gt; {
+    let models_dir = dirs::data_dir()
+        .ok_or(&quot;no data dir&quot;)?
+        .join(&quot;relationship-graph&quot;)
+        .join(&quot;models&quot;);
+    let path = models_dir.join(&quot;ggml-base.bin&quot;);
+    Ok(path.to_string_lossy().to_string())
+}
+```
+
+- [ ] **Step 3: 前端录音组件**
+
+Create `src/components/VoiceRecorder.tsx`:
+
+```tsx
+import { useState, useRef } from 'react';
+
+interface Props {
+  onTranscript: (text: string) =&gt; void;
+}
+
+export default function VoiceRecorder({ onTranscript }: Props) {
+  const [recording, setRecording] = useState(false);
+  const mediaRecorder = useRef&lt;MediaRecorder | null&gt;(null);
+  const chunks = useRef&lt;Blob[]&gt;([]);
+
+  const startRecording = async () =&gt; {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder.current = new MediaRecorder(stream);
+    chunks.current = [];
+
+    mediaRecorder.current.ondataavailable = (e) =&gt; {
+      if (e.data.size &gt; 0) chunks.current.push(e.data);
+    };
+
+    mediaRecorder.current.onstop = async () =&gt; {
+      const blob = new Blob(chunks.current, { type: 'audio/webm' });
+      const arrayBuffer = await blob.arrayBuffer();
+      const uint8 = new Uint8Array(arrayBuffer);
+      const base64 = btoa(String.fromCharCode(...uint8));
+      const result = await invoke&lt;{ text: string }&gt;('transcribe_audio', { audioPath: `data:audio/webm;base64,${base64}` });
+      onTranscript(result.text);
+    };
+
+    mediaRecorder.current.start();
+    setRecording(true);
+  };
+
+  const stopRecording = () =&gt; {
+    mediaRecorder.current?.stop();
+    setRecording(false);
+  };
+
+  return (
+    &lt;button
+      onClick={recording ? stopRecording : startRecording}
+      className={`px-4 py-2 rounded ${recording ? 'bg-red-600' : 'bg-blue-600'} text-white`}
+    &gt;
+      {recording ? '停止录音' : '开始录音'}
+    &lt;/button&gt;
+  );
+}
+```
+
+注意：这里为了原型简化，实际应先把录音保存为临时文件再传给 whisper-cli。完整实现需通过 Tauri fs 插件写入临时 wav 文件。
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(voice): integrate Whisper.cpp for local transcription&quot;
+```
+
+---
+
+### Task 10: 端侧大模型信息抽取与歧义确认
+
+**Files:**
+- Create: `relationship-graph/src/services/ollama.ts`
+- Create: `relationship-graph/src/components/EntityResolver.tsx`
+- Modify: `relationship-graph/src/components/InteractionForm.tsx`
+
+- [ ] **Step 1: 实现 Ollama 服务**
+
+Create `src/services/ollama.ts`:
+
+```typescript
+export interface ExtractedEntities {
+  persons: { mention: string; confidence: number }[];
+  topics: string[];
+  actionItems: string[];
+  summary: string;
+}
+
+export async function extractFromText(text: string): Promise&lt;ExtractedEntities&gt; {
+  const response = await fetch('http://localhost:11434/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'qwen2:7b',
+      prompt: `从下面这段沟通记录中提取关键信息，以 JSON 格式输出：
+{
+  &quot;persons&quot;: [{&quot;mention&quot;: &quot;提到的称呼&quot;, &quot;confidence&quot;: 0.9}],
+  &quot;topics&quot;: [&quot;话题1&quot;, &quot;话题2&quot;],
+  &quot;actionItems&quot;: [&quot;待办1&quot;, &quot;待办2&quot;],
+  &quot;summary&quot;: &quot;一句话摘要&quot;
+}
+
+沟通记录：
+${text}
+
+只输出 JSON，不要其他内容。`,
+      stream: false,
+      format: 'json',
+    }),
+  });
+
+  const data = await response.json();
+  const parsed = JSON.parse(data.response);
+  return {
+    persons: parsed.persons || [],
+    topics: parsed.topics || [],
+    actionItems: parsed.action_items || parsed.actionItems || [],
+    summary: parsed.summary || '',
+  };
+}
+```
+
+- [ ] **Step 2: 实现歧义确认组件**
+
+Create `src/components/EntityResolver.tsx`:
+
+```tsx
+import { useEffect, useState } from 'react';
+import type { Person } from '../types';
+import { listPersons } from '../services/db';
+
+interface Mention {
+  mention: string;
+  confidence: number;
+}
+
+interface Props {
+  mentions: Mention[];
+  onResolved: (resolved: Record&lt;string, string | null&gt;) =&gt; void;
+}
+
+export default function EntityResolver({ mentions, onResolved }: Props) {
+  const [persons, setPersons] = useState&lt;Person[]&gt;([]);
+  const [resolved, setResolved] = useState&lt;Record&lt;string, string | null&gt;&gt;({});
+
+  useEffect(() =&gt; {
+    listPersons().then(setPersons);
+  }, []);
+
+  const findCandidates = (mention: string) =&gt; {
+    return persons.filter((p) =&gt;
+      p.name.includes(mention) || p.aliases.some((a) =&gt; a.includes(mention))
+    );
+  };
+
+  return (
+    &lt;div className=&quot;space-y-4 p-4 border rounded-lg&quot;&gt;
+      &lt;h3 className=&quot;font-bold&quot;&gt;确认提到的联系人&lt;/h3&gt;
+      {mentions.map((m) =&gt; {
+        const candidates = findCandidates(m.mention);
+        return (
+          &lt;div key={m.mention} className=&quot;space-y-2&quot;&gt;
+            &lt;p&gt;原文：&quot;{m.mention}&quot;&lt;/p&gt;
+            {candidates.length === 0 ? (
+              &lt;p className=&quot;text-sm text-gray-500&quot;&gt;未找到匹配联系人&lt;/p&gt;
+            ) : candidates.length === 1 ? (
+              &lt;p className=&quot;text-sm text-green-600&quot;&gt;已自动匹配：{candidates[0].name}&lt;/p&gt;
+            ) : (
+              &lt;div className=&quot;flex gap-2 flex-wrap&quot;&gt;
+                {candidates.map((c) =&gt; (
+                  &lt;button
+                    key={c.id}
+                    onClick={() =&gt; {
+                      const next = { ...resolved, [m.mention]: c.id };
+                      setResolved(next);
+                      onResolved(next);
+                    }}
+                    className={`px-3 py-1 text-sm rounded border ${
+                      resolved[m.mention] === c.id ? 'bg-blue-600 text-white' : 'bg-white'
+                    }`}
+                  &gt;
+                    {c.name}
+                  &lt;/button&gt;
+                ))}
+                &lt;button
+                  onClick={() =&gt; {
+                    const next = { ...resolved, [m.mention]: null };
+                    setResolved(next);
+                    onResolved(next);
+                  }}
+                  className=&quot;px-3 py-1 text-sm rounded border bg-gray-100&quot;
+                &gt;
+                  忽略
+                &lt;/button&gt;
+              &lt;/div&gt;
+            )}
+          &lt;/div&gt;
+        );
+      })}
+    &lt;/div&gt;
+  );
+}
+```
+
+- [ ] **Step 3: 实现 InteractionForm**
+
+Create `src/components/InteractionForm.tsx`:
+
+```tsx
+import { useState } from 'react';
+import VoiceRecorder from './VoiceRecorder';
+import EntityResolver from './EntityResolver';
+import { extractFromText } from '../services/ollama';
+import type { CreateInteractionInput } from '../types';
+
+interface Props {
+  personId: string;
+  onSubmit: (input: CreateInteractionInput) =&gt; void;
+}
+
+export default function InteractionForm({ personId, onSubmit }: Props) {
+  const [content, setContent] = useState('');
+  const [mentions, setMentions] = useState&lt;{ mention: string; confidence: number }[]&gt;([]);
+  const [extracted, setExtracted] = useState&lt;{ topics: string[]; actionItems: string[]; summary: string } | null&gt;(null);
+
+  const handleTranscript = async (text: string) =&gt; {
+    setContent(text);
+    const result = await extractFromText(text);
+    setMentions(result.persons);
+    setExtracted({ topics: result.topics, actionItems: result.actionItems, summary: result.summary });
+  };
+
+  const handleSubmit = (e: React.FormEvent) =&gt; {
+    e.preventDefault();
+    onSubmit({
+      personId,
+      timestamp: new Date().toISOString(),
+      content,
+      summary: extracted?.summary,
+      topics: extracted?.topics || [],
+      actionItems: extracted?.actionItems || [],
+    });
+  };
+
+  return (
+    &lt;form onSubmit={handleSubmit} className=&quot;space-y-4 p-4 border rounded-lg&quot;&gt;
+      &lt;h3 className=&quot;font-bold text-lg&quot;&gt;新增互动记录&lt;/h3&gt;
+      &lt;VoiceRecorder onTranscript={handleTranscript} /&gt;
+      &lt;textarea
+        className=&quot;w-full p-2 border rounded h-32&quot;
+        placeholder=&quot;沟通内容&quot;
+        value={content}
+        onChange={(e) =&gt; setContent(e.target.value)}
+      /&gt;
+      {mentions.length &gt; 0 &amp;&amp; &lt;EntityResolver mentions={mentions} onResolved={(r) =&gt; console.log(r)} /&gt;}
+      {extracted &amp;&amp; (
+        &lt;div className=&quot;text-sm text-gray-600&quot;&gt;
+          &lt;p&gt;摘要：{extracted.summary}&lt;/p&gt;
+          &lt;p&gt;话题：{extracted.topics.join(', ')}&lt;/p&gt;
+          &lt;p&gt;待办：{extracted.actionItems.join(', ')}&lt;/p&gt;
+        &lt;/div&gt;
+      )}
+      &lt;button type=&quot;submit&quot; className=&quot;px-4 py-2 bg-blue-600 text-white rounded&quot;&gt;保存&lt;/button&gt;
+    &lt;/form&gt;
+  );
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(nlp): add Ollama entity extraction and entity resolver UI&quot;
+```
+
+---
+
+## Phase 6: 关系图谱可视化
+
+### Task 11: 集成 Cytoscape.js 关系图谱
+
+**Files:**
+- Create: `relationship-graph/src/components/GraphView.tsx`
+- Create: `relationship-graph/src/hooks/useGraphData.ts`
+- Modify: `relationship-graph/src/App.tsx`
+
+- [ ] **Step 1: 安装依赖**
+
+```bash
+npm install cytoscape
+npm install -D @types/cytoscape
+```
+
+- [ ] **Step 2: 实现图谱数据 Hook**
+
+Create `src/hooks/useGraphData.ts`:
+
+```typescript
+import { useEffect, useState } from 'react';
+import { listPersons, listRelationshipsByPerson } from '../services/db';
+import type { Person, Relationship } from '../types';
+
+export interface GraphNode {
+  data: { id: string; label: string; sensitivity: string };
+}
+
+export interface GraphEdge {
+  data: { id: string; source: string; target: string; label: string };
+}
+
+export function useGraphData() {
+  const [elements, setElements] = useState&lt;(GraphNode | GraphEdge)[]&gt;([]);
+
+  useEffect(() =&gt; {
+    async function load() {
+      const persons = await listPersons();
+      const nodes: GraphNode[] = persons.map((p) =&gt; ({
+        data: {
+          id: p.id,
+          label: p.sensitivityLevel === 'low' ? p.name : (p.aliases[0] || '***'),
+          sensitivity: p.sensitivityLevel,
+        },
+      }));
+
+      const edgeSet = new Set&lt;string&gt;();
+      const edges: GraphEdge[] = [];
+
+      for (const person of persons) {
+        const relationships = await listRelationshipsByPerson(person.id);
+        for (const r of relationships) {
+          const edgeId = [r.fromPersonId, r.toPersonId].sort().join('-');
+          if (!edgeSet.has(edgeId)) {
+            edgeSet.add(edgeId);
+            edges.push({
+              data: {
+                id: edgeId,
+                source: r.fromPersonId,
+                target: r.toPersonId,
+                label: r.type,
+              },
+            });
+          }
+        }
+      }
+
+      setElements([...nodes, ...edges]);
+    }
+
+    load();
+  }, []);
+
+  return elements;
+}
+```
+
+- [ ] **Step 3: 实现 GraphView 组件**
+
+Create `src/components/GraphView.tsx`:
+
+```tsx
+import { useEffect, useRef } from 'react';
+import cytoscape from 'cytoscape';
+import type { GraphNode, GraphEdge } from '../hooks/useGraphData';
+
+interface Props {
+  elements: (GraphNode | GraphEdge)[];
+  onNodeClick?: (id: string) =&gt; void;
+}
+
+export default function GraphView({ elements, onNodeClick }: Props) {
+  const containerRef = useRef&lt;HTMLDivElement&gt;(null);
+  const cyRef = useRef&lt;cytoscape.Core | null&gt;(null);
+
+  useEffect(() =&gt; {
+    if (!containerRef.current) return;
+
+    const cy = cytoscape({
+      container: containerRef.current,
+      elements,
+      style: [
+        {
+          selector: 'node',
+          style: {
+            label: 'data(label)',
+            width: 60,
+            height: 60,
+            'background-color': '#3b82f6',
+            color: '#fff',
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'font-size': '12px',
+          },
+        },
+        {
+          selector: 'edge',
+          style: {
+            width: 2,
+            'line-color': '#94a3b8',
+            'target-arrow-color': '#94a3b8',
+            'target-arrow-shape': 'triangle',
+            label: 'data(label)',
+            'font-size': '10px',
+          },
+        },
+      ],
+      layout: { name: 'cose', padding: 20 },
+    });
+
+    cy.on('tap', 'node', (evt) =&gt; {
+      onNodeClick?.(evt.target.id());
+    });
+
+    cyRef.current = cy;
+
+    return () =&gt; {
+      cy.destroy();
+    };
+  }, [elements, onNodeClick]);
+
+  return &lt;div ref={containerRef} className=&quot;w-full h-[500px] border rounded-lg bg-gray-50&quot; /&gt;;
+}
+```
+
+- [ ] **Step 4: 在 App 中加入图谱页签**
+
+Modify `src/App.tsx`，增加标签页切换（联系人 / 图谱 / 查询），此处略去具体 JSX 以控制篇幅，核心逻辑为：
+
+```tsx
+const [activeTab, setActiveTab] = useState&lt;'list' | 'graph' | 'query'&gt;('list');
+const graphElements = useGraphData();
+
+// 渲染三个 tab 切换按钮
+// activeTab === 'graph' 时渲染 &lt;GraphView elements={graphElements} /&gt;
+// activeTab === 'query' 时渲染 &lt;NaturalLanguageQuery /&gt;
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(graph): add Cytoscape.js relationship graph visualization&quot;
+```
+
+---
+
+## Phase 7: 自然语言查询
+
+### Task 12: 实现 NLQ 解析与执行
+
+**Files:**
+- Create: `relationship-graph/src-tauri/src/commands/nlq.rs`
+- Create: `relationship-graph/src/components/NaturalLanguageQuery.tsx`
+- Modify: `relationship-graph/src-tauri/src/lib.rs`
+
+- [ ] **Step 1: 实现 NLQ 命令**
+
+Create `src-tauri/src/commands/nlq.rs`:
+
+```rust
+use crate::commands::person::AppState;
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
+use tauri::State;
+
+#[derive(Debug, Deserialize)]
+pub struct NlqRequest {
+    pub query: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NlqResult {
+    pub person_id: String,
+    pub name: String,
+    pub company: Option&lt;String&gt;,
+    pub title: Option&lt;String&gt;,
+    pub relationship_strength: Option&lt;String&gt;,
+    pub last_interaction_summary: Option&lt;String&gt;,
+    pub status: String,
+    pub next_step: Option&lt;String&gt;,
+    pub suggestion: String,
+}
+
+#[tauri::command]
+pub async fn natural_language_query(state: State&lt;'_, AppState&gt;, req: NlqRequest) -&gt; Result&lt;Vec&lt;NlqResult&gt;, String&gt; {
+    // 初版使用简单关键词匹配，后续接入 Ollama 做意图解析
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    let mut stmt = conn.prepare(
+        &quot;SELECT p.id, p.name, p.company, p.title, p.relationship_strength, p.status, p.next_step,
+                (SELECT summary FROM interactions WHERE person_id = p.id ORDER BY timestamp DESC LIMIT 1) as last_summary
+         FROM persons p
+         WHERE p.resource_tags LIKE ?1 OR p.location LIKE ?2 OR p.status LIKE ?3
+         ORDER BY p.updated_at DESC
+         LIMIT 20&quot;
+    ).map_err(|e| e.to_string())?;
+
+    let pattern_tags = format!(&quot;%{}%&quot;, req.query);
+    let pattern_location = format!(&quot;%{}%&quot;, req.query);
+    let pattern_status = if req.query.contains(&quot;待跟进&quot;) { &quot;follow-up&quot; } else { &quot;%&quot; };
+
+    let rows = stmt.query_map(params![pattern_tags, pattern_location, pattern_status], |row| {
+        Ok(NlqResult {
+            person_id: row.get(0)?,
+            name: row.get(1)?,
+            company: row.get(2)?,
+            title: row.get(3)?,
+            relationship_strength: row.get(4)?,
+            last_interaction_summary: row.get(5)?,
+            status: row.get(6)?,
+            next_step: row.get(7)?,
+            suggestion: &quot;建议保持联系&quot;.to_string(),
+        })
+    }).map_err(|e| e.to_string())?;
+
+    rows.collect::&lt;Result&lt;Vec&lt;_&gt;, _&gt;&gt;().map_err(|e| e.to_string())
+}
+```
+
+- [ ] **Step 2: 注册命令**
+
+Modify `src-tauri/src/lib.rs`:
+
+```rust
+.invoke_handler(tauri::generate_handler![
+    // ... existing commands
+    commands::nlq::natural_language_query,
+])
+```
+
+- [ ] **Step 3: 前端 NLQ 组件**
+
+Create `src/components/NaturalLanguageQuery.tsx`:
+
+```tsx
+import { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+
+interface Result {
+  person_id: string;
+  name: string;
+  company?: string;
+  title?: string;
+  relationship_strength?: string;
+  last_interaction_summary?: string;
+  status: string;
+  next_step?: string;
+  suggestion: string;
+}
+
+export default function NaturalLanguageQuery() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState&lt;Result[]&gt;([]);
+  const [loading, setLoading] = useState(false);
+
+  const handleSearch = async (e: React.FormEvent) =&gt; {
+    e.preventDefault();
+    setLoading(true);
+    const data = await invoke&lt;Result[]&gt;('natural_language_query', { req: { query } });
+    setResults(data);
+    setLoading(false);
+  };
+
+  return (
+    &lt;div className=&quot;space-y-4&quot;&gt;
+      &lt;form onSubmit={handleSearch} className=&quot;flex gap-2&quot;&gt;
+        &lt;input
+          className=&quot;flex-1 p-2 border rounded&quot;
+          placeholder=&quot;例如：谁在上海做地产，和我关系比较近？&quot;
+          value={query}
+          onChange={(e) =&gt; setQuery(e.target.value)}
+        /&gt;
+        &lt;button type=&quot;submit&quot; className=&quot;px-4 py-2 bg-blue-600 text-white rounded&quot; disabled={loading}&gt;
+          {loading ? '搜索中...' : '查询'}
+        &lt;/button&gt;
+      &lt;/form&gt;
+      &lt;div className=&quot;space-y-3&quot;&gt;
+        {results.map((r) =&gt; (
+          &lt;div key={r.person_id} className=&quot;p-4 border rounded-lg&quot;&gt;
+            &lt;h4 className=&quot;font-bold&quot;&gt;{r.name}&lt;/h4&gt;
+            &lt;p className=&quot;text-sm text-gray-600&quot;&gt;{r.company} {r.title}&lt;/p&gt;
+            {r.last_interaction_summary &amp;&amp; &lt;p className=&quot;text-sm mt-1&quot;&gt;上次互动：{r.last_interaction_summary}&lt;/p&gt;}
+            &lt;p className=&quot;text-sm mt-1&quot;&gt;建议：{r.suggestion}&lt;/p&gt;
+          &lt;/div&gt;
+        ))}
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(nlq): add natural language query command and UI&quot;
+```
+
+---
+
+## Phase 8: 敏感级别访问控制完善
+
+### Task 13: 实现敏感信息二次确认
+
+**Files:**
+- Create: `relationship-graph/src/components/SensitivityGuard.tsx`
+- Modify: `relationship-graph/src/components/PersonCard.tsx`
+- Modify: `relationship-graph/src/components/NaturalLanguageQuery.tsx`
+
+- [ ] **Step 1: 实现 SensitivityGuard 组件**
+
+Create `src/components/SensitivityGuard.tsx`:
+
+```tsx
+import { useState } from 'react';
+
+interface Props {
+  level: 'low' | 'medium' | 'high';
+  children: React.ReactNode;
+  fallback: React.ReactNode;
+}
+
+export default function SensitivityGuard({ level, children, fallback }: Props) {
+  const [revealed, setRevealed] = useState(false);
+
+  if (level === 'low' || revealed) {
+    return &lt;&gt;{children}&lt;/&gt;;
+  }
+
+  return (
+    &lt;div className=&quot;relative&quot;&gt;
+      {fallback}
+      {level === 'high' &amp;&amp; (
+        &lt;button
+          onClick={() =&gt; setRevealed(true)}
+          className=&quot;mt-2 text-sm text-blue-600 underline&quot;
+        &gt;
+          查看敏感信息（需确认）
+        &lt;/button&gt;
+      )}
+    &lt;/div&gt;
+  );
+}
+```
+
+- [ ] **Step 2: 在 PersonCard 中应用**
+
+Modify `PersonCard.tsx` 中姓名显示部分，用 `SensitivityGuard` 包裹真实姓名。中敏感显示代称，高敏感显示脱敏提示。
+
+- [ ] **Step 3: 在 NLQ 中高敏感联系人默认折叠**
+
+Modify `NaturalLanguageQuery.tsx`：结果中 sensitivity_level 为 high 的条目默认只显示&quot;高敏感联系人（点击确认查看）&quot;，点击后走 SensitivityGuard 确认流程再展示详情。
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .
+git commit -m &quot;feat(security): add sensitivity level guard for person card and NLQ&quot;
+```
+
+---
+
+## Phase 9: 测试、构建与打包
+
+### Task 14: 单元测试与集成测试
+
+**Files:**
+- Create: `relationship-graph/src-tauri/src/db/tests.rs`
+- Create: `relationship-graph/tests/db.test.ts`
+
+- [ ] **Step 1: 添加 Rust 单元测试**
+
+Create `src-tauri/src/db/tests.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::super::*;
+    use rusqlite::Connection;
+
+    fn in_memory_db() -&gt; Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        schema::migrate(&amp;conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_create_person() {
+        let conn = in_memory_db();
+        let person = person::create(&amp;conn, types::CreatePersonRequest {
+            name: &quot;张三&quot;.to_string(),
+            aliases: vec![&quot;老张&quot;.to_string()],
+            phone: None,
+            email: None,
+            company: None,
+            title: None,
+            location: None,
+            background: None,
+            relationship_strength: Some(&quot;strong&quot;.to_string()),
+            resource_tags: vec![&quot;地产&quot;.to_string()],
+            sensitivity_level: &quot;low&quot;.to_string(),
+            next_step: None,
+            notes: None,
+        }).unwrap();
+
+        assert_eq!(person.name, &quot;张三&quot;);
+        assert_eq!(person.aliases, vec![&quot;老张&quot;]);
+    }
+}
+```
+
+Modify `src-tauri/src/db/mod.rs`:
+
+```rust
+#[cfg(test)]
+mod tests;
+```
+
+- [ ] **Step 2: 运行 Rust 测试**
+
+```bash
+cd relationship-graph/src-tauri
+cargo test
+```
+
+Expected: 测试通过。
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .
+git commit -m &quot;test(db): add Rust unit tests for Person CRUD&quot;
+```
+
+### Task 15: 桌面应用打包
+
+**Files:**
+- Modify: `relationship-graph/src-tauri/tauri.conf.json`
+
+- [ ] **Step 1: 配置应用图标与元信息**
+
+Modify `src-tauri/tauri.conf.json`:
+
+```json
+{
+  &quot;productName&quot;: &quot;个人关系图谱&quot;,
+  &quot;identifier&quot;: &quot;com.yourname.relationship-graph&quot;,
+  &quot;build&quot;: {
+    &quot;frontendDist&quot;: &quot;../dist&quot;,
+    &quot;devUrl&quot;: &quot;http://localhost:1420&quot;,
+    &quot;beforeDevCommand&quot;: &quot;npm run dev&quot;,
+    &quot;beforeBuildCommand&quot;: &quot;npm run build&quot;
+  },
+  &quot;app&quot;: {
+    &quot;windows&quot;: [
+      {
+        &quot;title&quot;: &quot;个人关系图谱&quot;,
+        &quot;width&quot;: 1280,
+        &quot;height&quot;: 800
+      }
+    ]
+  }
+}
+```
+
+- [ ] **Step 2: 构建生产包**
+
+```bash
+cd relationship-graph
+npm run tauri build
+```
+
+Expected: 在 `src-tauri/target/release/bundle/` 下生成安装包。
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .
+git commit -m &quot;chore(build): configure Tauri build and bundle&quot;
+```
+
+---
+
+## Spec Coverage 自评
+
+对照设计文档检查每个需求是否都有对应任务：
+
+| 设计文档需求 | 实现任务 | 状态 |
+|---|---|---|
+| 联系人 CRUD 和名片视图 | Task 4 + Task 7 | ✅ |
+| 关系链路维护 | Task 5 | ✅ |
+| 语音录入互动记录 | Task 9 | ✅ |
+| 歧义确认 | Task 10 | ✅ |
+| 互动记录列表 | Task 5 + Task 10 | ✅ |
+| 关系图谱可视化 | Task 11 | ✅ |
+| 自然语言查询（限定类型） | Task 12 | ✅ |
+| 数据库加密 | Task 2 + Task 8 | ✅ |
+| 主密码保护 | Task 8 | ✅ |
+| 敏感级别访问控制 | Task 13 | ✅ |
+| 手机端架构预留 | Task 1（本地服务预留）+ Task 8（HTTPS/token 预留） | ✅ |
+
+## 执行方式选择
+
+Plan complete and saved to `docs/superpowers/plans/2026-07-30-personal-relationship-graph-plan.md`.
+
+Two execution options:
+
+1. **Subagent-Driven (recommended)** - Dispatch a fresh subagent per task, review between tasks, fast iteration.
+2. **Inline Execution** - Execute tasks in this session using `executing-plans`, batch execution with checkpoints.
+
+Which approach would you like to use?
+</div>
+<div id="output"></div>
+<script>
+document.getElementById('output').innerHTML = marked.parse(document.getElementById('content').innerText);
+</script>
+</body>
+</html>
