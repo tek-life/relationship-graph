@@ -54,7 +54,7 @@ export default function PasswordGate({ children }: Props) {
   };
 
   if (loading) {
-    return <div className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-600">正在加载本地数据库...</div>;
+    return <div className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-600">正在连接服务端...</div>;
   }
 
   if (mode === 'ready') {
@@ -67,8 +67,8 @@ export default function PasswordGate({ children }: Props) {
         <h1 className="text-2xl font-bold text-slate-900">{mode === 'setup' ? '初始化加密数据库' : '解锁数据库'}</h1>
         <p className="mt-2 text-sm text-slate-500">
           {mode === 'setup'
-            ? '请设置主密码。数据库将使用 SQLCipher 加密，密钥会托管到系统密钥链。'
-            : '请输入主密码解锁本地数据库。'}
+            ? '请设置主密码。数据将在服务端使用 SQLCipher 加密存储，密码不会明文保存。'
+            : '请输入主密码解锁数据库。'}
         </p>
         <input
           className="input mt-6"

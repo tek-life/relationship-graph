@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { naturalLanguageQuery } from '../services/db';
 import type { NlqResult } from '../types';
-import SensitivityGuard from './SensitivityGuard';
+import NlqResultCard from './NlqResultCard';
 
-const EXAMPLES = [
+export const NLQ_EXAMPLES = [
   '谁在上海做地产，和我关系比较近？',
   '上次聊过融资的人里，还没跟进的有谁？',
   '这个懂车帝的投标，谁能帮上忙？',
@@ -11,7 +11,7 @@ const EXAMPLES = [
 ];
 
 export default function NaturalLanguageQuery() {
-  const [query, setQuery] = useState(EXAMPLES[0]);
+  const [query, setQuery] = useState(NLQ_EXAMPLES[0]);
   const [results, setResults] = useState<NlqResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -40,7 +40,7 @@ export default function NaturalLanguageQuery() {
         <button className="btn-primary whitespace-nowrap" type="submit" disabled={loading}>{loading ? '查询中...' : '查询'}</button>
       </form>
       <div className="flex flex-wrap gap-2">
-        {EXAMPLES.map((example) => (
+        {NLQ_EXAMPLES.map((example) => (
           <button key={example} type="button" className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-600 hover:bg-slate-200" onClick={() => setQuery(example)}>
             {example}
           </button>
@@ -49,43 +49,9 @@ export default function NaturalLanguageQuery() {
       {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       <div className="space-y-3">
         {results.map((result) => (
-          <ResultCard key={result.personId} result={result} />
+          <NlqResultCard key={result.personId} result={result} />
         ))}
       </div>
     </section>
   );
-}
-
-function ResultCard({ result }: { result: NlqResult }) {
-  const content = (
-    <div className="space-y-1">
-      <h3 className="font-semibold text-slate-900">{result.displayName}</h3>
-      <p className="text-sm text-slate-600">{[result.company, result.title].filter(Boolean).join(' / ') || '未填写公司职位'}</p>
-      <p className="text-sm text-slate-600">关系强度：{strengthText(result.relationshipStrength)}｜状态：{statusText(result.status)}</p>
-      <p className="text-sm text-slate-700">上次互动：{result.lastInteractionSummary || '暂无摘要'}</p>
-      <p className="text-sm text-blue-700">建议下一步：{result.suggestion}</p>
-    </div>
-  );
-
-  return (
-    <div className="rounded-lg border p-4">
-      {result.realNameHidden ? (
-        <SensitivityGuard level={result.sensitivityLevel} fallback={<span>存在高敏感联系人，默认已脱敏。</span>}>
-          {content}
-        </SensitivityGuard>
-      ) : content}
-    </div>
-  );
-}
-
-function strengthText(value?: string | null) {
-  if (value === 'strong') return '强';
-  if (value === 'weak') return '弱';
-  return '中';
-}
-
-function statusText(value: string) {
-  if (value === 'follow-up') return '待跟进';
-  if (value === 'cold') return '冷却';
-  return '活跃';
 }

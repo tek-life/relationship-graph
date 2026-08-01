@@ -15,6 +15,8 @@ export interface Person {
   background?: string | null;
   relationshipStrength?: RelationshipStrength | null;
   resourceTags: string[];
+  school?: string | null;
+  projects: string[];
   sensitivityLevel: SensitivityLevel;
   status: PersonStatus;
   nextStep?: string | null;
@@ -35,6 +37,8 @@ export interface CreatePersonInput {
   background?: string | null;
   relationshipStrength?: RelationshipStrength | null;
   resourceTags: string[];
+  school?: string | null;
+  projects?: string[];
   sensitivityLevel: SensitivityLevel;
   status?: PersonStatus;
   nextStep?: string | null;
@@ -49,6 +53,10 @@ export interface Relationship {
   strength?: RelationshipStrength | null;
   description?: string | null;
   createdAt: string;
+  source: 'manual' | 'inferred' | 'imported';
+  confidence?: number | null;
+  confirmationStatus: 'confirmed' | 'pending' | 'rejected';
+  inferenceReason?: string | null;
 }
 
 export interface CreateRelationshipInput {
@@ -109,6 +117,10 @@ export interface GraphEdge {
   target: string;
   label: string;
   strength?: RelationshipStrength | null;
+  edgeSource: 'manual' | 'inferred' | 'imported';
+  confirmationStatus: 'confirmed' | 'pending' | 'rejected';
+  confidence?: number | null;
+  inferenceReason?: string | null;
 }
 
 export interface GraphData {
@@ -128,4 +140,70 @@ export interface NlqResult {
   status: PersonStatus;
   nextStep?: string | null;
   suggestion: string;
+}
+
+// === NLQ 多意图响应 ===
+
+export type NlqResponse =
+  | { intentType: 'searchPeople'; results: NlqResult[] }
+  | { intentType: 'createPersonDraft'; draft: PersonDraft }
+  | { intentType: 'updatePersonDraft'; draft: UpdateDraft }
+  | { intentType: 'addInteractionDraft'; draft: InteractionDraft }
+  | { intentType: 'findPath'; path: PathData };
+
+export interface PersonDraft {
+  name: string;
+  company?: string;
+  location?: string;
+  title?: string;
+  resourceTags: string[];
+  background?: string;
+  school?: string;
+  confidence: number;
+}
+
+export interface UpdateDraft {
+  targetPerson?: Person;
+  candidates: Person[];
+  changes: FieldChange[];
+  confidence: number;
+  errorHint?: string;
+}
+
+export interface FieldChange {
+  field: string;
+  oldValue?: string;
+  newValue: string;
+}
+
+export interface InteractionDraft {
+  personMention: string;
+  resolvedPerson?: Person;
+  candidates: Person[];
+  topic?: string;
+  summary?: string;
+  actionItems: string[];
+  confidence: number;
+}
+
+export interface PathData {
+  nodes: PathNode[];
+  edges: PathEdge[];
+  hops: number;
+  includesPending: boolean;
+  summary: string;
+}
+
+export interface PathNode {
+  id: string;
+  name: string;
+  company?: string;
+}
+
+export interface PathEdge {
+  fromId: string;
+  toId: string;
+  relationshipType: string;
+  strength?: string;
+  confirmationStatus: string;
 }

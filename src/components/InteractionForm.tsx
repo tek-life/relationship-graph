@@ -38,8 +38,10 @@ export default function InteractionForm({ person, onCreated }: Props) {
   };
 
   const handleTranscript = (text: string) => {
-    setContent(text);
-    handleAnalyze(text);
+    // 语音结果追加到已有内容，不覆盖用户手动输入
+    const combined = content.trim() ? `${content.trim()}\n${text}` : text;
+    setContent(combined);
+    handleAnalyze(combined);
   };
 
   const handleSubmit = async (event: React.FormEvent) => {

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { apiDelete, apiGet, apiPost, apiPut } from './api';
 import type {
   CreateEntityMentionInput,
   CreateInteractionInput,
@@ -7,65 +7,87 @@ import type {
   EntityMention,
   GraphData,
   Interaction,
+  NlqResponse,
   NlqResult,
   Person,
   Relationship,
 } from '../types';
 
 export async function createPerson(req: CreatePersonInput): Promise<Person> {
-  return invoke<Person>('create_person', { req });
+  return apiPost<Person>('/api/persons', req);
 }
 
 export async function updatePerson(id: string, req: CreatePersonInput): Promise<Person> {
-  return invoke<Person>('update_person', { id, req });
+  return apiPut<Person>(`/api/persons/${id}`, req);
 }
 
 export async function listPersons(): Promise<Person[]> {
-  return invoke<Person[]>('list_persons');
+  return apiGet<Person[]>('/api/persons');
 }
 
 export async function getPerson(id: string): Promise<Person | null> {
-  return invoke<Person | null>('get_person', { id });
+  return apiGet<Person | null>(`/api/persons/${id}`);
 }
 
 export async function deletePerson(id: string): Promise<void> {
-  return invoke<void>('delete_person', { id });
+  await apiDelete<{ deleted: boolean }>(`/api/persons/${id}`);
 }
 
 export async function searchPersonCandidates(mention: string): Promise<Person[]> {
-  return invoke<Person[]>('search_person_candidates', { mention });
+  return apiGet<Person[]>(`/api/persons-search?mention=${encodeURIComponent(mention)}`);
 }
 
 export async function createRelationship(req: CreateRelationshipInput): Promise<Relationship> {
-  return invoke<Relationship>('create_relationship', { req });
+  return apiPost<Relationship>('/api/relationships', req);
 }
 
 export async function listRelationships(): Promise<Relationship[]> {
-  return invoke<Relationship[]>('list_relationships');
+  return apiGet<Relationship[]>('/api/relationships');
 }
 
 export async function listRelationshipsByPerson(personId: string): Promise<Relationship[]> {
-  return invoke<Relationship[]>('list_relationships_by_person', { personId });
+  return apiGet<Relationship[]>(`/api/persons/${personId}/relationships`);
+}
+
+export async function inferRelationships(): Promise<{ created: number }> {
+  return apiPost<{ created: number }>('/api/relationships/infer');
+}
+
+export async function listPendingRelationships(): Promise<Relationship[]> {
+  return apiGet<Relationship[]>('/api/relationships/pending');
+}
+
+export async function setRelationshipConfirmation(
+  id: string,
+  status: 'confirmed' | 'rejected',
+): Promise<Relationship> {
+  return apiPost<Relationship>(`/api/relationships/${id}/confirmation`, { status });
 }
 
 export async function createInteraction(req: CreateInteractionInput): Promise<Interaction> {
-  return invoke<Interaction>('create_interaction', { req });
+  return apiPost<Interaction>('/api/interactions', req);
 }
 
 export async function listInteractionsByPerson(personId: string): Promise<Interaction[]> {
-  return invoke<Interaction[]>('list_interactions_by_person', { personId });
+  return apiGet<Interaction[]>(`/api/persons/${personId}/interactions`);
 }
 
 export async function createEntityMention(req: CreateEntityMentionInput): Promise<EntityMention> {
-  return invoke<EntityMention>('create_entity_mention', { req });
+  return apiPost<EntityMention>('/api/entity-mentions', req);
 }
 
 export async function getGraphData(): Promise<GraphData> {
-  return invoke<GraphData>('get_graph_data');
+  return apiGet<GraphData>('/api/graph');
 }
 
 export async function naturalLanguageQuery(query: string, revealSensitive = false): Promise<NlqResult[]> {
-  return invoke<NlqResult[]>('natural_language_query', {
-    req: { query, revealSensitive },
-  });
+  return apiPost<NlqResult[]>('/api/nlq', { query, revealSensitive });
+}
+
+export async function nlqMulti(query: string, revealSensitive?: boolean): Promise<NlqResponse> {
+  return apiPost<NlqResponse>('/api/nlq/multi', { query, revealSensitive });
+}
+
+export async function nlqConfirm(intentType: string, data: Record<string, unknown>): Promise<unknown> {
+  return apiPost('/api/nlq/confirm', { intentType, data });
 }

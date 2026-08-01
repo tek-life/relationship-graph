@@ -13,10 +13,16 @@ export default function PersonCard({ person, lastInteraction, selected, onSelect
   const displayName = person.sensitivityLevel === 'low' ? person.name : alias;
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect?.(person)}
-      className={`w-full rounded-xl border bg-white p-4 text-left shadow-sm transition hover:shadow-md ${selected ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200'}`}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          onSelect?.(person);
+        }
+      }}
+      className={`w-full cursor-pointer rounded-xl border bg-white p-4 text-left shadow-sm transition hover:shadow-md ${selected ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200'}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -53,7 +59,7 @@ export default function PersonCard({ person, lastInteraction, selected, onSelect
           person.resourceTags.map((tag) => <span key={tag} className="badge bg-blue-50 text-blue-700">{tag}</span>)
         )}
       </div>
-    </button>
+    </div>
   );
 }
 

@@ -12,17 +12,25 @@ const FALLBACK_EXTRACTION: ExtractedEntities = {
   summary: '',
 };
 
+// 实际部署的模型是 qwen2.5:7b（此前写成 qwen2:7b 导致请求 404、提取永远走降级）。
+const OLLAMA_MODEL = 'qwen2.5:7b';
+const OLLAMA_TIMEOUT_MS = 30_000;
+
 export async function extractFromText(text: string): Promise<ExtractedEntities> {
   const started = performance.now();
   const textLength = text.length;
-  console.info('[ollama] extract_start', { textLength, model: 'qwen2:7b' });
+  console.info('[ollama] extract_start', { textLength, model: OLLAMA_MODEL });
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
 
   try {
-    const response = await fetch('http://localhost:11434/api/generate', {
+    const response = await fetch(`http://${window.location.hostname}:11434/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({
-        model: 'qwen2:7b',
+        model: OLLAMA_MODEL,
         stream: false,
         format: 'json',
         prompt: `请从下面沟通记录中提取信息，只输出 JSON：
@@ -72,5 +80,7 @@ export async function extractFromText(text: string): Promise<ExtractedEntities> 
       ...FALLBACK_EXTRACTION,
       summary: text.slice(0, 80),
     };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

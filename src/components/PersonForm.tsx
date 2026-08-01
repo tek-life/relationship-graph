@@ -1,26 +1,32 @@
 import { useState } from 'react';
-import type { CreatePersonInput, RelationshipStrength, SensitivityLevel } from '../types';
+import type { CreatePersonInput, Person, RelationshipStrength, SensitivityLevel } from '../types';
 
 interface Props {
   onSubmit: (input: CreatePersonInput) => Promise<void> | void;
+  /** 传入则为编辑模式：回填初始值、提交后不清空表单 */
+  initial?: Person;
+  heading?: string;
+  submitLabel?: string;
 }
 
-export default function PersonForm({ onSubmit }: Props) {
+export default function PersonForm({ onSubmit, initial, heading, submitLabel }: Props) {
   const [form, setForm] = useState({
-    name: '',
-    aliases: '',
-    phone: '',
-    email: '',
-    company: '',
-    title: '',
-    location: '',
-    background: '',
-    relationshipStrength: 'medium' as RelationshipStrength,
-    resourceTags: '',
-    sensitivityLevel: 'low' as SensitivityLevel,
-    status: 'active' as CreatePersonInput['status'],
-    nextStep: '',
-    notes: '',
+    name: initial?.name ?? '',
+    aliases: initial?.aliases.join(',') ?? '',
+    phone: initial?.phone ?? '',
+    email: initial?.email ?? '',
+    company: initial?.company ?? '',
+    title: initial?.title ?? '',
+    location: initial?.location ?? '',
+    background: initial?.background ?? '',
+    relationshipStrength: (initial?.relationshipStrength ?? 'medium') as RelationshipStrength,
+    resourceTags: initial?.resourceTags.join(',') ?? '',
+    school: initial?.school ?? '',
+    projects: initial?.projects?.join(',') ?? '',
+    sensitivityLevel: (initial?.sensitivityLevel ?? 'low') as SensitivityLevel,
+    status: (initial?.status ?? 'active') as CreatePersonInput['status'],
+    nextStep: initial?.nextStep ?? '',
+    notes: initial?.notes ?? '',
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -43,12 +49,16 @@ export default function PersonForm({ onSubmit }: Props) {
         background: emptyToNull(form.background),
         relationshipStrength: form.relationshipStrength,
         resourceTags: splitList(form.resourceTags),
+        school: emptyToNull(form.school),
+        projects: splitList(form.projects),
         sensitivityLevel: form.sensitivityLevel,
         status: form.status,
         nextStep: emptyToNull(form.nextStep),
         notes: emptyToNull(form.notes),
       });
-      setForm((prev) => ({ ...prev, name: '', aliases: '', phone: '', email: '', background: '', nextStep: '', notes: '' }));
+      if (!initial) {
+        setForm((prev) => ({ ...prev, name: '', aliases: '', phone: '', email: '', background: '', school: '', projects: '', nextStep: '', notes: '' }));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -56,7 +66,7 @@ export default function PersonForm({ onSubmit }: Props) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border bg-white p-4 shadow-sm">
-      <h2 className="text-lg font-semibold">新增联系人</h2>
+      <h2 className="text-lg font-semibold">{heading ?? '新增联系人'}</h2>
       <input className="input" placeholder="姓名" value={form.name} onChange={(e) => update('name', e.target.value)} required />
       <input className="input" placeholder="昵称/代称，如：老张、张工" value={form.aliases} onChange={(e) => update('aliases', e.target.value)} />
       <div className="grid grid-cols-2 gap-3">
@@ -66,6 +76,8 @@ export default function PersonForm({ onSubmit }: Props) {
         <input className="input" placeholder="电话" value={form.phone} onChange={(e) => update('phone', e.target.value)} />
       </div>
       <input className="input" placeholder="邮箱" value={form.email} onChange={(e) => update('email', e.target.value)} />
+      <input className="input" placeholder="学校，如：清华大学" value={form.school} onChange={(e) => update('school', e.target.value)} />
+      <input className="input" placeholder="参与项目，逗号分隔，如：A轮融资,官网改版" value={form.projects} onChange={(e) => update('projects', e.target.value)} />
       <textarea className="input min-h-20" placeholder="认识背景" value={form.background} onChange={(e) => update('background', e.target.value)} />
       <div className="grid grid-cols-3 gap-3">
         <select className="input" value={form.relationshipStrength} onChange={(e) => update('relationshipStrength', e.target.value)}>
@@ -87,7 +99,9 @@ export default function PersonForm({ onSubmit }: Props) {
       <input className="input" placeholder="资源标签，逗号分隔，如：地产,融资" value={form.resourceTags} onChange={(e) => update('resourceTags', e.target.value)} />
       <input className="input" placeholder="下一步" value={form.nextStep} onChange={(e) => update('nextStep', e.target.value)} />
       <textarea className="input min-h-20" placeholder="备注" value={form.notes} onChange={(e) => update('notes', e.target.value)} />
-      <button className="btn-primary w-full" type="submit" disabled={submitting}>{submitting ? '保存中...' : '保存联系人'}</button>
+      <button className="btn-primary w-full" type="submit" disabled={submitting}>
+        {submitting ? '保存中...' : submitLabel ?? '保存联系人'}
+      </button>
     </form>
   );
 }

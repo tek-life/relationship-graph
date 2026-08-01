@@ -11,6 +11,7 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
+    host: true, // 监听 0.0.0.0，供 Windows 浏览器与手机经局域网访问
     port: 1420,
     strictPort: true,
     watch: {

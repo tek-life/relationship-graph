@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>个人关系图谱 — 当前版本功能介绍</title>
+<style>
+  :root {
+    --primary: #2563eb;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --bg-soft: #f9fafb;
+    --code-bg: #f3f4f6;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --bad: #dc2626;
+    --new: #7c3aed;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    color: var(--text);
+    line-height: 1.75;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+    background: #fff;
+  }
+  h1 {
+    font-size: 1.9em;
+    border-bottom: 3px solid var(--primary);
+    padding-bottom: 12px;
+    margin-bottom: 8px;
+  }
+  h2 {
+    font-size: 1.45em;
+    margin-top: 2.2em;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    color: var(--primary);
+  }
+  h3 { font-size: 1.15em; margin-top: 1.6em; }
+  blockquote {
+    margin: 1em 0;
+    padding: 10px 16px;
+    border-left: 4px solid var(--primary);
+    background: var(--bg-soft);
+    color: var(--muted);
+    border-radius: 0 6px 6px 0;
+  }
+  blockquote p { margin: 4px 0; }
+  code {
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.88em;
+  }
+  pre {
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 16px 20px;
+    border-radius: 8px;
+    overflow-x: auto;
+    line-height: 1.6;
+  }
+  pre code { background: none; padding: 0; color: inherit; font-size: 0.9em; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    font-size: 0.95em;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--bg-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: #fcfcfd; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5em 0; }
+  ul, ol { padding-left: 1.6em; }
+  li { margin: 4px 0; }
+  img { max-width: 100%; border: 1px solid var(--border); border-radius: 8px; }
+  .badge {
+    display: inline-block;
+    font-size: 0.75em;
+    font-weight: 600;
+    padding: 1px 8px;
+    border-radius: 10px;
+    vertical-align: middle;
+    margin-left: 6px;
+  }
+  .badge.ok   { color: var(--ok);   background: #dcfce7; }
+  .badge.warn { color: var(--warn); background: #fef3c7; }
+  .badge.bad  { color: var(--bad);  background: #fee2e2; }
+  .badge.new  { color: var(--new);  background: #ede9fe; }
+  .meta { color: var(--muted); font-size: 0.9em; }
+  .toc {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 24px;
+    margin: 1.5em 0;
+  }
+  .toc a { color: var(--primary); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<h1>个人关系图谱 — 当前版本功能介绍</h1>
+<blockquote>
+  <p>更新日期：2026-08-01（演示版）</p>
+  <p>架构版本：WSL 服务端 + Web 多端架构（2026-07 迁移完成）</p>
+  <p>本轮新增：首页多模态输入框（文字/语音/图片 OCR）、联系人"关系网络"焦点模式、学校/项目字段与推断规则增强、内置演示数据、NLQ 多意图扩展（新增/更新/互动/路径）、多主题切换</p>
+</blockquote>
+
+<div class="toc">
+  <strong>目录</strong>
+  <ol>
+    <li><a href="#overview">项目概述</a></li>
+    <li><a href="#implemented">已实现的功能</a></li>
+    <li><a href="#demo">演示路径与数据</a></li>
+    <li><a href="#gaps">重要空缺（尚未实现）</a></li>
+    <li><a href="#next">下一步计划</a></li>
+    <li><a href="#refs">参考资料</a></li>
+  </ol>
+</div>
+
+<hr>
+
+<h2 id="overview">一、项目概述</h2>
+
+<p><strong>Relationship Graph（个人关系图谱）</strong> 是一款面向个人的人脉管理应用，核心能力是：</p>
+<ul>
+  <li>用自然语言检索人脉（"上海做投资的朋友有哪些？"），支持文字、语音、图片截图三种输入方式</li>
+  <li>维护联系人档案与互动记录，AI 自动提取关键信息</li>
+  <li>以图谱形式可视化人际关系网络，一键查看任意联系人的关系网络</li>
+  <li>全程本地化、加密存储，保护高敏感隐私数据</li>
+</ul>
+
+<h3>系统架构图</h3>
+<p><img src="系统架构图.png" alt="系统架构图"></p>
+<p>系统的所有数据处理均在您自己的服务器环境中完成，不依赖任何外部云服务。具体来说：您通过浏览器或手机输入信息（支持文字、语音、图片三种方式），这些信息只会发送到您自己部署的服务器上进行处理。图片文字识别（OCR）甚至直接在您的浏览器中完成，<strong>图片不会离开您的设备</strong>。所有数据最终存储在您服务器上的加密数据库中（技术细节：SQLite + SQLCipher 库级加密）。系统使用的 AI 大模型（Ollama）同样运行在您自己的服务器上，仅用于从聊天记录中提取关键信息，不会将任何数据发送到外部网络。</p>
+
+<h3>当前架构</h3>
+<pre><code>Windows 浏览器 / 手机（局域网）
+        │  HTTP + Bearer Token
+        ▼
+React Web 前端（Vite，端口 1420）
+        │  REST API
+        ▼
+Rust Axum 服务端（WSL，端口 8790）
+        │
+        ▼
+SQLite + SQLCipher 加密库（Argon2id 派生密钥）</code></pre>
+
+<table>
+  <tr><th>层</th><th>技术栈</th><th>说明</th></tr>
+  <tr><td>前端</td><td>React 18 + TypeScript + Vite + Tailwind CSS + Cytoscape.js</td><td>支持 Windows 浏览器与手机经局域网访问</td></tr>
+  <tr><td>后端</td><td>Rust Axum + rusqlite/SQLCipher</td><td>运行于 WSL，端口 8790（<code>RG_PORT</code> 可覆盖）</td></tr>
+  <tr><td>数据</td><td>SQLite + SQLCipher 库级加密</td><td>数据目录 <code>~/.local/share/relationship-graph</code>（<code>RG_DATA_DIR</code> 可覆盖）</td></tr>
+  <tr><td>AI</td><td>Ollama 本地 LLM（qwen2.5:7b）</td><td>互动文本信息提取；运行在用户自己的服务器上，数据不外传</td></tr>
+  <tr><td>OCR</td><td>tesseract.js（端侧 WASM）</td><td>中英文图片文字识别，模型文件本地托管于 <code>public/tesseract/</code></td></tr>
+</table>
+
+<blockquote><p>说明：<code>src-tauri/</code> 为早期 Tauri 桌面原型，业务逻辑已全部移植到 <code>server/</code>，目前保留但不再使用。</p></blockquote>
+
+<h3>🔒 数据安全承诺</h3>
+<p>本系统在设计上将数据隐私放在首位，以下是核心安全保障：</p>
+<ol>
+  <li><strong>数据只存在您自己的服务器上</strong> — 所有联系人信息、聊天记录、关系数据均存储在您自己部署的服务器中的加密数据库里，不会上传到任何外部平台</li>
+  <li><strong>AI 分析完全在本地完成</strong> — 系统使用您自己服务器上运行的大模型（Ollama）进行智能分析，不依赖任何外部在线 AI 服务（如 ChatGPT、文心一言等），您的数据不会被第三方获取</li>
+  <li><strong>没有任何数据会发送到外部网络</strong> — 系统运行在您的局域网环境中，与外部互联网完全隔离，即使断网也能正常使用全部功能</li>
+  <li><strong>多层加密保护</strong> — 数据库整库加密，需要主密码才能解锁访问；日志系统自动脱敏，不记录任何敏感信息原文</li>
+</ol>
+
+<h3>启动方式</h3>
+<pre><code># 后端（WSL）
+cd server &amp;&amp; cargo run
+
+# 前端
+npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
+
+<hr>
+
+<h2 id="implemented">二、已实现的功能</h2>
+
+<h3>1. 认证与安全 <span class="badge ok">✅ 已完成</span></h3>
+<ul>
+  <li>首次使用设置主密码，初始化 SQLCipher 加密数据库</li>
+  <li>主密码解锁 / 锁定数据库，Token 会话（12 小时有效期，内存存储）</li>
+  <li>Argon2id 密钥派生，数据库整库加密</li>
+  <li>结构化日志遵循脱敏原则：不记录密码、Token、姓名、电话、内容原文</li>
+</ul>
+
+<h3>2. 联系人管理（CRUD）<span class="badge ok">✅ 已完成</span></h3>
+<ul>
+  <li>完整的联系人档案：姓名、别名、电话、邮箱、公司、职位、城市、<strong>学校 <span class="badge new">🆕</span></strong>、<strong>参与项目 <span class="badge new">🆕</span></strong>、背景、关系强度、资源标签、敏感级别、状态、下一步行动、备注</li>
+  <li>学校与参与项目字段在表单与详情页均支持录入/展示，并作为关系推断的新依据</li>
+  <li>名片式列表展示（PersonList / PersonCard）</li>
+  <li>按提及文本搜索候选联系人</li>
+  <li><strong>敏感级别三级控制</strong>：高敏感联系人默认以别名脱敏展示（SensitivityGuard）</li>
+</ul>
+
+<h3>3. 关系管理 <span class="badge ok">✅ 已完成</span></h3>
+<ul>
+  <li>人与人之间的关系链路录入：介绍认识、同事、朋友、合作、其他</li>
+  <li>关系强度与描述</li>
+  <li>按联系人查询其全部关系</li>
+</ul>
+
+<h3>4. 互动记录 + AI 提取 <span class="badge ok">✅ 已完成</span></h3>
+<ul>
+  <li>记录与联系人的沟通内容（时间、原文、摘要、话题、待办）</li>
+  <li><strong>Ollama 本地 LLM 自动提取</strong>：从沟通文本中识别提到的人物、话题、待办事项并生成摘要，Ollama 不可用时自动降级</li>
+  <li>本轮修复了模型名硬编码失配问题（<code>qwen2:7b</code> → <code>qwen2.5:7b</code>），AI 提取恢复真正生效</li>
+  <li>EntityResolver：将文本中提到的人名关联到已有联系人（含置信度与确认状态）</li>
+  <li>按联系人查看互动历史</li>
+</ul>
+
+<h3>5. 关系图谱可视化 <span class="badge ok">✅ 已完成</span></h3>
+<ul>
+  <li>Cytoscape.js 渲染人脉网络（节点=联系人，边=关系）</li>
+  <li>按敏感级别着色：高敏感红、中敏感橙、低敏感蓝</li>
+  <li>大图性能优化：120+ 节点自动切换 concentric 布局、隐藏边、纹理化渲染</li>
+  <li>悬停提示与点击导航</li>
+  <li><strong>待确认推断关系以橙色虚线呈现 <span class="badge new">🆕</span></strong>：点击可查看推断理由，并就地确认 / 否认</li>
+</ul>
+
+<h3>6. 自然语言查询（NLQ）<span class="badge ok">✅ 已完成</span></h3>
+<ul>
+  <li>支持按地点、资源标签、话题、状态、关系强度、最近互动时间等维度组合检索</li>
+  <li><strong>安全设计</strong>：LLM 不生成 SQL，走 QueryIntent 白名单解析管线，杜绝注入风险</li>
+  <li>结果按关系强度、互动时间、匹配度重排</li>
+  <li>高敏感联系人在结果中自动脱敏</li>
+  <li>附带"建议下一步行动"</li>
+</ul>
+
+<h3>7. Excel/CSV 批量导入 <span class="badge ok">✅ 已完成</span></h3>
+<p>四步导入向导（上传 → 字段映射 → 预览确认 → 导入报告）：</p>
+<ul>
+  <li>前端 SheetJS 解析表头与数据行</li>
+  <li>表头词典自动猜测字段映射，支持手动调整</li>
+  <li>数据清洗归一化：电话格式、关系强度/敏感级别/状态的中文值映射</li>
+  <li>服务端预检：有效性校验 + 重复检测（精确匹配 / 仅姓名匹配两种策略）</li>
+  <li>逐行容错批量写入，单批上限 5000 行</li>
+  <li>完整导入报告：成功、跳过、失败明细</li>
+  <li>已通过 1000 行测试数据的端到端验证（<code>test-data/联系人测试数据_1000.xlsx</code>）</li>
+</ul>
+
+<h3>8. 首页多模态输入框 <span class="badge ok">✅ 已完成</span><span class="badge new">🆕 本轮新增</span></h3>
+<p>应用默认进入全新极简首页，居中大输入框支持三种输入方式：</p>
+<ul>
+  <li><strong>文字</strong>：直接键入问题，Enter 提交查询</li>
+  <li><strong>语音（🎤）</strong>：优先使用浏览器 Web Speech API 实时转写；浏览器不支持时自动降级为录音上传、由服务端 <code>POST /api/voice/transcribe</code> 转写；服务端未配置转写引擎时给出友好提示，不会静默失败</li>
+  <li><strong>图片 OCR（📷）</strong>：tesseract.js 端侧识别中英文，支持直接粘贴截图；识别出的文本填入输入框，用户确认后再发起查询</li>
+</ul>
+<p>查询统一走既有 NLQ 白名单管线（不经过 LLM），高敏感联系人在结果中自动脱敏。旧版功能入口（联系人 / 图谱 / AI 查询(旧) / 导入）收纳为页面底部的灰色调试链接，不干扰主流程。</p>
+
+<h4>查询结果点击跳转联系人详情 <span class="badge new">🆕 新增</span></h4>
+<p>查询结果中的联系人卡片支持<strong>点击直接跳转</strong>到该联系人的详细信息页面，操作路径：</p>
+<ol>
+  <li>在首页输入框输入查询（文字/语音/OCR）</li>
+  <li>获得 NLQ 查询结果列表</li>
+  <li>单击任意联系人卡片 → 自动切换到联系人 Tab 并展示该联系人的详情页</li>
+</ol>
+<p>交互细节：</p>
+<ul>
+  <li>鼠标悬停时卡片高亮（浅蓝背景 + 蓝色边框），cursor 变为 pointer</li>
+  <li>点击时有 active 按压反馈</li>
+  <li>支持键盘无障碍操作：Tab 聚焦卡片后，按 Enter 或 Space 同样触发跳转</li>
+</ul>
+
+<h3>9. 联系人"关系网络"焦点模式 <span class="badge ok">✅ 已完成</span><span class="badge new">🆕 本轮新增</span></h3>
+<ul>
+  <li>联系人详情页新增紫色<strong>"关系网络"按钮</strong>，一键跳转图谱页</li>
+  <li>以该联系人为中心展示 <strong>2 跳关系网络</strong>（焦点模式），无关节点不渲染</li>
+  <li>图中同时显示<strong>"我"虚拟中心节点</strong>，以灰色点线连接焦点联系人，直观呈现"我 → 焦点人 → 其人脉"的路径</li>
+  <li>待确认的推断关系以橙色虚线区分，点击边可查看推断理由并确认 / 否认</li>
+</ul>
+
+<h3>10. 关系推断引擎 + 用户确认 <span class="badge ok">✅ 已完成</span><span class="badge new">🆕 本轮增强</span></h3>
+<p>规则推断引擎（<code>server/src/infer.rs</code>）共五条规则，全部产出<strong>可解释的推断理由</strong>（如"同一公司：万科"）：</p>
+<table>
+  <tr><th>规则</th><th>置信度</th><th>关系类型</th></tr>
+  <tr><td>同一公司</td><td>0.8</td><td>colleague</td></tr>
+  <tr><td>同一介绍人介绍认识</td><td>0.6</td><td>other</td></tr>
+  <tr><td>同项目 🆕</td><td>0.6</td><td>other</td></tr>
+  <tr><td>同学校 🆕</td><td>0.5</td><td>other</td></tr>
+  <tr><td>同行业标签 + 同城</td><td>0.5</td><td>other</td></tr>
+</table>
+<ul>
+  <li>所有推断结果以 <strong>pending</strong> 状态入库，必须由用户逐条确认（confirmed）或否认（rejected）后才视为事实，被否认的不会重复生成</li>
+  <li>防护性限制：单次最多入库 200 条，分组超过 15 人不做两两组合，已存在关系跳过</li>
+  <li>五条规则均有单元测试覆盖</li>
+</ul>
+
+<h3>11. AI 查询功能现状</h3>
+<p>详见 <code>docs/AI查询功能现状分析.md</code>，要点：</p>
+<ul>
+  <li><strong>NLQ 是纯规则白名单管线，不调用 LLM</strong>——这是明确的安全决策：自然语言先解析为 QueryIntent，经白名单校验后路由到固定的参数化 SQL，模型永远不接触 SQL</li>
+  <li><strong>全项目唯一的 AI 大模型调用点</strong>是互动记录信息提取 — 该模型（Ollama qwen2.5:7b）完全运行在用户自己的服务器环境中，不连接任何外部在线 AI 服务；AI 只产出“建议”，最终数据入库仍需用户确认</li>
+  <li>关系推断同样是确定性规则引擎而非 AI 大模型：基于明确的结构化数据（如同公司、同学校）进行推断，可给出可解释理由与稳定置信度，不存在数据外泄风险</li>
+  <li>本轮已修复 Ollama 模型名失配（<code>qwen2:7b</code> → <code>qwen2.5:7b</code>），互动提取从长期降级恢复为真正生效</li>
+</ul>
+
+<h3>12. NLQ 多意图扩展 <span class="badge ok">✅ 已完成</span><span class="badge new">🆕 本轮新增</span></h3>
+<p><strong>多功能自然语言输入</strong>：首页输入框现支持 5 种操作意图，系统自动识别：</p>
+<table>
+  <tr><th>意图</th><th>示例</th><th>说明</th></tr>
+  <tr><td><strong>查找联系人</strong>（默认）</td><td>"谁在做地产"、"关系比较近的人"</td><td>走既有 NLQ 白名单管线</td></tr>
+  <tr><td><strong>新增联系人</strong></td><td>"刚认识了张明，做地产的，在上海"</td><td>系统自动提取信息生成草稿，确认后保存</td></tr>
+  <tr><td><strong>更新联系人</strong></td><td>"张明去了新公司XX科技"</td><td>自动识别要修改的字段，确认后更新</td></tr>
+  <tr><td><strong>添加互动记录</strong></td><td>"刚和李明聊了园区项目"</td><td>自动提取互动信息，确认后记录</td></tr>
+  <tr><td><strong>查找关系路径</strong></td><td>"我怎么认识张三的"</td><td>展示人脉路径链</td></tr>
+</table>
+<p>所有新增/更新/添加操作采用<strong>"草稿确认"模式</strong>——系统先展示预填表单，用户确认或修改后才实际保存，确保数据准确性。</p>
+<p>按钮由文字"查询"改为<strong>发送箭头图标</strong>，更简洁直观。</p>
+
+<h3>13. 多主题切换 <span class="badge ok">✅ 已完成</span><span class="badge new">🆕 本轮新增</span></h3>
+<p><strong>多主题切换</strong>：页面右上角提供主题选择器，支持 3 种显示主题：</p>
+<table>
+  <tr><th>主题</th><th>说明</th></tr>
+  <tr><td>☀️ 浅色模式（默认）</td><td>白色背景，适合日间使用</td></tr>
+  <tr><td>🌙 深色模式</td><td>深色背景，减轻视觉疲劳</td></tr>
+  <tr><td>🔲 高对比度模式</td><td>增强对比度，适合特殊场景</td></tr>
+</table>
+<ul>
+  <li>主题选择自动保存至 <code>localStorage</code>，下次打开时保持上次的设置</li>
+  <li>所有页面和组件统一适配，切换即时生效无闪烁</li>
+  <li>通过 CSS 变量系统实现，组件无需单独处理主题逻辑</li>
+</ul>
+
+<h3>14. 服务端 API 一览</h3>
+<table>
+  <tr><th>分类</th><th>端点</th></tr>
+  <tr><td>公开</td><td><code>GET /api/health</code>、<code>GET /api/auth/state</code>、<code>POST /api/auth/setup</code>、<code>POST /api/auth/unlock</code></td></tr>
+  <tr><td>联系人</td><td><code>GET/POST /api/persons</code>、<code>GET/PUT/DELETE /api/persons/:id</code>、<code>GET /api/persons-search</code></td></tr>
+  <tr><td>关系</td><td><code>GET/POST /api/relationships</code>、<code>GET /api/persons/:id/relationships</code></td></tr>
+  <tr><td>关系推断 🆕</td><td><code>POST /api/relationships/infer</code>、<code>GET /api/relationships/pending</code>、<code>POST /api/relationships/:id/confirmation</code></td></tr>
+  <tr><td>互动</td><td><code>POST /api/interactions</code>、<code>GET /api/persons/:id/interactions</code>、<code>POST /api/entity-mentions</code></td></tr>
+  <tr><td>图谱/查询</td><td><code>GET /api/graph</code>、<code>POST /api/nlq</code></td></tr>
+  <tr><td>语音 🆕</td><td><code>POST /api/voice/transcribe</code></td></tr>
+  <tr><td>导入</td><td><code>POST /api/import/preview</code>、<code>POST /api/import/persons</code></td></tr>
+  <tr><td>会话</td><td><code>POST /api/auth/lock</code></td></tr>
+</table>
+
+<hr>
+
+<h2 id="demo">三、演示路径与数据 <span class="badge new">🆕</span></h2>
+
+<h3>内置演示数据</h3>
+<p>数据库已预置 6 位演示联系人：<strong>张演示、李示例、陈样本、王样本、赵演示、孙示例</strong>，含公司、城市、学校、项目、资源标签、关系与互动记录，覆盖下方全部演示场景。</p>
+<p>演示数据由 <code>scripts/seed-demo-data.mjs</code> 生成，脚本<strong>幂等</strong>，可重复执行不会产生重复数据。</p>
+
+<h3>推荐演示动线</h3>
+<ol>
+  <li><strong>解锁</strong>：后端已重启（Token 仅内存存储，重启后旧会话失效），演示前先用主密码解锁一次</li>
+  <li><strong>首页多模态查询</strong>：依次演示文字 / 语音 / 粘贴截图 OCR 三种输入，三个首页示例查询均有结果：</li>
+</ol>
+<table>
+  <tr><th>示例查询</th><th>结果数</th></tr>
+  <tr><td>"谁在上海做地产，和我关系比较近？"</td><td>3 条</td></tr>
+  <tr><td>"上次聊过融资的人里，还没跟进的有谁？"</td><td>2 条</td></tr>
+  <tr><td>"这个懂车帝的投标，谁能帮上忙？"</td><td>2 条</td></tr>
+</table>
+<ol start="3">
+  <li><strong>关系网络</strong>：打开任一演示联系人详情 → 点击紫色"关系网络"按钮 → 展示以其为中心的 2 跳网络与"我"虚拟节点</li>
+  <li><strong>推断确认</strong>：图中点击橙色虚线边，查看推断理由（如"同项目：xx"），现场确认 / 否认</li>
+  <li><strong>兜底入口</strong>：如需展示旧功能（联系人列表 / 全量图谱 / AI 查询(旧) / 导入），使用页面底部灰色调试链接</li>
+</ol>
+
+<hr>
+
+<h2 id="gaps">四、重要空缺（尚未实现）</h2>
+
+<p>按对产品体验的影响程度排序：</p>
+
+<h3>1. LLM 草稿确认流程 <span class="badge warn">⚠️ 部分实现（P0 需求）</span></h3>
+<ul>
+  <li>目前 Ollama 提取结果直接填入表单，缺少"AI 输出 → 草稿 → 用户逐项确认 → 落库"的标准流程</li>
+  <li>影响：AI 提取错误可能直接污染数据</li>
+</ul>
+
+<h3>2. 主动提醒机制 <span class="badge bad">❌ 未实现（P1）</span></h3>
+<ul>
+  <li>Reminder 数据模型仅存在于设计文档</li>
+  <li>关系冷却提醒、跟进提醒、新机会匹配、关系激活建议均未实现</li>
+</ul>
+
+<h3>3. 项目/机会管理 <span class="badge bad">❌ 未实现</span></h3>
+<ul>
+  <li>Project/Opportunity 独立实体未实现，"为某个项目生成人脉路径"的核心场景暂不可用</li>
+  <li>本轮新增的联系人级"参与项目"字段仅用于档案与关系推断，不是项目实体</li>
+</ul>
+
+<h3>4. 其他导入渠道 <span class="badge bad">❌ 未实现（P1）</span></h3>
+<ul>
+  <li>微信聊天记录粘贴导入：未实现</li>
+  <li>名片 OCR 导入联系人：未实现（当前图片 OCR 仅用于查询输入，不生成联系人档案）</li>
+</ul>
+
+<h3>5. 安全增强项 <span class="badge warn">⚠️ 待加强</span></h3>
+<ul>
+  <li><strong>字段级加密</strong>：目前仅 SQLCipher 库级加密，高敏感字段未单独加密</li>
+  <li><strong>高敏感数据备份/迁移方案</strong>：未定（换电脑存在数据丢失风险，设计文档 Open 问题）</li>
+  <li><strong>HTTPS</strong>：局域网 MVP 使用 HTTP，公网暴露前必须加 TLS</li>
+</ul>
+
+<h3>已知架构限制</h3>
+<table>
+  <tr><th>限制</th><th>说明</th></tr>
+  <tr><td>Ollama 前端直调</td><td>生产环境应改为服务端代理</td></tr>
+  <tr><td>Token 仅内存存储</td><td>服务重启后所有会话失效，无 refresh 机制</td></tr>
+  <tr><td>单用户模式</td><td>无多用户/权限体系</td></tr>
+  <tr><td>NLQ 内存过滤</td><td>加载 500 候选人后内存过滤，大数据集需分页优化</td></tr>
+</table>
+
+<hr>
+
+<h2 id="next">五、下一步计划</h2>
+
+<h3>短期（体验补全）</h3>
+<ol>
+  <li>LLM 草稿确认机制（提取结果先进草稿，用户确认后落库）</li>
+  <li>NLQ <code>needs_confirmation</code> 闭环：低置信度时向用户透出解析条件，供确认或修正</li>
+  <li>Ollama 调用服务端代理化（统一模型配置、超时与降级策略）</li>
+</ol>
+
+<h3>中期（智能化增强）</h3>
+<ol>
+  <li>项目/机会实体 CRUD 与人脉路径生成</li>
+  <li>主动提醒机制（关系冷却、跟进建议）</li>
+  <li>微信聊天记录导入、名片 OCR 导入联系人</li>
+  <li>推断规则扩展：基于互动记录共同话题、共同提及的共现推断</li>
+</ol>
+
+<h3>长期（安全与规模化）</h3>
+<ol>
+  <li>敏感字段级加密落地</li>
+  <li>高敏感数据备份与迁移方案</li>
+  <li>多用户权限体系</li>
+  <li>性能优化：分页、缓存、异步任务队列</li>
+</ol>
+
+<hr>
+
+<h2 id="refs">六、参考资料</h2>
+
+<table>
+  <tr><th>文档</th><th>路径</th></tr>
+  <tr><td>AI 查询功能现状分析</td><td><code>docs/AI查询功能现状分析.md</code></td></tr>
+  <tr><td>需求文档 v1.2</td><td><code>docs/superpowers/specs/需求文档_v1.2.md</code></td></tr>
+  <tr><td>系统设计文档</td><td><code>docs/superpowers/specs/2026-07-30-personal-relationship-graph-design.md</code></td></tr>
+  <tr><td>开发计划</td><td><code>docs/superpowers/plans/2026-07-30-personal-relationship-graph-plan.md</code></td></tr>
+  <tr><td>WSL 迁移交接文档</td><td><code>docs/个人关系图谱项目_WSL迁移交接文档.md</code></td></tr>
+  <tr><td>Excel 导入设计</td><td><code>docs/Excel导入设计与计划.md</code></td></tr>
+</table>
+
+<table>
+  <tr><th>关键代码</th><th>路径</th></tr>
+  <tr><td>服务端路由</td><td><code>server/src/api/mod.rs</code></td></tr>
+  <tr><td>认证与会话</td><td><code>server/src/security/auth.rs</code></td></tr>
+  <tr><td>NLQ 管线</td><td><code>server/src/nlq.rs</code></td></tr>
+  <tr><td>关系推断引擎</td><td><code>server/src/infer.rs</code></td></tr>
+  <tr><td>语音转写端点</td><td><code>server/src/api/voice.rs</code></td></tr>
+  <tr><td>Excel 导入</td><td><code>server/src/api/import.rs</code></td></tr>
+  <tr><td>前端 API 客户端</td><td><code>src/services/api.ts</code></td></tr>
+  <tr><td>首页多模态输入</td><td><code>src/components/MultimodalQuery.tsx</code></td></tr>
+  <tr><td>草稿确认组件</td><td><code>src/components/DraftConfirmation.tsx</code></td></tr>
+  <tr><td>关系路径展示</td><td><code>src/components/PathResultDisplay.tsx</code></td></tr>
+  <tr><td>主题选择器</td><td><code>src/components/ThemeSelector.tsx</code></td></tr>
+  <tr><td>主题 Hook</td><td><code>src/hooks/useTheme.ts</code></td></tr>
+  <tr><td>语音输入 Hook</td><td><code>src/hooks/useVoiceInput.ts</code></td></tr>
+  <tr><td>图片 OCR 按钮</td><td><code>src/components/ImageOcrButton.tsx</code></td></tr>
+  <tr><td>图谱视图（焦点模式）</td><td><code>src/components/GraphView.tsx</code></td></tr>
+  <tr><td>导入向导</td><td><code>src/components/ImportWizard.tsx</code></td></tr>
+  <tr><td>演示数据脚本</td><td><code>scripts/seed-demo-data.mjs</code></td></tr>
+  <tr><td>主应用</td><td><code>src/App.tsx</code></td></tr>
+</table>
+
+<p class="meta">本文档由 Markdown 版本转换生成：<code>docs/demo/当前版本功能介绍.md</code></p>
+
+</body>
+</html>
