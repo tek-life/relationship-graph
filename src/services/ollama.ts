@@ -12,8 +12,10 @@ const FALLBACK_EXTRACTION: ExtractedEntities = {
   summary: '',
 };
 
-// 实际部署的模型是 qwen2.5:7b（此前写成 qwen2:7b 导致请求 404、提取永远走降级）。
-const OLLAMA_MODEL = 'qwen2.5:7b';
+// 根据当前部署环境的硬件资源选择模型：
+// - qwen2.5:7b 效果最好，需要 8GB+内存
+// - qwen2:0.5b 适合 4GB 内存的 WSL/轻量级环境
+const OLLAMA_MODEL = 'qwen2:0.5b';
 const OLLAMA_TIMEOUT_MS = 30_000;
 
 export async function extractFromText(text: string): Promise<ExtractedEntities> {

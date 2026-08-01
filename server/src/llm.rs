@@ -11,7 +11,7 @@ fn ollama_url() -> String {
 }
 
 fn ollama_model() -> String {
-    std::env::var("RG_OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_string())
+    std::env::var("RG_OLLAMA_MODEL").unwrap_or_else(|_| "qwen2:0.5b".to_string())
 }
 
 #[derive(Serialize)]
