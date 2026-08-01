@@ -20,6 +20,7 @@ sudo apt install -y \
   file \
   pkg-config \
   libssl-dev \
+  libsqlite3-dev \
   ca-certificates \
   gnupg \
   lsb-release
