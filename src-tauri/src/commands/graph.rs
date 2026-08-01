@@ -17,7 +17,7 @@ pub fn get_graph_data(state: State<AppState>) -> Result<GraphData, String> {
     let high_sensitive_count = persons.iter().filter(|p| p.sensitivity_level == "high").count();
     let medium_sensitive_count = persons.iter().filter(|p| p.sensitivity_level == "medium").count();
 
-    let nodes = persons
+    let nodes: Vec<GraphNode> = persons
         .into_iter()
         .map(|p| GraphNode {
             id: p.id,
@@ -27,7 +27,7 @@ pub fn get_graph_data(state: State<AppState>) -> Result<GraphData, String> {
         })
         .collect();
 
-    let edges = relationships
+    let edges: Vec<GraphEdge> = relationships
         .into_iter()
         .map(|r| GraphEdge {
             id: r.id,
