@@ -25,7 +25,7 @@ export default function RelationshipForm({ persons, onCreated }: Props) {
     await createRelationship({
       fromPersonId,
       toPersonId,
-      relationshipType: relationshipType as 'introduced' | 'colleague' | 'friend' | 'cooperation' | 'other',
+      relationshipType,
       strength,
       description: description || null,
     });

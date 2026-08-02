@@ -49,7 +49,7 @@ export interface Relationship {
   id: string;
   fromPersonId: string;
   toPersonId: string;
-  relationshipType: 'introduced' | 'colleague' | 'friend' | 'cooperation' | 'other';
+  relationshipType: string;
   strength?: RelationshipStrength | null;
   description?: string | null;
   createdAt: string;
@@ -57,14 +57,20 @@ export interface Relationship {
   confidence?: number | null;
   confirmationStatus: 'confirmed' | 'pending' | 'rejected';
   inferenceReason?: string | null;
+  howEstablished?: string | null;
+  establishedDate?: string | null;
+  strengthRating?: number | null;
 }
 
 export interface CreateRelationshipInput {
   fromPersonId: string;
   toPersonId: string;
-  relationshipType: Relationship['relationshipType'];
+  relationshipType: string;
   strength?: RelationshipStrength | null;
   description?: string | null;
+  howEstablished?: string | null;
+  establishedDate?: string | null;
+  strengthRating?: number | null;
 }
 
 export interface Interaction {
@@ -121,6 +127,9 @@ export interface GraphEdge {
   confirmationStatus: 'confirmed' | 'pending' | 'rejected';
   confidence?: number | null;
   inferenceReason?: string | null;
+  howEstablished?: string | null;
+  establishedDate?: string | null;
+  strengthRating?: number | null;
 }
 
 export interface GraphData {
@@ -207,3 +216,41 @@ export interface PathEdge {
   strength?: string;
   confirmationStatus: string;
 }
+
+// === 商业关系类型常量映射 ===
+
+export const RELATIONSHIP_TYPES = {
+  colleague: '同事',
+  ex_colleague: '前同事',
+  business_partner: '商业伙伴',
+  client: '客户',
+  vendor: '供应商',
+  investor: '投资人',
+  mentor: '导师',
+  mentee: '学员',
+  friend: '朋友',
+  acquaintance: '熟人',
+  classmate: '同学',
+  neighbor: '邻居',
+  family: '亲属',
+  introduced_by: '经人介绍',
+  online_met: '网上认识',
+  event_met: '活动认识',
+  // 兼容旧数据
+  introduced: '介绍认识',
+  cooperation: '合作',
+  other: '其他',
+} as const;
+
+export const HOW_ESTABLISHED = {
+  direct_meeting: '直接见面',
+  introduction: '经人介绍',
+  work_project: '工作项目',
+  social_event: '社交活动',
+  online: '线上',
+  school: '学校',
+  other: '其他',
+} as const;
+
+export type RelationshipTypeKey = keyof typeof RELATIONSHIP_TYPES;
+export type HowEstablishedKey = keyof typeof HOW_ESTABLISHED;
