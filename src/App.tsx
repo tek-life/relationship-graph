@@ -5,6 +5,7 @@ import ImportWizard from './components/ImportWizard';
 import InteractionForm from './components/InteractionForm';
 import MultimodalQuery from './components/MultimodalQuery';
 import NaturalLanguageQuery from './components/NaturalLanguageQuery';
+import OnboardingWizard, { isOnboardingCompleted } from './components/OnboardingWizard';
 import PersonDetail from './components/PersonDetail';
 import PersonForm from './components/PersonForm';
 import PersonList from './components/PersonList';
@@ -38,6 +39,9 @@ function App() {
   // 从联系人详情"关系网络"进入图谱页时的初始焦点，手动切 tab 时清除
   const [graphFocusId, setGraphFocusId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  // 新用户引导
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [dataLoaded, setDataLoaded] = useState(false);
 
   // 新认证模式下：未登录时显示AuthPage
   if (!LEGACY_AUTH) {
@@ -71,6 +75,13 @@ function App() {
         setSelectedPerson(list[0]);
       }
       setGraphData(await getGraphData());
+      // 首次加载完毕，检查是否需要触发新用户引导
+      if (!dataLoaded) {
+        setDataLoaded(true);
+        if (list.length === 0 && !isOnboardingCompleted()) {
+          setShowOnboarding(true);
+        }
+      }
     } catch (err) {
       setError(String(err));
     }
@@ -128,6 +139,21 @@ function App() {
 
   return (
     <div className="flex min-h-screen flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
+      {/* 新用户引导 */}
+      {showOnboarding && (
+        <OnboardingWizard
+          onComplete={() => { setShowOnboarding(false); loadData(); }}
+          onManualAdd={() => { setShowOnboarding(false); setActiveTab('home'); }}
+          onQuerySubmit={(query) => {
+            setShowOnboarding(false);
+            setActiveTab('home');
+            // 将查询填入首页 MultimodalQuery，使用自定义事件传递
+            setTimeout(() => {
+              window.dispatchEvent(new CustomEvent('rg_onboarding_query', { detail: query }));
+            }, 100);
+          }}
+        />
+      )}
       {/* 主题切换器 + 用户信息 - 固定右上角 */}
       <div className="fixed right-4 top-4 z-50 flex items-center gap-3">
         {!LEGACY_AUTH && user && (
