@@ -25,8 +25,8 @@ struct PersonLite {
     projects: Vec<String>,
 }
 
-pub fn run(conn: &Connection) -> Result<usize, rusqlite::Error> {
-    let persons = load_persons(conn)?;
+pub fn run(conn: &Connection, owner_id: &str) -> Result<usize, rusqlite::Error> {
+    let persons = load_persons(conn, owner_id)?;
     let mut created = 0usize;
 
     // 规则一：同公司
@@ -50,6 +50,7 @@ pub fn run(conn: &Connection) -> Result<usize, rusqlite::Error> {
                 }
                 created += try_create(
                     conn,
+                    owner_id,
                     &members[i].id,
                     &members[j].id,
                     "colleague",
@@ -65,9 +66,9 @@ pub fn run(conn: &Connection) -> Result<usize, rusqlite::Error> {
     {
         let mut stmt = conn.prepare(
             "SELECT from_person_id, to_person_id FROM relationships
-             WHERE relationship_type = 'introduced' AND confirmation_status != 'rejected'",
+             WHERE owner_id = ?1 AND relationship_type = 'introduced' AND confirmation_status != 'rejected'",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(rusqlite::params![owner_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         for row in rows {
@@ -86,6 +87,7 @@ pub fn run(conn: &Connection) -> Result<usize, rusqlite::Error> {
                 }
                 created += try_create(
                     conn,
+                    owner_id,
                     &introduced[i],
                     &introduced[j],
                     "other",
@@ -122,6 +124,7 @@ pub fn run(conn: &Connection) -> Result<usize, rusqlite::Error> {
                 }
                 created += try_create(
                     conn,
+                    owner_id,
                     &members[i].id,
                     &members[j].id,
                     "other",
@@ -153,6 +156,7 @@ pub fn run(conn: &Connection) -> Result<usize, rusqlite::Error> {
                 }
                 created += try_create(
                     conn,
+                    owner_id,
                     &members[i].id,
                     &members[j].id,
                     "other",
@@ -184,6 +188,7 @@ pub fn run(conn: &Connection) -> Result<usize, rusqlite::Error> {
                 }
                 created += try_create(
                     conn,
+                    owner_id,
                     &members[i].id,
                     &members[j].id,
                     "other",
@@ -204,22 +209,23 @@ fn finish(created: usize) -> Result<usize, rusqlite::Error> {
 
 fn try_create(
     conn: &Connection,
+    owner_id: &str,
     a: &str,
     b: &str,
     relationship_type: &str,
     confidence: f64,
     reason: &str,
 ) -> Result<usize, rusqlite::Error> {
-    if relationship::exists_between(conn, a, b)? {
+    if relationship::exists_between(conn, owner_id, a, b)? {
         return Ok(0);
     }
-    relationship::create_inferred(conn, a, b, relationship_type, confidence, reason)?;
+    relationship::create_inferred(conn, owner_id, a, b, relationship_type, confidence, reason)?;
     Ok(1)
 }
 
-fn load_persons(conn: &Connection) -> Result<Vec<PersonLite>, rusqlite::Error> {
-    let mut stmt = conn.prepare("SELECT id, company, location, resource_tags, school, projects FROM persons")?;
-    let rows = stmt.query_map([], |row| {
+fn load_persons(conn: &Connection, owner_id: &str) -> Result<Vec<PersonLite>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT id, company, location, resource_tags, school, projects FROM persons WHERE owner_id = ?1")?;
+    let rows = stmt.query_map(rusqlite::params![owner_id], |row| {
         let tags_json: String = row.get(3)?;
         let projects_json: Option<String> = row.get(5)?;
         Ok(PersonLite {
@@ -242,6 +248,8 @@ mod tests {
     use super::*;
     use crate::db::{person, relationship, schema};
     use crate::types::CreatePersonRequest;
+
+    const TEST_OWNER: &str = "test-owner";
 
     fn person_req(name: &str, company: Option<&str>, location: Option<&str>, tags: &[&str]) -> CreatePersonRequest {
         CreatePersonRequest {
@@ -277,24 +285,24 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         schema::migrate(&conn).unwrap();
 
-        let a = person::create(&conn, person_req("甲", Some("万科"), Some("上海"), &["地产"])).unwrap();
-        let b = person::create(&conn, person_req("乙", Some("万科"), Some("北京"), &[])).unwrap();
-        let _c = person::create(&conn, person_req("丙", Some("龙湖"), None, &[])).unwrap();
+        let a = person::create(&conn, TEST_OWNER, person_req("甲", Some("万科"), Some("上海"), &["地产"])).unwrap();
+        let b = person::create(&conn, TEST_OWNER, person_req("乙", Some("万科"), Some("北京"), &[])).unwrap();
+        let _c = person::create(&conn, TEST_OWNER, person_req("丙", Some("龙湖"), None, &[])).unwrap();
 
-        let created = run(&conn).unwrap();
+        let created = run(&conn, TEST_OWNER).unwrap();
         assert_eq!(created, 1, "只应推断出甲乙同公司一条");
 
-        let pending = relationship::list_pending(&conn).unwrap();
+        let pending = relationship::list_pending(&conn, TEST_OWNER).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].source, "inferred");
         assert!(pending[0].inference_reason.as_deref().unwrap().contains("万科"));
 
         // 再跑一次不应重复创建
-        assert_eq!(run(&conn).unwrap(), 0);
+        assert_eq!(run(&conn, TEST_OWNER).unwrap(), 0);
 
         // 否认后也不应再生成
-        relationship::set_confirmation(&conn, &pending[0].id, "rejected").unwrap();
-        assert_eq!(run(&conn).unwrap(), 0);
+        relationship::set_confirmation(&conn, TEST_OWNER, &pending[0].id, "rejected").unwrap();
+        assert_eq!(run(&conn, TEST_OWNER).unwrap(), 0);
         let _ = (a, b);
     }
 
@@ -303,13 +311,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         schema::migrate(&conn).unwrap();
 
-        person::create(&conn, person_req("甲", None, Some("上海"), &["地产"])).unwrap();
-        person::create(&conn, person_req("乙", None, Some("上海"), &["地产"])).unwrap();
-        person::create(&conn, person_req("丙", None, Some("北京"), &["地产"])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req("甲", None, Some("上海"), &["地产"])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req("乙", None, Some("上海"), &["地产"])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req("丙", None, Some("北京"), &["地产"])).unwrap();
 
-        let created = run(&conn).unwrap();
+        let created = run(&conn, TEST_OWNER).unwrap();
         assert_eq!(created, 1);
-        let pending = relationship::list_pending(&conn).unwrap();
+        let pending = relationship::list_pending(&conn, TEST_OWNER).unwrap();
         assert!(pending[0].inference_reason.as_deref().unwrap().contains("上海"));
     }
 
@@ -318,20 +326,20 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         schema::migrate(&conn).unwrap();
 
-        person::create(&conn, person_req_edu("甲", Some("复旦大学"), &[])).unwrap();
-        person::create(&conn, person_req_edu("乙", Some("复旦大学"), &[])).unwrap();
-        person::create(&conn, person_req_edu("丙", Some("交通大学"), &[])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req_edu("甲", Some("复旦大学"), &[])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req_edu("乙", Some("复旦大学"), &[])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req_edu("丙", Some("交通大学"), &[])).unwrap();
 
-        let created = run(&conn).unwrap();
+        let created = run(&conn, TEST_OWNER).unwrap();
         assert_eq!(created, 1, "只应推断出甲乙同学校一条");
 
-        let pending = relationship::list_pending(&conn).unwrap();
+        let pending = relationship::list_pending(&conn, TEST_OWNER).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].confidence, Some(0.5));
         assert_eq!(pending[0].inference_reason.as_deref(), Some("同学校：复旦大学"));
 
         // 再跑一次不应重复创建
-        assert_eq!(run(&conn).unwrap(), 0);
+        assert_eq!(run(&conn, TEST_OWNER).unwrap(), 0);
     }
 
     #[test]
@@ -339,16 +347,16 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         schema::migrate(&conn).unwrap();
 
-        person::create(&conn, person_req_edu("甲", None, &["旧改项目", "数据中台"])).unwrap();
-        person::create(&conn, person_req_edu("乙", None, &["旧改项目"])).unwrap();
-        person::create(&conn, person_req_edu("丙", None, &["数据中台"])).unwrap();
-        person::create(&conn, person_req_edu("丁", None, &["独立项目"])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req_edu("甲", None, &["旧改项目", "数据中台"])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req_edu("乙", None, &["旧改项目"])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req_edu("丙", None, &["数据中台"])).unwrap();
+        person::create(&conn, TEST_OWNER, person_req_edu("丁", None, &["独立项目"])).unwrap();
 
         // 甲-乙（旧改项目）、甲-丙（数据中台）两条
-        let created = run(&conn).unwrap();
+        let created = run(&conn, TEST_OWNER).unwrap();
         assert_eq!(created, 2);
 
-        let pending = relationship::list_pending(&conn).unwrap();
+        let pending = relationship::list_pending(&conn, TEST_OWNER).unwrap();
         assert_eq!(pending.len(), 2);
         for rel in &pending {
             assert_eq!(rel.confidence, Some(0.6));
@@ -356,6 +364,6 @@ mod tests {
         }
 
         // 再跑一次不应重复创建
-        assert_eq!(run(&conn).unwrap(), 0);
+        assert_eq!(run(&conn, TEST_OWNER).unwrap(), 0);
     }
 }

@@ -4,13 +4,13 @@
 use crate::db::{get_conn, person};
 use crate::state::SharedState;
 use crate::types::CreatePersonRequest;
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use super::ApiError;
+use super::{ApiError, UserId};
 
 const MAX_ROWS: usize = 5000;
 
@@ -69,6 +69,7 @@ pub struct ImportCommitResponse {
 
 pub async fn preview(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<ImportPreviewRequest>,
 ) -> Result<Json<ImportPreviewResponse>, ApiError> {
     let started = Instant::now();
@@ -77,15 +78,15 @@ pub async fn preview(
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let conn = get_conn(&guard)?;
 
-    // 库内已有 (name, phone) 索引
+    // 库内已有 (name, phone) 索引 - 按 owner_id 过滤
     let mut db_name_phone: HashSet<(String, String)> = HashSet::new();
     let mut db_names: HashSet<String> = HashSet::new();
     {
         let mut stmt = conn
-            .prepare("SELECT name, COALESCE(phone, '') FROM persons")
+            .prepare("SELECT name, COALESCE(phone, '') FROM persons WHERE owner_id = ?1")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(rusqlite::params![user_id.0], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|e| e.to_string())?;
@@ -140,6 +141,7 @@ pub async fn preview(
 
 pub async fn commit(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<ImportCommitRequest>,
 ) -> Result<Json<ImportCommitResponse>, ApiError> {
     let started = Instant::now();
@@ -163,7 +165,7 @@ pub async fn commit(
             failed.push(RowIssue { index, reason: "姓名为空".to_string() });
             continue;
         }
-        match person::create(&tx, sanitize(row)) {
+        match person::create(&tx, &user_id.0, sanitize(row)) {
             Ok(_) => imported += 1,
             Err(error) => failed.push(RowIssue { index, reason: error.to_string() }),
         }

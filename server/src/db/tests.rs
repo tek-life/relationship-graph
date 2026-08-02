@@ -4,6 +4,8 @@ mod tests {
     use crate::types::CreatePersonRequest;
     use rusqlite::Connection;
 
+    const TEST_OWNER: &str = "test-owner";
+
     fn in_memory_db() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory db");
         schema::migrate(&conn).expect("schema migration");
@@ -15,6 +17,7 @@ mod tests {
         let conn = in_memory_db();
         let created = person::create(
             &conn,
+            TEST_OWNER,
             CreatePersonRequest {
                 name: "张三".to_string(),
                 aliases: vec!["老张".to_string()],
@@ -37,12 +40,16 @@ mod tests {
         )
         .expect("create person");
 
-        let persons = person::list_all(&conn).expect("list persons");
+        let persons = person::list_all(&conn, TEST_OWNER).expect("list persons");
         assert_eq!(persons.len(), 1);
         assert_eq!(persons[0].id, created.id);
         assert_eq!(persons[0].aliases, vec!["老张"]);
         assert_eq!(persons[0].resource_tags, vec!["地产", "融资"]);
         assert_eq!(persons[0].school.as_deref(), Some("某大学"));
         assert_eq!(persons[0].projects, vec!["某项目"]);
+
+        // 不同 owner 看不到
+        let other_persons = person::list_all(&conn, "other-owner").expect("list other");
+        assert_eq!(other_persons.len(), 0);
     }
 }

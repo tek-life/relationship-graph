@@ -83,7 +83,7 @@ struct ScoredCandidate {
     score: i64,
 }
 
-pub fn natural_language_query(conn: &Connection, req: NlqRequest) -> Result<Vec<NlqResult>, String> {
+pub fn natural_language_query(conn: &Connection, owner_id: &str, req: NlqRequest) -> Result<Vec<NlqResult>, String> {
     let query_len = req.query.chars().count();
     let reveal_sensitive = req.reveal_sensitive.unwrap_or(false);
     let intent = validate_query_intent(parse_query_intent(&req.query));
@@ -99,13 +99,13 @@ pub fn natural_language_query(conn: &Connection, req: NlqRequest) -> Result<Vec<
         safe_filter_summary(&intent.filters)
     );
 
-    let candidates = load_candidates(conn).map_err(|e| e.to_string())?;
+    let candidates = load_candidates(conn, owner_id).map_err(|e| e.to_string())?;
     let candidate_count = candidates.len();
     let mut scored = Vec::new();
 
     for candidate in candidates {
-        if candidate_matches(conn, &candidate, &intent.filters).map_err(|e| e.to_string())? {
-            let score = score_candidate(conn, &candidate, &intent.filters).map_err(|e| e.to_string())?;
+        if candidate_matches(conn, owner_id, &candidate, &intent.filters).map_err(|e| e.to_string())? {
+            let score = score_candidate(conn, owner_id, &candidate, &intent.filters).map_err(|e| e.to_string())?;
             scored.push(ScoredCandidate { candidate, score });
         }
     }
@@ -198,7 +198,7 @@ fn validate_query_intent(mut intent: QueryIntent) -> QueryIntent {
     intent
 }
 
-fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>, rusqlite::Error> {
+fn load_candidates(conn: &Connection, owner_id: &str) -> Result<Vec<Candidate>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT
             p.id,
@@ -214,22 +214,23 @@ fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>, rusqlite::Error>
             p.next_step,
             (
                 SELECT i.timestamp FROM interactions i
-                WHERE i.person_id = p.id
+                WHERE i.person_id = p.id AND i.owner_id = ?1
                 ORDER BY i.timestamp DESC
                 LIMIT 1
             ) AS last_interaction_at,
             (
                 SELECT i.summary FROM interactions i
-                WHERE i.person_id = p.id
+                WHERE i.person_id = p.id AND i.owner_id = ?1
                 ORDER BY i.timestamp DESC
                 LIMIT 1
             ) AS last_interaction_summary
          FROM persons p
+         WHERE p.owner_id = ?1
          ORDER BY p.updated_at DESC
          LIMIT 500",
     )?;
 
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![owner_id], |row| {
         let aliases_json: String = row.get(2)?;
         let tags_json: String = row.get(8)?;
         Ok(Candidate {
@@ -252,7 +253,7 @@ fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>, rusqlite::Error>
     rows.collect()
 }
 
-fn candidate_matches(conn: &Connection, candidate: &Candidate, filters: &QueryFilters) -> Result<bool, rusqlite::Error> {
+fn candidate_matches(conn: &Connection, owner_id: &str, candidate: &Candidate, filters: &QueryFilters) -> Result<bool, rusqlite::Error> {
     if !filters.locations.is_empty()
         && !matches_any(candidate.location.as_deref().unwrap_or_default(), &filters.locations)
     {
@@ -281,14 +282,14 @@ fn candidate_matches(conn: &Connection, candidate: &Candidate, filters: &QueryFi
         }
     }
 
-    if !filters.topics.is_empty() && !person_has_any_topic(conn, &candidate.person_id, &filters.topics)? {
+    if !filters.topics.is_empty() && !person_has_any_topic(conn, owner_id, &candidate.person_id, &filters.topics)? {
         return Ok(false);
     }
 
     Ok(true)
 }
 
-fn score_candidate(conn: &Connection, candidate: &Candidate, filters: &QueryFilters) -> Result<i64, rusqlite::Error> {
+fn score_candidate(conn: &Connection, owner_id: &str, candidate: &Candidate, filters: &QueryFilters) -> Result<i64, rusqlite::Error> {
     let mut score = 0;
 
     score += match candidate.relationship_strength.as_deref() {
@@ -309,7 +310,7 @@ fn score_candidate(conn: &Connection, candidate: &Candidate, filters: &QueryFilt
         .count() as i64
         * 12;
 
-    score += topic_match_count(conn, &candidate.person_id, &filters.topics)? as i64 * 10;
+    score += topic_match_count(conn, owner_id, &candidate.person_id, &filters.topics)? as i64 * 10;
 
     if is_recent(candidate.last_interaction_at.as_deref(), 30) {
         score += 8;
@@ -357,11 +358,11 @@ fn to_result(scored: ScoredCandidate, reveal_sensitive: bool) -> NlqResult {
     }
 }
 
-fn person_has_any_topic(conn: &Connection, person_id: &str, topics: &[String]) -> Result<bool, rusqlite::Error> {
-    Ok(topic_match_count(conn, person_id, topics)? > 0)
+fn person_has_any_topic(conn: &Connection, owner_id: &str, person_id: &str, topics: &[String]) -> Result<bool, rusqlite::Error> {
+    Ok(topic_match_count(conn, owner_id, person_id, topics)? > 0)
 }
 
-fn topic_match_count(conn: &Connection, person_id: &str, topics: &[String]) -> Result<usize, rusqlite::Error> {
+fn topic_match_count(conn: &Connection, owner_id: &str, person_id: &str, topics: &[String]) -> Result<usize, rusqlite::Error> {
     if topics.is_empty() {
         return Ok(0);
     }
@@ -372,10 +373,10 @@ fn topic_match_count(conn: &Connection, person_id: &str, topics: &[String]) -> R
         let exists: i64 = conn.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM interactions
-                WHERE person_id = ?1
-                  AND (topics LIKE ?2 OR content LIKE ?2 OR COALESCE(summary, '') LIKE ?2)
+                WHERE owner_id = ?1 AND person_id = ?2
+                  AND (topics LIKE ?3 OR content LIKE ?3 OR COALESCE(summary, '') LIKE ?3)
             )",
-            params![person_id, pattern],
+            params![owner_id, person_id, pattern],
             |row| row.get(0),
         )?;
         if exists == 1 {
@@ -478,19 +479,19 @@ pub fn classify_intent(query: &str) -> &'static str {
 // === 多意图处理器（供 api handler 调用） ===
 
 /// 按人名模糊搜索联系人（参数化 SQL，LIMIT 10）
-pub fn search_persons_by_name(conn: &Connection, name: &str) -> Result<Vec<Person>, String> {
+pub fn search_persons_by_name(conn: &Connection, owner_id: &str, name: &str) -> Result<Vec<Person>, String> {
     let pattern = format!("%{}%", name);
     let mut stmt = conn
         .prepare(
             "SELECT id, name, aliases, avatar, phone, email, company, title, location, background, \
              relationship_strength, resource_tags, sensitivity_level, status, next_step, notes, \
              school, projects, created_at, updated_at \
-             FROM persons WHERE name LIKE ?1 OR aliases LIKE ?1 LIMIT 10",
+             FROM persons WHERE owner_id = ?1 AND (name LIKE ?2 OR aliases LIKE ?2) LIMIT 10",
         )
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map(params![pattern], |row| {
+        .query_map(params![owner_id, pattern], |row| {
             let aliases_json: String = row.get(2)?;
             let tags_json: String = row.get(11)?;
             let projects_json: Option<String> = row.get(17)?;
@@ -528,10 +529,11 @@ pub fn search_persons_by_name(conn: &Connection, name: &str) -> Result<Vec<Perso
 /// update_person 意图：人名消歧 + 组装草稿
 pub fn handle_update_person_sync(
     conn: &Connection,
+    owner_id: &str,
     target_name: &str,
     changes: Vec<FieldChange>,
 ) -> Result<NlqResponse, String> {
-    let candidates = search_persons_by_name(conn, target_name)?;
+    let candidates = search_persons_by_name(conn, owner_id, target_name)?;
     let (target_person, error_hint, confidence) = if candidates.len() == 1 {
         (Some(candidates[0].clone()), None, 80u8)
     } else if candidates.is_empty() {
@@ -554,10 +556,11 @@ pub fn handle_update_person_sync(
 /// add_interaction 意图：人名消歧 + 组装草稿
 pub fn handle_add_interaction_sync(
     conn: &Connection,
+    owner_id: &str,
     mut draft: InteractionDraft,
 ) -> Result<NlqResponse, String> {
     if !draft.person_mention.is_empty() {
-        let candidates = search_persons_by_name(conn, &draft.person_mention)?;
+        let candidates = search_persons_by_name(conn, owner_id, &draft.person_mention)?;
         if candidates.len() == 1 {
             draft.resolved_person = Some(candidates[0].clone());
         }
@@ -567,8 +570,8 @@ pub fn handle_add_interaction_sync(
 }
 
 /// find_path 意图：查找与目标人的最短关系路径
-pub fn handle_find_path_sync(conn: &Connection, target_name: &str) -> Result<NlqResponse, String> {
-    let candidates = search_persons_by_name(conn, target_name)?;
+pub fn handle_find_path_sync(conn: &Connection, owner_id: &str, target_name: &str) -> Result<NlqResponse, String> {
+    let candidates = search_persons_by_name(conn, owner_id, target_name)?;
     if candidates.is_empty() {
         return Ok(NlqResponse::FindPath {
             path: PathData {
@@ -581,22 +584,22 @@ pub fn handle_find_path_sync(conn: &Connection, target_name: &str) -> Result<Nlq
         });
     }
     let target = &candidates[0];
-    let path = find_shortest_path(conn, &target.id)?;
+    let path = find_shortest_path(conn, owner_id, &target.id)?;
     Ok(NlqResponse::FindPath { path })
 }
 
 /// BFS 查找从图中最远可达节点到 target 的最短路径
-pub fn find_shortest_path(conn: &Connection, target_id: &str) -> Result<PathData, String> {
+pub fn find_shortest_path(conn: &Connection, owner_id: &str, target_id: &str) -> Result<PathData, String> {
     // 加载所有 relationships（参数化查询无需用户输入）
     let mut stmt = conn
         .prepare(
             "SELECT id, from_person_id, to_person_id, relationship_type, strength, confirmation_status \
-             FROM relationships WHERE confirmation_status != 'rejected'",
+             FROM relationships WHERE owner_id = ?1 AND confirmation_status != 'rejected'",
         )
         .map_err(|e| e.to_string())?;
 
     let edges: Vec<(String, String, String, String, Option<String>, String)> = stmt
-        .query_map([], |row| {
+        .query_map(params![owner_id], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,

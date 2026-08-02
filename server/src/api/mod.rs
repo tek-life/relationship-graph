@@ -2,16 +2,17 @@
 //! 日志遵循脱敏原则：不记录密码、token、姓名、电话及内容原文。
 
 use crate::db::crypto::{derive_key, generate_salt, open_encrypted_db, validate_encrypted_db};
-use crate::db::{get_conn, interaction, person, relationship, schema};
+use crate::db::{get_conn, interaction, person, relationship, schema, user};
 use crate::nlq::{self, NlqRequest, NlqResult};
 use crate::security::sensitivity;
 use crate::state::SharedState;
 use crate::types::{
-    CreateEntityMentionRequest, CreateInteractionRequest, CreatePersonRequest,
+    AuthResponse, CreateEntityMentionRequest, CreateInteractionRequest, CreatePersonRequest,
     CreateRelationshipRequest, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
-    NlqConfirmRequest, NlqMultiRequest, NlqResponse, Person, Relationship,
+    LoginRequest, NlqConfirmRequest, NlqMultiRequest, NlqResponse, OAuthRequest, Person,
+    RefreshRequest, RegisterRequest, Relationship, User,
 };
-use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -22,6 +23,11 @@ use std::time::Instant;
 
 mod import;
 mod voice;
+
+// ---------- UserId 提取器 ----------
+
+#[derive(Clone, Debug)]
+pub struct UserId(pub String);
 
 pub fn router(state: SharedState) -> Router {
     let protected = Router::new()
@@ -47,10 +53,10 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/import/persons", post(import::commit))
         .route(
             "/api/voice/transcribe",
-            // 默认 body 上限 2MB，放宽到音频上限 + multipart 编码开销；音频本体超 10MB 由 handler 返回 413
             post(voice::transcribe).layer(DefaultBodyLimit::max(voice::MAX_AUDIO_BYTES + 1024 * 1024)),
         )
         .route("/api/auth/lock", post(lock_database))
+        .route("/api/auth/me", get(get_current_user))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()
@@ -58,6 +64,10 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/auth/state", get(auth_state))
         .route("/api/auth/setup", post(setup_database))
         .route("/api/auth/unlock", post(unlock_database))
+        .route("/api/auth/register", post(register_user))
+        .route("/api/auth/login", post(login_user))
+        .route("/api/auth/refresh", post(refresh_token))
+        .route("/api/auth/oauth/:provider", post(oauth_callback))
         .merge(protected)
         .with_state(state)
 }
@@ -87,7 +97,6 @@ impl IntoResponse for ApiError {
 
 impl From<String> for ApiError {
     fn from(message: String) -> Self {
-        // db 未解锁属于客户端可恢复错误
         if message.contains("尚未初始化或解锁") {
             Self { status: StatusCode::CONFLICT, message }
         } else {
@@ -102,7 +111,11 @@ impl From<rusqlite::Error> for ApiError {
     }
 }
 
-async fn require_auth(State(state): State<SharedState>, req: Request, next: Next) -> Response {
+async fn require_auth(
+    State(state): State<SharedState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
     let token = req
         .headers()
         .get("authorization")
@@ -111,21 +124,39 @@ async fn require_auth(State(state): State<SharedState>, req: Request, next: Next
         .unwrap_or_default()
         .to_string();
 
-    let valid = state
-        .tokens
-        .lock()
-        .map(|mut store| store.validate(&token))
-        .unwrap_or(false);
-
-    if !valid {
-        log::warn!(target: "auth", "request_rejected reason=invalid_token path={}", req.uri().path());
+    if token.is_empty() {
+        log::warn!(target: "auth", "request_rejected reason=missing_token path={}", req.uri().path());
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "未登录或会话已过期" })),
         )
             .into_response();
     }
-    next.run(req).await
+
+    // 优先尝试 JWT 验证
+    if let Some(user_id) = state.jwt.validate_access_token(&token) {
+        req.extensions_mut().insert(UserId(user_id));
+        return next.run(req).await;
+    }
+
+    // 降级：旧 TokenStore 验证（向后兼容 unlock）
+    let valid = state
+        .tokens
+        .lock()
+        .map(|mut store| store.validate(&token))
+        .unwrap_or(false);
+
+    if valid {
+        req.extensions_mut().insert(UserId("legacy".to_string()));
+        return next.run(req).await;
+    }
+
+    log::warn!(target: "auth", "request_rejected reason=invalid_token path={}", req.uri().path());
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({ "error": "未登录或会话已过期" })),
+    )
+        .into_response()
 }
 
 // ---------- 健康检查与认证 ----------
@@ -191,13 +222,21 @@ async fn setup_database(
     *guard = Some(conn);
     drop(guard);
 
-    let token = issue_token(&state)?;
+    // unlock 成功后签发 JWT（user_id="legacy"）
+    let (access_token, _refresh) = state.jwt.issue_tokens("legacy");
+    // 同时兼容旧前端：也签发一个旧 token
+    let _legacy_token = state
+        .tokens
+        .lock()
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .issue();
+
     log::info!(
         target: "security",
         "setup_database_success elapsed_ms={}",
         started.elapsed().as_millis()
     );
-    Ok(Json(TokenResponse { token }))
+    Ok(Json(TokenResponse { token: access_token }))
 }
 
 async fn unlock_database(
@@ -222,13 +261,21 @@ async fn unlock_database(
     *guard = Some(conn);
     drop(guard);
 
-    let token = issue_token(&state)?;
+    // unlock 成功后签发 JWT（user_id="legacy"）
+    let (access_token, _refresh) = state.jwt.issue_tokens("legacy");
+    // 同时签发旧 token（兼容旧前端）
+    let _legacy_token = state
+        .tokens
+        .lock()
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .issue();
+
     log::info!(
         target: "security",
         "unlock_database_success source=manual_password elapsed_ms={}",
         started.elapsed().as_millis()
     );
-    Ok(Json(TokenResponse { token }))
+    Ok(Json(TokenResponse { token: access_token }))
 }
 
 async fn lock_database(State(state): State<SharedState>) -> Result<Json<serde_json::Value>, ApiError> {
@@ -244,63 +291,195 @@ async fn lock_database(State(state): State<SharedState>) -> Result<Json<serde_js
     Ok(Json(serde_json::json!({ "locked": true })))
 }
 
-fn issue_token(state: &SharedState) -> Result<String, ApiError> {
-    Ok(state
-        .tokens
-        .lock()
-        .map_err(|e| ApiError::internal(e.to_string()))?
-        .issue())
+// ---------- 用户注册/登录/刷新 ----------
+
+async fn register_user(
+    State(state): State<SharedState>,
+    Json(req): Json<RegisterRequest>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    if req.username.trim().len() < 2 {
+        return Err(ApiError::bad_request("用户名至少需要 2 个字符"));
+    }
+    if req.password.len() < 8 {
+        return Err(ApiError::bad_request("密码至少需要 8 个字符"));
+    }
+
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+
+    let created_user = user::create_user(
+        conn,
+        req.username.trim(),
+        req.email.as_deref(),
+        req.phone.as_deref(),
+        &req.password,
+    )
+    .map_err(|e| ApiError::bad_request(e))?;
+
+    let (access_token, refresh_token) = state.jwt.issue_tokens(&created_user.id);
+    log::info!(target: "auth", "register_user_success user_id={}", created_user.id);
+
+    Ok(Json(AuthResponse {
+        access_token,
+        refresh_token,
+        user: created_user,
+    }))
+}
+
+async fn login_user(
+    State(state): State<SharedState>,
+    Json(req): Json<LoginRequest>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+
+    let verified_user = user::verify_user(conn, &req.login, &req.password)
+        .map_err(|e| ApiError { status: StatusCode::UNAUTHORIZED, message: e })?;
+
+    let (access_token, refresh_token) = state.jwt.issue_tokens(&verified_user.id);
+    log::info!(target: "auth", "login_user_success user_id={}", verified_user.id);
+
+    Ok(Json(AuthResponse {
+        access_token,
+        refresh_token,
+        user: verified_user,
+    }))
+}
+
+async fn refresh_token(
+    State(state): State<SharedState>,
+    Json(req): Json<RefreshRequest>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    let user_id = state
+        .jwt
+        .validate_refresh_token(&req.refresh_token)
+        .ok_or_else(|| ApiError { status: StatusCode::UNAUTHORIZED, message: "刷新令牌无效或已过期".to_string() })?;
+
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+
+    let found_user = user::get_user_by_id(conn, &user_id)
+        .map_err(|e| ApiError { status: StatusCode::UNAUTHORIZED, message: e })?;
+
+    let (access_token, new_refresh_token) = state.jwt.issue_tokens(&found_user.id);
+    log::info!(target: "auth", "refresh_token_success user_id={}", found_user.id);
+
+    Ok(Json(AuthResponse {
+        access_token,
+        refresh_token: new_refresh_token,
+        user: found_user,
+    }))
+}
+
+async fn oauth_callback(
+    State(state): State<SharedState>,
+    Path(provider): Path<String>,
+    Json(req): Json<OAuthRequest>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    // Mock 模式：接收任何 code，创建/查找测试用户并返回 JWT
+    log::info!(target: "auth", "oauth_callback provider={} code_len={}", provider, req.code.len());
+
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+
+    // 使用 code 作为 oauth_id（mock），用 provider_code 作为 username
+    let oauth_id = &req.code;
+    let username = format!("{}_{}", provider, &req.code[..req.code.len().min(8)]);
+
+    let oauth_user = user::find_or_create_oauth_user(conn, &provider, oauth_id, &username)
+        .map_err(|e| ApiError::internal(e))?;
+
+    let (access_token, refresh_token) = state.jwt.issue_tokens(&oauth_user.id);
+    log::info!(target: "auth", "oauth_callback_success provider={} user_id={}", provider, oauth_user.id);
+
+    Ok(Json(AuthResponse {
+        access_token,
+        refresh_token,
+        user: oauth_user,
+    }))
+}
+
+async fn get_current_user(
+    State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
+) -> Result<Json<User>, ApiError> {
+    if user_id.0 == "legacy" {
+        // legacy 用户返回一个虚拟用户
+        return Ok(Json(User {
+            id: "legacy".to_string(),
+            username: "legacy".to_string(),
+            email: None,
+            phone: None,
+            display_name: Some("旧版用户".to_string()),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        }));
+    }
+
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+
+    let found_user = user::get_user_by_id(conn, &user_id.0)
+        .map_err(|e| ApiError { status: StatusCode::NOT_FOUND, message: e })?;
+
+    Ok(Json(found_user))
 }
 
 // ---------- Person ----------
 
 async fn create_person(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<CreatePersonRequest>,
 ) -> Result<Json<Person>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let created = person::create(conn, req)?;
+    let created = person::create(conn, &user_id.0, req)?;
     log::info!(target: "person_cmd", "create_person_success sensitivity={}", created.sensitivity_level);
     Ok(Json(created))
 }
 
 async fn update_person(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Path(id): Path<String>,
     Json(req): Json<CreatePersonRequest>,
 ) -> Result<Json<Person>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let updated = person::update(conn, &id, req)?;
+    let updated = person::update(conn, &user_id.0, &id, req)?;
     log::info!(target: "person_cmd", "update_person_success");
     Ok(Json(updated))
 }
 
-async fn list_persons(State(state): State<SharedState>) -> Result<Json<Vec<Person>>, ApiError> {
+async fn list_persons(
+    State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
+) -> Result<Json<Vec<Person>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let persons = person::list_all(conn)?;
+    let persons = person::list_all(conn, &user_id.0)?;
     log::info!(target: "person_cmd", "list_persons_success count={}", persons.len());
     Ok(Json(persons))
 }
 
 async fn get_person(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Path(id): Path<String>,
 ) -> Result<Json<Option<Person>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    Ok(Json(person::get_by_id(conn, &id)?))
+    Ok(Json(person::get_by_id(conn, &user_id.0, &id)?))
 }
 
 async fn delete_person(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    person::delete(conn, &id)?;
+    person::delete(conn, &user_id.0, &id)?;
     log::info!(target: "person_cmd", "delete_person_success");
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
@@ -312,11 +491,12 @@ struct MentionQuery {
 
 async fn search_person_candidates(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Query(query): Query<MentionQuery>,
 ) -> Result<Json<Vec<Person>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let persons = person::search_by_mention(conn, &query.mention)?;
+    let persons = person::search_by_mention(conn, &user_id.0, &query.mention)?;
     log::info!(
         target: "person_cmd",
         "search_person_candidates_success mention_len={} count={}",
@@ -330,37 +510,43 @@ async fn search_person_candidates(
 
 async fn create_relationship(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<CreateRelationshipRequest>,
 ) -> Result<Json<Relationship>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let created = relationship::create(conn, req)?;
+    let created = relationship::create(conn, &user_id.0, req)?;
     log::info!(target: "relationship_cmd", "create_relationship_success");
     Ok(Json(created))
 }
 
 async fn list_relationships(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
 ) -> Result<Json<Vec<Relationship>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    Ok(Json(relationship::list_all(conn)?))
+    Ok(Json(relationship::list_all(conn, &user_id.0)?))
 }
 
 async fn list_relationships_by_person(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Relationship>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    Ok(Json(relationship::list_by_person(conn, &id)?))
+    Ok(Json(relationship::list_by_person(conn, &user_id.0, &id)?))
 }
 
-async fn infer_relationships(State(state): State<SharedState>) -> Result<Json<serde_json::Value>, ApiError> {
+async fn infer_relationships(
+    State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let started = Instant::now();
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let created = crate::infer::run(conn)?;
+    let created = crate::infer::run(conn, &user_id.0)?;
     log::info!(
         target: "relationship_cmd",
         "infer_relationships_success created={} elapsed_ms={}",
@@ -372,10 +558,11 @@ async fn infer_relationships(State(state): State<SharedState>) -> Result<Json<se
 
 async fn list_pending_relationships(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
 ) -> Result<Json<Vec<Relationship>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    Ok(Json(relationship::list_pending(conn)?))
+    Ok(Json(relationship::list_pending(conn, &user_id.0)?))
 }
 
 #[derive(Deserialize)]
@@ -385,6 +572,7 @@ struct ConfirmationRequest {
 
 async fn set_relationship_confirmation(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Path(id): Path<String>,
     Json(req): Json<ConfirmationRequest>,
 ) -> Result<Json<Relationship>, ApiError> {
@@ -393,7 +581,7 @@ async fn set_relationship_confirmation(
     }
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let updated = relationship::set_confirmation(conn, &id, &req.status)?;
+    let updated = relationship::set_confirmation(conn, &user_id.0, &id, &req.status)?;
     log::info!(target: "relationship_cmd", "set_relationship_confirmation_success status={}", req.status);
     Ok(Json(updated))
 }
@@ -402,42 +590,48 @@ async fn set_relationship_confirmation(
 
 async fn create_interaction(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<CreateInteractionRequest>,
 ) -> Result<Json<Interaction>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let created = interaction::create(conn, req)?;
+    let created = interaction::create(conn, &user_id.0, req)?;
     log::info!(target: "interaction_cmd", "create_interaction_success");
     Ok(Json(created))
 }
 
 async fn list_interactions_by_person(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Interaction>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    Ok(Json(interaction::list_by_person(conn, &id)?))
+    Ok(Json(interaction::list_by_person(conn, &user_id.0, &id)?))
 }
 
 async fn create_entity_mention(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<CreateEntityMentionRequest>,
 ) -> Result<Json<EntityMention>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    Ok(Json(interaction::create_mention(conn, req)?))
+    Ok(Json(interaction::create_mention(conn, &user_id.0, req)?))
 }
 
 // ---------- Graph ----------
 
-async fn get_graph_data(State(state): State<SharedState>) -> Result<Json<GraphData>, ApiError> {
+async fn get_graph_data(
+    State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
+) -> Result<Json<GraphData>, ApiError> {
     let started = Instant::now();
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
 
-    let persons = person::list_all(conn)?;
-    let relationships = relationship::list_all(conn)?;
+    let persons = person::list_all(conn, &user_id.0)?;
+    let relationships = relationship::list_all(conn, &user_id.0)?;
 
     let nodes: Vec<GraphNode> = persons
         .into_iter()
@@ -479,11 +673,12 @@ async fn get_graph_data(State(state): State<SharedState>) -> Result<Json<GraphDa
 
 async fn natural_language_query(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<NlqRequest>,
 ) -> Result<Json<Vec<NlqResult>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let results = nlq::natural_language_query(conn, req)?;
+    let results = nlq::natural_language_query(conn, &user_id.0, req)?;
     Ok(Json(results))
 }
 
@@ -491,6 +686,7 @@ async fn natural_language_query(
 
 async fn nlq_multi_handler(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<NlqMultiRequest>,
 ) -> Result<Json<NlqResponse>, ApiError> {
     let intent = nlq::classify_intent(&req.query);
@@ -502,6 +698,7 @@ async fn nlq_multi_handler(
             let conn = get_conn(&guard)?;
             let results = nlq::natural_language_query(
                 conn,
+                &user_id.0,
                 NlqRequest {
                     query: req.query,
                     reveal_sensitive: req.reveal_sensitive,
@@ -517,21 +714,21 @@ async fn nlq_multi_handler(
             let (target_name, changes) = crate::llm::extract_update_fields(&req.query).await;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
-            let response = nlq::handle_update_person_sync(conn, &target_name, changes)?;
+            let response = nlq::handle_update_person_sync(conn, &user_id.0, &target_name, changes)?;
             Ok(Json(response))
         }
         "add_interaction" => {
             let draft = crate::llm::extract_interaction_data(&req.query).await;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
-            let response = nlq::handle_add_interaction_sync(conn, draft)?;
+            let response = nlq::handle_add_interaction_sync(conn, &user_id.0, draft)?;
             Ok(Json(response))
         }
         "find_path" => {
             let target_name = crate::llm::extract_path_target(&req.query).await;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
-            let response = nlq::handle_find_path_sync(conn, &target_name)?;
+            let response = nlq::handle_find_path_sync(conn, &user_id.0, &target_name)?;
             Ok(Json(response))
         }
         _ => {
@@ -540,6 +737,7 @@ async fn nlq_multi_handler(
             let conn = get_conn(&guard)?;
             let results = nlq::natural_language_query(
                 conn,
+                &user_id.0,
                 NlqRequest {
                     query: req.query,
                     reveal_sensitive: req.reveal_sensitive,
@@ -552,6 +750,7 @@ async fn nlq_multi_handler(
 
 async fn nlq_confirm_handler(
     State(state): State<SharedState>,
+    Extension(user_id): Extension<UserId>,
     Json(req): Json<NlqConfirmRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     log::info!(target: "nlq", "nlq_confirm_handler intent_type={}", req.intent_type);
@@ -563,7 +762,7 @@ async fn nlq_confirm_handler(
         "create_person" => {
             let create_req: CreatePersonRequest = serde_json::from_value(req.data)
                 .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?;
-            let created = person::create(conn, create_req)?;
+            let created = person::create(conn, &user_id.0, create_req)?;
             Ok(Json(serde_json::to_value(created).unwrap()))
         }
         "update_person" => {
@@ -573,13 +772,13 @@ async fn nlq_confirm_handler(
                 .to_string();
             let update_req: CreatePersonRequest = serde_json::from_value(req.data)
                 .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?;
-            let updated = person::update(conn, &id, update_req)?;
+            let updated = person::update(conn, &user_id.0, &id, update_req)?;
             Ok(Json(serde_json::to_value(updated).unwrap()))
         }
         "add_interaction" => {
             let create_req: CreateInteractionRequest = serde_json::from_value(req.data)
                 .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?;
-            let created = interaction::create(conn, create_req)?;
+            let created = interaction::create(conn, &user_id.0, create_req)?;
             Ok(Json(serde_json::to_value(created).unwrap()))
         }
         _ => Err(ApiError::bad_request(format!(
