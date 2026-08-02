@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>使用帮助 — 个人关系图谱</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #94a3b8;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --border: #e2e8f0;
+      --code-bg: #f1f5f9;
+      --accent-green: #10b981;
+      --accent-purple: #8b5cf6;
+      --accent-orange: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 16px;
+    }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Layout */
+    .page { display: flex; min-height: 100vh; }
+
+    /* Sidebar nav */
+    .sidebar {
+      width: 260px;
+      flex-shrink: 0;
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      padding: 2rem 1.25rem;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+    }
+    .sidebar-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 1.5rem;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .sidebar-title::before { content: "📖"; }
+    .nav-list { list-style: none; }
+    .nav-list li { margin-bottom: 0.25rem; }
+    .nav-list a {
+      display: block;
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav-list a:hover {
+      background: var(--code-bg);
+      color: var(--primary);
+      text-decoration: none;
+    }
+    .nav-list .sub { padding-left: 1.25rem; }
+    .nav-list .sub a { font-size: 0.8rem; color: var(--text-muted); }
+
+    /* Main content */
+    .main { flex: 1; padding: 3rem 4rem; max-width: 900px; }
+
+    /* Sections */
+    section { margin-bottom: 3rem; scroll-margin-top: 1rem; }
+    h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, var(--primary), var(--accent-purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .subtitle { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 2.5rem; }
+    h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid var(--border);
+      color: var(--text);
+    }
+    h3 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-top: 1.5rem;
+      margin-bottom: 0.75rem;
+      color: var(--text);
+    }
+    h4 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-top: 1rem;
+      margin-bottom: 0.5rem;
+      color: var(--text-secondary);
+    }
+    p { margin-bottom: 0.85rem; color: var(--text-secondary); }
+    ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; color: var(--text-secondary); }
+    li { margin-bottom: 0.4rem; }
+
+    /* Cards / Boxes */
+    .info-box {
+      background: #eff6ff;
+      border-left: 4px solid var(--primary);
+      padding: 1rem 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 1.25rem;
+    }
+    .info-box p { color: #1e40af; margin-bottom: 0; }
+
+    .tip-box {
+      background: #f0fdf4;
+      border-left: 4px solid var(--accent-green);
+      padding: 1rem 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 1.25rem;
+    }
+    .tip-box p { color: #166534; margin-bottom: 0; }
+
+    .warn-box {
+      background: #fffbeb;
+      border-left: 4px solid var(--accent-orange);
+      padding: 1rem 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 1.25rem;
+    }
+    .warn-box p { color: #92400e; margin-bottom: 0; }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .feature-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      transition: box-shadow 0.2s;
+    }
+    .feature-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+    .feature-card .icon { font-size: 1.75rem; margin-bottom: 0.5rem; }
+    .feature-card h4 { margin: 0 0 0.4rem; color: var(--text); font-size: 0.95rem; }
+    .feature-card p { font-size: 0.82rem; color: var(--text-muted); margin: 0; }
+
+    .step-list { counter-reset: step; list-style: none; padding-left: 0; }
+    .step-list li {
+      counter-increment: step;
+      position: relative;
+      padding-left: 2.5rem;
+      margin-bottom: 1rem;
+    }
+    .step-list li::before {
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1.75rem;
+      height: 1.75rem;
+      background: var(--primary);
+      color: white;
+      border-radius: 50%;
+      font-size: 0.8rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .faq-item {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      margin-bottom: 0.85rem;
+    }
+    .faq-item summary {
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      color: var(--text);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .faq-item summary::before {
+      content: "▸";
+      color: var(--primary);
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+    .faq-item[open] summary::before { transform: rotate(90deg); }
+    .faq-item .answer { padding-top: 0.75rem; color: var(--text-secondary); font-size: 0.9rem; }
+
+    code {
+      background: var(--code-bg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+      font-size: 0.875em;
+      color: var(--accent-purple);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 1.25rem;
+      font-size: 0.9rem;
+    }
+    th, td {
+      padding: 0.6rem 0.85rem;
+      border: 1px solid var(--border);
+      text-align: left;
+    }
+    th { background: var(--code-bg); font-weight: 600; color: var(--text); }
+    td { color: var(--text-secondary); }
+
+    .back-link { display: inline-block; margin-bottom: 1.5rem; font-size: 0.875rem; }
+
+    /* Mobile */
+    @media (max-width: 768px) {
+      .page { flex-direction: column; }
+      .sidebar {
+        width: 100%;
+        height: auto;
+        position: static;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        padding: 1.25rem;
+      }
+      .nav-list { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+      .nav-list li { margin: 0; }
+      .nav-list .sub { padding-left: 0; }
+      .main { padding: 1.5rem 1.25rem; }
+      h1 { font-size: 1.5rem; }
+      h2 { font-size: 1.2rem; }
+      .feature-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Sidebar Navigation -->
+  <nav class="sidebar">
+    <div class="sidebar-title">使用帮助</div>
+    <ul class="nav-list">
+      <li><a href="#overview">系统功能概览</a></li>
+      <li><a href="#auth">登录 / 注册</a></li>
+      <li class="sub"><a href="#register">注册新用户</a></li>
+      <li class="sub"><a href="#login">登录</a></li>
+      <li class="sub"><a href="#oauth">第三方登录</a></li>
+      <li><a href="#features">功能使用指南</a></li>
+      <li class="sub"><a href="#add-contacts">添加联系人</a></li>
+      <li class="sub"><a href="#ai-query">AI 查询</a></li>
+      <li class="sub"><a href="#graph">关系图谱</a></li>
+      <li class="sub"><a href="#interactions">记录互动</a></li>
+      <li class="sub"><a href="#relationships">管理关系</a></li>
+      <li class="sub"><a href="#themes">主题切换</a></li>
+      <li><a href="#faq">常见问题</a></li>
+      <li><a href="#architecture">系统架构</a></li>
+    </ul>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="main">
+
+    <!-- Overview -->
+    <section id="overview">
+      <h1>个人关系图谱 — 使用帮助</h1>
+      <p class="subtitle">加密存储 · 多端协同 · 智能辅助 — 你的人脉网络管理平台</p>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="icon">🔐</div>
+          <h4>多用户认证</h4>
+          <p>支持用户名 / 邮箱 / 手机号注册登录，JWT 令牌保障会话安全</p>
+        </div>
+        <div class="feature-card">
+          <div class="icon">🗺️</div>
+          <h4>图谱可视化</h4>
+          <p>以拼音分组的交互式关系网络图，支持缩放、拖拽、焦点模式</p>
+        </div>
+        <div class="feature-card">
+          <div class="icon">🤖</div>
+          <h4>AI 自然语言查询</h4>
+          <p>用一句话查找联系人、关系路径，支持文字和语音输入</p>
+        </div>
+        <div class="feature-card">
+          <div class="icon">📋</div>
+          <h4>关系管理</h4>
+          <p>多种关系类型、建立方式、强度评分，全方位记录人脉信息</p>
+        </div>
+        <div class="feature-card">
+          <div class="icon">💬</div>
+          <h4>互动记录</h4>
+          <p>记录每次互动的时间、方式、内容和备注，回溯交往历程</p>
+        </div>
+        <div class="feature-card">
+          <div class="icon">📊</div>
+          <h4>Excel 批量导入</h4>
+          <p>支持从 Excel 文件批量导入联系人数据，快速建立人脉网络</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Auth -->
+    <section id="auth">
+      <h2>登录 / 注册</h2>
+
+      <h3 id="register">注册新用户</h3>
+      <ol class="step-list">
+        <li>在登录页面点击顶部的 <strong>「注册」</strong> 标签</li>
+        <li>填写 <strong>用户名</strong>（必填）</li>
+        <li>（可选）填写邮箱或手机号，点击「发送验证码」进行验证</li>
+        <li>设置密码（至少 6 个字符），并再次确认密码</li>
+        <li>点击 <strong>「注册」</strong> 按钮完成注册</li>
+      </ol>
+      <div class="tip-box">
+        <p>💡 注册成功后会自动跳转到登录页面，请使用刚注册的账号登录。</p>
+      </div>
+
+      <h3 id="login">登录</h3>
+      <ol class="step-list">
+        <li>在登录页面输入 <strong>用户名或邮箱</strong></li>
+        <li>输入密码</li>
+        <li>点击 <strong>「登录」</strong> 按钮</li>
+      </ol>
+      <div class="info-box">
+        <p>ℹ️ 首次登录后，系统会显示引导向导，帮助你快速上手。</p>
+      </div>
+
+      <h3 id="oauth">第三方登录</h3>
+      <p>系统预留了微信、钉钉、飞书三种第三方登录入口（即将支持）。点击对应图标即可授权登录。</p>
+    </section>
+
+    <!-- Features -->
+    <section id="features">
+      <h2>功能使用指南</h2>
+
+      <h3 id="add-contacts">添加联系人</h3>
+
+      <h4>方式一：手动添加</h4>
+      <ol class="step-list">
+        <li>在主界面点击 <strong>「+ 添加联系人」</strong> 按钮</li>
+        <li>填写姓名、昵称、公司、职位等信息</li>
+        <li>点击 <strong>「保存」</strong> 完成添加</li>
+      </ol>
+
+      <h4>方式二：Excel 批量导入</h4>
+      <ol class="step-list">
+        <li>点击 <strong>「导入」</strong> 按钮，打开导入向导</li>
+        <li>选择或拖拽 <code>.xlsx</code> 格式的 Excel 文件</li>
+        <li>系统自动识别列名并预览数据</li>
+        <li>确认字段映射后点击 <strong>「开始导入」</strong></li>
+        <li>导入完成后查看结果报告</li>
+      </ol>
+      <div class="warn-box">
+        <p>⚠️ Excel 文件第一行必须是表头（如：姓名、公司、职位、手机号），系统将自动识别。</p>
+      </div>
+
+      <h3 id="ai-query">AI 自然语言查询</h3>
+      <p>系统集成了 AI 大语言模型，你可以用自然语言提问：</p>
+      <ul>
+        <li><code>"新加一个联系人叫张三"</code> — 快速添加联系人</li>
+        <li><code>"找找在腾讯的朋友"</code> — 按公司筛选联系人</li>
+        <li><code>"最近和谁聊过"</code> — 查询最近互动记录</li>
+        <li><code>"我和李四之间有什么关系路径"</code> — 关系路径推断</li>
+      </ul>
+
+      <h4>文字输入</h4>
+      <p>在顶部的查询输入框中直接输入问题，按 <strong>Enter</strong> 或点击发送按钮提交。</p>
+
+      <h4>语音输入</h4>
+      <p>点击查询框旁的 <strong>🎤 麦克风按钮</strong>，说出你的问题，系统自动将语音转为文字并提交查询。</p>
+      <div class="info-box">
+        <p>ℹ️ 语音输入需要浏览器支持 Web Speech API，推荐使用 Chrome 或 Edge 浏览器。</p>
+      </div>
+
+      <h3 id="graph">关系图谱</h3>
+      <p>图谱页面以可视化网络图展示你的所有联系人及其关系。</p>
+
+      <h4>图谱导航</h4>
+      <ul>
+        <li><strong>缩放</strong>：使用鼠标滚轮或触控板双指缩放</li>
+        <li><strong>拖拽</strong>：按住空白区域拖拽可平移画布</li>
+        <li><strong>点击节点</strong>：查看联系人详情卡片</li>
+        <li><strong>点击连线</strong>：查看关系信息</li>
+      </ul>
+
+      <h4>焦点模式</h4>
+      <p>选中某个联系人节点后，点击 <strong>「焦点模式」</strong> 按钮，图谱将仅显示与该联系人直接相关的人物和关系，帮助你聚焦特定人脉圈。</p>
+
+      <h4>筛选功能</h4>
+      <p>使用图谱上方的筛选器，可按关系类型、关系强度等条件过滤显示内容。</p>
+
+      <h4>适配视窗</h4>
+      <p>点击 <strong>「适配视窗」</strong> 按钮，图谱会自动缩放并居中，确保所有节点都在可见范围内。</p>
+
+      <h3 id="interactions">记录互动</h3>
+      <ol class="step-list">
+        <li>在联系人详情页点击 <strong>「记录互动」</strong></li>
+        <li>选择互动时间（默认当前时间）</li>
+        <li>选择互动方式：面谈、电话、微信、邮件等</li>
+        <li>填写互动内容和备注（可选）</li>
+        <li>点击 <strong>「保存」</strong></li>
+      </ol>
+      <p>互动记录会按时间线展示在联系人详情页中，方便回溯交往历程。</p>
+
+      <h3 id="relationships">管理关系</h3>
+      <p>每个联系人可以建立多条关系，关系包含以下属性：</p>
+      <table>
+        <thead>
+          <tr><th>属性</th><th>说明</th><th>示例</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>关系类型</td><td>描述两人之间的社会关系</td><td>朋友、同事、同学、亲属、客户</td></tr>
+          <tr><td>建立方式</td><td>关系是如何形成的</td><td>工作认识、社交活动、他人介绍</td></tr>
+          <tr><td>强度评分</td><td>1–5 分，表示关系紧密程度</td><td>5 = 非常紧密，1 = 仅认识</td></tr>
+          <tr><td>备注</td><td>自由文字补充信息</td><td>"一起做项目3年"</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="themes">多主题切换</h3>
+      <p>系统内置多种主题配色方案，可在右上角的 <strong>主题选择器</strong> 中切换：</p>
+      <ul>
+        <li>浅色模式（默认）</li>
+        <li>深色模式</li>
+        <li>以及其他自定义主题</li>
+      </ul>
+      <p>主题切换立即生效，设置会保存在本地浏览器中。</p>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq">
+      <h2>常见问题</h2>
+
+      <details class="faq-item" open>
+        <summary>忘记密码怎么办？</summary>
+        <div class="answer">
+          <p>目前暂不支持密码重置功能。请联系系统管理员手动重置密码，或重新注册账号。建议在注册时绑定邮箱或手机号以便后续找回密码。</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>数据存储在哪里？安全吗？</summary>
+        <div class="answer">
+          <p>所有数据存储在服务器端，使用 <strong>SQLCipher</strong> 进行数据库级别加密。即使数据库文件被获取，没有加密密钥也无法读取内容。数据传输使用 HTTPS 加密。</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>支持哪些浏览器？</summary>
+        <div class="answer">
+          <p>支持所有现代浏览器：</p>
+          <ul>
+            <li>Chrome / Edge 88+</li>
+            <li>Firefox 78+</li>
+            <li>Safari 14+</li>
+          </ul>
+          <p>语音输入功能需要 Web Speech API 支持，推荐使用 Chrome 或 Edge。</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>语音输入不工作？</summary>
+        <div class="answer">
+          <p>请检查以下几点：</p>
+          <ol>
+            <li>确认浏览器已授予麦克风权限</li>
+            <li>确认使用的是 Chrome / Edge 等支持 Web Speech API 的浏览器</li>
+            <li>确认设备麦克风正常工作</li>
+            <li>确认网络连接正常（语音识别需要联网）</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>AI 查询没有结果或回答不准确？</summary>
+        <div class="answer">
+          <p>AI 查询依赖后端配置的 LLM 服务。如果查询无结果：</p>
+          <ul>
+            <li>确认 LLM 服务（Ollama / OpenAI）已正确配置且在线</li>
+            <li>尝试用更具体的描述重新提问</li>
+            <li>检查数据库中是否有对应的联系人数据</li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>如何批量删除联系人？</summary>
+        <div class="answer">
+          <p>在图谱页面使用矩形框选功能（按住鼠标拖拽）选中多个节点，然后使用批量操作功能删除。也可以在联系人列表中逐个删除。</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>Excel 导入失败？</summary>
+        <div class="answer">
+          <p>常见原因：</p>
+          <ul>
+            <li>文件格式不是 <code>.xlsx</code>（不支持旧版 <code>.xls</code>）</li>
+            <li>表头列名无法识别 — 请使用中文标准列名</li>
+            <li>数据行存在格式异常 — 检查手机号、邮箱格式是否正确</li>
+          </ul>
+        </div>
+      </details>
+    </section>
+
+    <!-- Architecture -->
+    <section id="architecture">
+      <h2>系统架构说明</h2>
+
+      <h3>数据安全</h3>
+      <table>
+        <thead>
+          <tr><th>安全措施</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>数据库加密</td><td>使用 SQLCipher 对 SQLite 数据库进行 AES-256 加密，保护所有存储数据</td></tr>
+          <tr><td>传输加密</td><td>所有 API 通信使用 HTTPS，防止数据在传输过程中被窃取</td></tr>
+          <tr><td>密码安全</td><td>用户密码经过安全哈希存储，不会明文保存</td></tr>
+        </tbody>
+      </table>
+
+      <h3>隐私保护</h3>
+      <table>
+        <thead>
+          <tr><th>机制</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>JWT 认证</td><td>基于 JSON Web Token 的无状态认证，令牌有时效限制</td></tr>
+          <tr><td>数据隔离</td><td>每个用户只能访问自己的数据，多用户之间完全隔离</td></tr>
+          <tr><td>敏感信息过滤</td><td>AI 查询结果中的手机号、邮箱等敏感信息会自动脱敏处理</td></tr>
+        </tbody>
+      </table>
+
+      <h3>LLM 服务</h3>
+      <p>系统支持可切换的 LLM 后端服务：</p>
+      <ul>
+        <li><strong>Ollama</strong> — 本地部署的开源大模型，无需联网，数据完全本地处理</li>
+        <li><strong>OpenAI API</strong> — 云端大模型服务，需要 API Key，支持 GPT 系列模型</li>
+      </ul>
+      <div class="info-box">
+        <p>ℹ️ LLM 服务由系统管理员配置。当主服务不可用时，系统会自动切换到备用服务（Fallback 机制）。</p>
+      </div>
+
+      <h3>技术栈概览</h3>
+      <table>
+        <thead>
+          <tr><th>层级</th><th>技术</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>前端</td><td>React + TypeScript + Vite + Tailwind CSS</td></tr>
+          <tr><td>后端</td><td>Rust (Axum) + SQLCipher + JWT</td></tr>
+          <tr><td>AI</td><td>Ollama / OpenAI + NLQ 自然语言查询引擎</td></tr>
+          <tr><td>桌面</td><td>Tauri（可选，支持打包为桌面应用）</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer style="text-align:center; padding: 2rem 0; color: var(--text-muted); font-size: 0.8rem; border-top: 1px solid var(--border); margin-top: 2rem;">
+      <p>个人关系图谱 · 使用帮助文档</p>
+    </footer>
+
+  </main>
+</div>
+</body>
+</html>

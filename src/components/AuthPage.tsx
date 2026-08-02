@@ -13,7 +13,7 @@ export default function AuthPage({ onLogin, onRegister }: Props) {
 
   return (
     <div
-      className="flex min-h-screen items-center justify-center p-4"
+      className="relative flex min-h-screen items-center justify-center p-4"
       style={{ backgroundColor: 'var(--bg-primary)' }}
     >
       <div
@@ -76,6 +76,19 @@ export default function AuthPage({ onLogin, onRegister }: Props) {
           <OAuthButton label="钉钉" icon="📌" />
           <OAuthButton label="飞书" icon="🪶" />
         </div>
+      </div>
+
+      {/* 帮助文档链接 */}
+      <div className="absolute bottom-4 left-0 right-0 text-center">
+        <a
+          href="/docs/help/user-help.html"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs transition hover:underline"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          使用帮助
+        </a>
       </div>
     </div>
   );

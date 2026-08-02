@@ -314,6 +314,18 @@ export default function OnboardingWizard({ onComplete, onManualAdd, onQuerySubmi
               </button>
             )}
           </div>
+          {/* 帮助文档链接 */}
+          <div className="mt-3 text-center">
+            <a
+              href="/docs/help/user-help.html"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs transition hover:underline"
+              style={{ color: 'var(--text-muted, #94a3b8)' }}
+            >
+              使用帮助
+            </a>
+          </div>
         </div>
       </div>
     </div>
