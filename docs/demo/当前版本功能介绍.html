@@ -114,9 +114,9 @@
 
 <h1>个人关系图谱 — 当前版本功能介绍</h1>
 <blockquote>
-  <p>更新日期：2026-08-02（演示版）</p>
-  <p>架构版本：WSL 服务端 + Web 多端架构（2026-07 迁移完成）</p>
-  <p>本轮新增：图谱节点自适应大小与分层渲染、节点过滤面板、适配视窗按钮、移动端适配、新用户引导流程</p>
+  <p>更新日期：2026-08-02（架构升级版）</p>
+  <p>架构版本：WSL 服务端 + Web 多端架构（全栈架构升级 2026-08 完成）</p>
+  <p>本轮新增：多用户JWT认证、LLM服务可切换（Ollama/OpenAI/纯规则降级）、NLQ意图识别增强、商业关系类型体系、图谱边样式增强、新用户引导优化、环境变量配置体系</p>
 </blockquote>
 
 <div class="toc">
@@ -164,7 +164,7 @@ SQLite + SQLCipher 加密库（Argon2id 派生密钥）</code></pre>
   <tr><td>前端</td><td>React 18 + TypeScript + Vite + Tailwind CSS + Cytoscape.js</td><td>支持 Windows 浏览器与手机经局域网访问</td></tr>
   <tr><td>后端</td><td>Rust Axum + rusqlite/SQLCipher</td><td>运行于 WSL，端口 8790（<code>RG_PORT</code> 可覆盖）</td></tr>
   <tr><td>数据</td><td>SQLite + SQLCipher 库级加密</td><td>数据目录 <code>~/.local/share/relationship-graph</code>（<code>RG_DATA_DIR</code> 可覆盖）</td></tr>
-  <tr><td>AI</td><td>Ollama 本地 LLM（qwen2.5:7b）</td><td>互动文本信息提取；运行在用户自己的服务器上，数据不外传</td></tr>
+  <tr><td>AI</td><td>LLM Provider 抽象层（Ollama / OpenAI 兼容 / 纯规则降级）</td><td>互动文本信息提取与 NLQ 增强；本地优先，支持在线大模型可选</td></tr>
   <tr><td>OCR</td><td>tesseract.js（端侧 WASM）</td><td>中英文图片文字识别，模型文件本地托管于 <code>public/tesseract/</code></td></tr>
 </table>
 
@@ -190,11 +190,16 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 
 <h2 id="implemented">二、已实现的功能</h2>
 
-<h3>1. 认证与安全 <span class="badge ok">✅ 已完成</span></h3>
+<h3>1. 认证与安全 <span class="badge ok">✅ 已完成</span><span class="badge new">🆕 架构升级</span></h3>
+<p><strong>多用户 JWT 认证系统</strong>（本次架构升级核心改造）：</p>
 <ul>
-  <li>首次使用设置主密码，初始化 SQLCipher 加密数据库</li>
-  <li>主密码解锁 / 锁定数据库，Token 会话（12 小时有效期，内存存储）</li>
-  <li>Argon2id 密钥派生，数据库整库加密</li>
+  <li><strong>JWT 双 Token 机制</strong>：Access Token 有效期 2 小时，Refresh Token 有效期 30 天；无需重启后重新登录</li>
+  <li><strong>用户注册</strong>：用户名 + 邮箱/手机号 + 密码，支持多用户独立注册</li>
+  <li><strong>用户登录</strong>：用户名/邮箱 + 密码，返回 JWT Token 对</li>
+  <li><strong>第三方登录预留</strong>：微信/钉钉/飞书 OAuth 接口已预留扩展点</li>
+  <li><strong>多用户数据隔离</strong>：每个用户只能访问和操作自己的数据，数据库层面通过 <code>user_id</code> 字段隔离</li>
+  <li><strong>向后兼容旧主密码模式</strong>：设置 <code>VITE_LEGACY_AUTH=true</code> 可切回单用户主密码模式，平滑迁移</li>
+  <li>Argon2id 密钥派生，数据库 SQLCipher 整库加密</li>
   <li>结构化日志遵循脱敏原则：不记录密码、Token、姓名、电话、内容原文</li>
 </ul>
 
@@ -304,7 +309,7 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 <p>详见 <code>docs/AI查询功能现状分析.md</code>，要点：</p>
 <ul>
   <li><strong>NLQ 是纯规则白名单管线，不调用 LLM</strong>——这是明确的安全决策：自然语言先解析为 QueryIntent，经白名单校验后路由到固定的参数化 SQL，模型永远不接触 SQL</li>
-  <li><strong>全项目唯一的 AI 大模型调用点</strong>是互动记录信息提取 — 该模型（Ollama qwen2.5:7b）完全运行在用户自己的服务器环境中，不连接任何外部在线 AI 服务；AI 只产出“建议”，最终数据入库仍需用户确认</li>
+  <li><strong>全项目唯一的 AI 大模型调用点</strong>是互动记录信息提取 — 该模型（Ollama qwen2.5:7b）完全运行在用户自己的服务器环境中，不连接任何外部在线 AI 服务；AI 只产出"建议"，最终数据入库仍需用户确认</li>
   <li>关系推断同样是确定性规则引擎而非 AI 大模型：基于明确的结构化数据（如同公司、同学校）进行推断，可给出可解释理由与稳定置信度，不存在数据外泄风险</li>
   <li>本轮已修复 Ollama 模型名失配（<code>qwen2:7b</code> → <code>qwen2.5:7b</code>），互动提取从长期降级恢复为真正生效</li>
 </ul>
@@ -375,14 +380,110 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 <table>
   <tr><th>分类</th><th>端点</th></tr>
   <tr><td>公开</td><td><code>GET /api/health</code>、<code>GET /api/auth/state</code>、<code>POST /api/auth/setup</code>、<code>POST /api/auth/unlock</code></td></tr>
+  <tr><td>认证 🆕</td><td><code>POST /api/auth/register</code>、<code>POST /api/auth/login</code>、<code>POST /api/auth/refresh</code>、<code>POST /api/auth/logout</code></td></tr>
   <tr><td>联系人</td><td><code>GET/POST /api/persons</code>、<code>GET/PUT/DELETE /api/persons/:id</code>、<code>GET /api/persons-search</code></td></tr>
   <tr><td>关系</td><td><code>GET/POST /api/relationships</code>、<code>GET /api/persons/:id/relationships</code></td></tr>
-  <tr><td>关系推断 🆕</td><td><code>POST /api/relationships/infer</code>、<code>GET /api/relationships/pending</code>、<code>POST /api/relationships/:id/confirmation</code></td></tr>
+  <tr><td>关系推断</td><td><code>POST /api/relationships/infer</code>、<code>GET /api/relationships/pending</code>、<code>POST /api/relationships/:id/confirmation</code></td></tr>
   <tr><td>互动</td><td><code>POST /api/interactions</code>、<code>GET /api/persons/:id/interactions</code>、<code>POST /api/entity-mentions</code></td></tr>
   <tr><td>图谱/查询</td><td><code>GET /api/graph</code>、<code>POST /api/nlq</code></td></tr>
-  <tr><td>语音 🆕</td><td><code>POST /api/voice/transcribe</code></td></tr>
+  <tr><td>语音</td><td><code>POST /api/voice/transcribe</code></td></tr>
   <tr><td>导入</td><td><code>POST /api/import/preview</code>、<code>POST /api/import/persons</code></td></tr>
+  <tr><td>管理 🆕</td><td><code>POST /api/admin/reload-keywords</code></td></tr>
   <tr><td>会话</td><td><code>POST /api/auth/lock</code></td></tr>
+</table>
+
+<h3>17. LLM 服务可切换 <span class="badge ok">✅</span> <span class="badge new">🆕 架构升级</span></h3>
+<p><strong>Provider Trait 抽象架构</strong>：服务端 LLM 调用层重构为统一 Trait 接口，支持多后端热切换：</p>
+<table>
+  <tr><th>Provider</th><th>说明</th><th>配置</th></tr>
+  <tr><td>Ollama（默认）</td><td>本地部署，数据不离开服务器</td><td><code>RG_LLM_PROVIDER=ollama</code>，<code>RG_OLLAMA_URL</code></td></tr>
+  <tr><td>OpenAI 兼容 API</td><td>支持任何 OpenAI 格式的在线大模型</td><td><code>RG_LLM_PROVIDER=openai</code>，<code>RG_OPENAI_API_KEY</code>，<code>RG_OPENAI_BASE_URL</code></td></tr>
+  <tr><td>纯规则降级</td><td>无需任何 LLM 服务也能使用基本功能</td><td>自动：当所有 LLM 不可用时触发</td></tr>
+</table>
+<ul>
+  <li><strong>自动降级链</strong>：系统按优先级依次尝试配置的 Provider，某个 Provider 调用失败时自动切换下一个，最终降级为纯规则模式</li>
+  <li><strong>零配置可用</strong>：即使不安装 Ollama、不配置 API Key，系统核心功能（联系人管理、NLQ 查询、图谱可视化）仍正常工作</li>
+  <li>降级时在日志和前端提示中告知用户当前 LLM 状态</li>
+</ul>
+
+<h3>18. NLQ 意图识别增强 <span class="badge ok">✅</span> <span class="badge new">🆕 架构升级</span></h3>
+<ul>
+  <li><strong>关键词外部化配置</strong>：意图识别关键词从硬编码迁移至 <code>server/config/nlq_keywords.json</code>，运维可直接编辑 JSON 扩充覆盖</li>
+  <li><strong>置信度评分机制</strong>：
+    <ul>
+      <li>单个关键词匹配：60 分</li>
+      <li>两个关键词匹配：80 分</li>
+      <li>三个及以上关键词匹配：95 分</li>
+      <li>分数决定是否触发 <code>needs_confirmation</code> 提示用户确认</li>
+    </ul>
+  </li>
+  <li><strong>热加载支持</strong>：<code>POST /api/admin/reload-keywords</code> 端点可在不重启服务的情况下重新加载关键词配置</li>
+  <li><strong>口语化表述覆盖扩充</strong>：新增大量日常口语表达方式的关键词映射，提升自然语言理解覆盖率</li>
+</ul>
+
+<h3>19. 商业关系类型体系 <span class="badge ok">✅</span> <span class="badge new">🆕 架构升级</span></h3>
+<p>原有关系类型（介绍认识/同事/朋友/合作/其他）扩展为完整的商业人脉关系体系：</p>
+<p><strong>19 种关系类型</strong>（三大分类）：</p>
+<table>
+  <tr><th>分类</th><th>关系类型</th></tr>
+  <tr><td>工作类</td><td>同事、上下级、合作伙伴、客户、供应商、投资人、顾问、导师</td></tr>
+  <tr><td>社交类</td><td>朋友、同学、校友、邻居、亲属、社群成员</td></tr>
+  <tr><td>来源类</td><td>介绍认识、会议结识、线上认识、猎头推荐、其他</td></tr>
+</table>
+<p><strong>7 种关系建立方式</strong>：朋友介绍、商务会议、行业活动、线上平台、校友关系、社群活动、其他</p>
+<p><strong>关系强度评分</strong>：0-1 浮点数，细粒度衡量关系亲密程度</p>
+<p><strong>关系创建表单增强</strong>：</p>
+<ul>
+  <li>关系类型下拉选择（按分类分组）</li>
+  <li>建立方式下拉选择</li>
+  <li>认识日期选择器</li>
+  <li>关系强度滑块（0-100% 可视化）</li>
+</ul>
+
+<h3>20. 图谱可视化增强 <span class="badge ok">✅</span> <span class="badge new">🆕 架构升级</span></h3>
+<p>在 14 节基础上新增边样式与交互优化：</p>
+<p><strong>边样式区分</strong>：</p>
+<ul>
+  <li><strong>线宽按关系强度</strong>：强度越高线越粗，直观呈现关系亲密度</li>
+  <li><strong>颜色按关系类型</strong>：不同分类（工作/社交/来源）使用不同色系</li>
+  <li><strong>线型按建立方式</strong>：实线（正式商务）、虚线（非正式社交）、点线（待确认推断）</li>
+</ul>
+<p><strong>边点击详情卡片</strong>：点击任意边弹出浮动卡片，展示：</p>
+<ul>
+  <li>关系类型与建立方式</li>
+  <li>关系强度</li>
+  <li>认识日期</li>
+  <li>关系描述</li>
+  <li>快捷编辑入口</li>
+</ul>
+
+<h3>21. 新用户引导增强 <span class="badge ok">✅</span> <span class="badge new">🆕 架构升级</span></h3>
+<p>在 15 节基础上适配多用户认证系统：</p>
+<ul>
+  <li><strong>注册后首次进入自动触发</strong>：新注册用户完成认证后立即展示引导</li>
+  <li>四步引导：欢迎 → 导入选择 → 示例查询 → 完成</li>
+  <li>支持 Excel 导入、手动添加、跳过三种路径</li>
+  <li>示例查询一键体验，降低上手门槛</li>
+  <li>引导完成后标记 <code>rg_onboarding_completed</code>，不会重复展示</li>
+</ul>
+
+<h3>22. 环境变量配置汇总 <span class="badge new">🆕 架构升级</span></h3>
+<p>本次架构升级新增的全部环境变量：</p>
+<table>
+  <tr><th>变量</th><th>用途</th><th>默认值</th></tr>
+  <tr><td><code>RG_PORT</code></td><td>服务端监听端口</td><td><code>8790</code></td></tr>
+  <tr><td><code>RG_DATA_DIR</code></td><td>数据库文件存储目录</td><td><code>~/.local/share/relationship-graph</code></td></tr>
+  <tr><td><code>RG_LLM_PROVIDER</code></td><td>LLM 服务提供方</td><td><code>ollama</code>（可选：<code>openai</code>）</td></tr>
+  <tr><td><code>RG_OLLAMA_URL</code></td><td>Ollama 服务地址</td><td><code>http://localhost:11434</code></td></tr>
+  <tr><td><code>RG_OLLAMA_MODEL</code></td><td>Ollama 使用的模型名</td><td><code>qwen2.5:7b</code></td></tr>
+  <tr><td><code>RG_OPENAI_API_KEY</code></td><td>OpenAI 兼容 API 密钥</td><td>（空，不启用）</td></tr>
+  <tr><td><code>RG_OPENAI_BASE_URL</code></td><td>OpenAI 兼容 API 地址</td><td><code>https://api.openai.com/v1</code></td></tr>
+  <tr><td><code>RG_OPENAI_MODEL</code></td><td>OpenAI 使用的模型名</td><td><code>gpt-4o-mini</code></td></tr>
+  <tr><td><code>RG_JWT_SECRET</code></td><td>JWT 签名密钥</td><td>（随机生成，生产环境务必配置）</td></tr>
+  <tr><td><code>RG_JWT_ACCESS_TTL</code></td><td>Access Token 有效期</td><td><code>2h</code></td></tr>
+  <tr><td><code>RG_JWT_REFRESH_TTL</code></td><td>Refresh Token 有效期</td><td><code>30d</code></td></tr>
+  <tr><td><code>VITE_LEGACY_AUTH</code></td><td>前端是否使用旧主密码模式</td><td><code>false</code></td></tr>
+  <tr><td><code>VITE_API_BASE</code></td><td>前端 API 请求基础地址</td><td><code>http://localhost:8790</code></td></tr>
 </table>
 
 <hr>
@@ -450,10 +551,9 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 <h3>已知架构限制</h3>
 <table>
   <tr><th>限制</th><th>说明</th></tr>
-  <tr><td>Ollama 前端直调</td><td>生产环境应改为服务端代理</td></tr>
-  <tr><td>Token 仅内存存储</td><td>服务重启后所有会话失效，无 refresh 机制</td></tr>
-  <tr><td>单用户模式</td><td>无多用户/权限体系</td></tr>
   <tr><td>NLQ 内存过滤</td><td>加载 500 候选人后内存过滤，大数据集需分页优化</td></tr>
+  <tr><td>HTTPS 未启用</td><td>局域网 MVP 使用 HTTP，公网暴露前必须加 TLS</td></tr>
+  <tr><td>第三方登录仅预留</td><td>微信/钉钉/飞书 OAuth 接口已预留，尚未对接</td></tr>
 </table>
 
 <hr>
@@ -464,7 +564,7 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 <ol>
   <li>LLM 草稿确认机制（提取结果先进草稿，用户确认后落库）</li>
   <li>NLQ <code>needs_confirmation</code> 闭环：低置信度时向用户透出解析条件，供确认或修正</li>
-  <li>Ollama 调用服务端代理化（统一模型配置、超时与降级策略）</li>
+  <li>第三方登录对接（微信/钉钉/飞书 OAuth 实际集成）</li>
 </ol>
 
 <h3>中期（智能化增强）</h3>
@@ -479,7 +579,7 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 <ol>
   <li>敏感字段级加密落地</li>
   <li>高敏感数据备份与迁移方案</li>
-  <li>多用户权限体系</li>
+  <li>HTTPS / TLS 支持</li>
   <li>性能优化：分页、缓存、异步任务队列</li>
 </ol>
 
@@ -500,15 +600,25 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 <table>
   <tr><th>关键代码</th><th>路径</th></tr>
   <tr><td>服务端路由</td><td><code>server/src/api/mod.rs</code></td></tr>
-  <tr><td>认证与会话</td><td><code>server/src/security/auth.rs</code></td></tr>
+  <tr><td>认证与会话（JWT）</td><td><code>server/src/security/auth.rs</code></td></tr>
+  <tr><td>用户管理</td><td><code>server/src/db/user.rs</code></td></tr>
+  <tr><td>LLM Provider 抽象层</td><td><code>server/src/llm/mod.rs</code></td></tr>
+  <tr><td>LLM Ollama 实现</td><td><code>server/src/llm/ollama.rs</code></td></tr>
+  <tr><td>LLM OpenAI 实现</td><td><code>server/src/llm/openai.rs</code></td></tr>
+  <tr><td>LLM 降级链</td><td><code>server/src/llm/chain.rs</code></td></tr>
   <tr><td>NLQ 管线</td><td><code>server/src/nlq.rs</code></td></tr>
+  <tr><td>NLQ 关键词配置</td><td><code>server/src/nlq_config.rs</code></td></tr>
+  <tr><td>NLQ 关键词 JSON</td><td><code>server/config/nlq_keywords.json</code></td></tr>
   <tr><td>关系推断引擎</td><td><code>server/src/infer.rs</code></td></tr>
   <tr><td>语音转写端点</td><td><code>server/src/api/voice.rs</code></td></tr>
   <tr><td>Excel 导入</td><td><code>server/src/api/import.rs</code></td></tr>
   <tr><td>前端 API 客户端</td><td><code>src/services/api.ts</code></td></tr>
+  <tr><td>前端认证 Hook</td><td><code>src/hooks/useAuth.ts</code></td></tr>
+  <tr><td>认证页面</td><td><code>src/components/AuthPage.tsx</code></td></tr>
   <tr><td>首页多模态输入</td><td><code>src/components/MultimodalQuery.tsx</code></td></tr>
   <tr><td>草稿确认组件</td><td><code>src/components/DraftConfirmation.tsx</code></td></tr>
   <tr><td>关系路径展示</td><td><code>src/components/PathResultDisplay.tsx</code></td></tr>
+  <tr><td>关系表单（增强）</td><td><code>src/components/RelationshipForm.tsx</code></td></tr>
   <tr><td>主题选择器</td><td><code>src/components/ThemeSelector.tsx</code></td></tr>
   <tr><td>主题 Hook</td><td><code>src/hooks/useTheme.ts</code></td></tr>
   <tr><td>语音输入 Hook</td><td><code>src/hooks/useVoiceInput.ts</code></td></tr>
