@@ -57,6 +57,7 @@ pub fn router(state: SharedState) -> Router {
         )
         .route("/api/auth/lock", post(lock_database))
         .route("/api/auth/me", get(get_current_user))
+        .route("/api/admin/reload-keywords", post(reload_keywords))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()
@@ -790,4 +791,17 @@ async fn nlq_confirm_handler(
             req.intent_type
         ))),
     }
+}
+
+// ---------- Admin: 热加载 ----------
+
+async fn reload_keywords(
+    State(state): State<SharedState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let path = crate::nlq_config::keywords_path();
+    let keywords = crate::nlq_config::load_keywords(&path);
+    let version = keywords.version.clone();
+    state.reload_nlq_keywords(keywords);
+    log::info!(target: "nlq_config", "reload_keywords_success version={}", version);
+    Ok(Json(serde_json::json!({ "status": "ok", "version": version })))
 }
