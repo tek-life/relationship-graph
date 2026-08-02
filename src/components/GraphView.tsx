@@ -3,6 +3,7 @@ import cytoscape from 'cytoscape';
 import { pinyin } from 'pinyin-pro';
 import { inferRelationships, setRelationshipConfirmation } from '../services/db';
 import type { GraphData, GraphEdge, Person } from '../types';
+import { RELATIONSHIP_TYPES, HOW_ESTABLISHED } from '../types';
 
 interface Props {
   data: GraphData;
@@ -491,10 +492,18 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
             }]
           : []),
         ...edges.map((edge) => ({
-          data: { id: edge.id, source: edge.source, target: edge.target, label: relationshipLabel(edge.label) },
+          data: {
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            label: relationshipLabel(edge.label),
+            howEstablished: edge.howEstablished || '',
+            strengthRating: edge.strengthRating ?? 0.5,
+          },
           classes: [
             edge.confirmationStatus === 'pending' ? 'pending' : '',
             path ? (pathEdges.has(edge.id) ? 'onpath' : 'faded') : '',
+            edgeStyleClass(edge.howEstablished),
           ].join(' '),
         })),
       ],
@@ -532,8 +541,8 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
         {
           selector: 'edge',
           style: {
-            width: 2,
-            'line-color': '#94a3b8',
+            width: 'mapData(strengthRating, 0, 1, 1, 4)' as any,
+            'line-color': '#6B7280',
             'target-arrow-shape': 'none',
             'curve-style': isLarge ? 'straight' : 'bezier',
             label: 'data(label)',
@@ -547,6 +556,12 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
             'min-zoomed-font-size': isLarge ? 10 : 5,
           },
         },
+        // 按 how_established 区分颜色和线型
+        { selector: 'edge.est-introduction', style: { 'line-style': 'dashed', 'line-color': '#3B82F6' } },
+        { selector: 'edge.est-work', style: { 'line-color': '#10B981' } },
+        { selector: 'edge.est-online', style: { 'line-style': 'dotted', 'line-color': '#8B5CF6' } },
+        { selector: 'edge.est-social', style: { 'line-color': '#F59E0B' } },
+        { selector: 'edge.est-school', style: { 'line-color': '#06B6D4' } },
         {
           selector: 'edge.me-edge',
           style: { width: 1, 'line-color': '#e2e8f0', opacity: 0.6, label: '' },
@@ -869,7 +884,7 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
         </div>
       )}
 
-      {/* 推断边确认面板 */}
+      {/* 边详情面板 */}
       {selectedEdge && (
         <div className="mt-3 rounded-xl border bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between">
@@ -879,9 +894,24 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
             </h3>
             <button type="button" className="text-slate-400 hover:text-slate-600" onClick={() => setSelectedEdge(null)}>✕</button>
           </div>
+
+          {/* 商业关系详情 */}
+          <dl className="mt-2 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1 text-sm">
+            <dt className="text-slate-400">关系类型</dt>
+            <dd className="text-slate-700">{relationshipLabel(selectedEdge.label)}</dd>
+            <dt className="text-slate-400">建立方式</dt>
+            <dd className="text-slate-700">{(HOW_ESTABLISHED as Record<string, string>)[selectedEdge.howEstablished ?? ''] ?? selectedEdge.howEstablished ?? '未记录'}</dd>
+            <dt className="text-slate-400">建立日期</dt>
+            <dd className="text-slate-700">{selectedEdge.establishedDate ?? '未记录'}</dd>
+            <dt className="text-slate-400">关系强度</dt>
+            <dd className="text-slate-700">
+              <StrengthBar value={selectedEdge.strengthRating ?? 0.5} />
+            </dd>
+          </dl>
+
           {selectedEdge.confirmationStatus === 'pending' ? (
             <>
-              <p className="mt-1 text-sm text-slate-600">
+              <p className="mt-2 text-sm text-slate-600">
                 AI 推断依据：{selectedEdge.inferenceReason ?? '未记录'}
                 {selectedEdge.confidence != null && `（置信度 ${(selectedEdge.confidence * 100).toFixed(0)}%）`}
               </p>
@@ -898,7 +928,9 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
               </div>
             </>
           ) : (
-            <p className="mt-1 text-sm text-slate-600">已确认的关系{selectedEdge.inferenceReason ? `（最初由 AI 推断：${selectedEdge.inferenceReason}）` : ''}。</p>
+            selectedEdge.inferenceReason && (
+              <p className="mt-2 text-sm text-slate-500">最初由 AI 推断：{selectedEdge.inferenceReason}</p>
+            )
           )}
         </div>
       )}
@@ -917,17 +949,40 @@ function nodeSize(id: string, focusId: string | null, personsById: Record<string
 }
 
 function relationshipLabel(value: string) {
-  const map: Record<string, string> = {
-    introduced: '介绍认识',
-    colleague: '同事',
-    friend: '朋友',
-    cooperation: '合作',
-    other: '可能认识',
-  };
-  return map[value] ?? value;
+  return (RELATIONSHIP_TYPES as Record<string, string>)[value] ?? value;
+}
+
+/** 根据 how_established 返回对应的 CSS 类名 */
+function edgeStyleClass(howEstablished?: string | null): string {
+  if (!howEstablished) return '';
+  switch (howEstablished) {
+    case 'introduction': return 'est-introduction';
+    case 'work_project':
+    case 'direct_meeting': return 'est-work';
+    case 'online': return 'est-online';
+    case 'social_event': return 'est-social';
+    case 'school': return 'est-school';
+    default: return '';
+  }
 }
 
 // ==================== 文案辅助 ====================
+
+/** 强度评分可视化进度条 */
+function StrengthBar({ value }: { value: number }) {
+  const pct = Math.round(value * 100);
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-2 w-24 rounded-full bg-slate-200">
+        <div
+          className="h-2 rounded-full bg-blue-500 transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-xs text-slate-500">{pct}%</span>
+    </div>
+  );
+}
 
 function strengthText(value?: string | null) {
   if (value === 'strong') return '强';
