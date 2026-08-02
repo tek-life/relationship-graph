@@ -1,3 +1,4 @@
+use crate::nlq_config::NlqKeywords;
 use crate::security::sensitivity;
 use crate::types::{
     FieldChange, InteractionDraft, NlqResponse, PathData, PathEdge, PathNode, Person, UpdateDraft,
@@ -459,21 +460,64 @@ fn is_older_than(value: Option<&str>, days: i64) -> bool {
 
 // === 多意图分类（规则式，不使用 LLM） ===
 
-pub fn classify_intent(query: &str) -> &'static str {
-    // 优先级：find_path > add_interaction > update_person > create_person > search_people
-    if contains_any(query, &["怎么认识", "通过谁", "什么关系", "联系到", "认识路径", "关系链"]) {
-        return "find_path";
+/// 意图优先级（同 confidence 时的 tiebreaker，数值越大越优先）
+fn intent_priority(intent: &str) -> u8 {
+    match intent {
+        "find_path" => 5,
+        "add_interaction" => 4,
+        "update_person" => 3,
+        "create_person" => 2,
+        "search_people" => 1,
+        _ => 0,
     }
-    if contains_any(query, &["聊了", "谈了", "讨论了", "沟通了", "见了面", "吃饭", "开会", "打了电话", "发了消息"]) {
-        return "add_interaction";
+}
+
+/// 基于外部化关键词配置进行意图分类，返回 (intent_name, confidence_score)。
+/// 置信度逻辑：
+/// - 单关键词匹配: base = 60
+/// - 双关键词匹配: base = 80
+/// - 三个及以上: base = 95
+/// - final_confidence = (base * weight).min(100)
+/// - 多意图匹配时取 confidence 最高；同 confidence 取优先级高的
+/// - confidence < 50 时 fallback 到 search_people
+pub fn classify_intent(query: &str, keywords: &NlqKeywords) -> (String, u8) {
+    let mut best_intent = String::from("search_people");
+    let mut best_confidence: u8 = 0;
+    let mut best_priority: u8 = 0;
+
+    for (intent_name, config) in &keywords.intents {
+        let match_count = config
+            .keywords
+            .iter()
+            .filter(|kw| query.contains(kw.as_str()))
+            .count();
+
+        if match_count == 0 {
+            continue;
+        }
+
+        let base_confidence: f64 = match match_count {
+            1 => 60.0,
+            2 => 80.0,
+            _ => 95.0,
+        };
+
+        let final_conf = (base_confidence * config.weight).min(100.0) as u8;
+        let priority = intent_priority(intent_name);
+
+        if final_conf > best_confidence || (final_conf == best_confidence && priority > best_priority) {
+            best_confidence = final_conf;
+            best_intent = intent_name.clone();
+            best_priority = priority;
+        }
     }
-    if contains_any(query, &["去了", "换了", "改为", "变成了", "加入了", "离开了", "新公司", "新职位", "升为", "调到"]) {
-        return "update_person";
+
+    // confidence < 50 时 fallback 到 search_people
+    if best_confidence < 50 {
+        return ("search_people".to_string(), best_confidence.max(30));
     }
-    if contains_any(query, &["刚认识", "新认识", "认识了", "遇到了", "介绍了一个", "新朋友", "新同事", "新加", "添加", "录入", "加一个", "新增", "加个", "新联系人", "新建联系人"]) {
-        return "create_person";
-    }
-    "search_people"
+
+    (best_intent, best_confidence)
 }
 
 // === 多意图处理器（供 api handler 调用） ===
@@ -779,36 +823,60 @@ mod tests {
 
     #[test]
     fn test_classify_intent_search() {
-        assert_eq!(classify_intent("谁在上海做地产"), "search_people");
-        assert_eq!(classify_intent("关系比较近的人"), "search_people");
+        let kw = NlqKeywords::default_builtin();
+        assert_eq!(classify_intent("谁在上海做地产", &kw).0, "search_people");
+        assert_eq!(classify_intent("关系比较近的人", &kw).0, "search_people");
     }
 
     #[test]
     fn test_classify_intent_create() {
-        assert_eq!(classify_intent("刚认识张明，做地产的"), "create_person");
-        assert_eq!(classify_intent("新认识了一个做融资的朋友"), "create_person");
-        assert_eq!(classify_intent("新加了一个联系人他的名字叫李悠然，他在上海交通大学当老师"), "create_person");
-        assert_eq!(classify_intent("添加一个联系人叫王强"), "create_person");
-        assert_eq!(classify_intent("录入一个新同事赵海"), "create_person");
-        assert_eq!(classify_intent("加一个联系人叫刘芳"), "create_person");
-        assert_eq!(classify_intent("新增联系人张三"), "create_person");
+        let kw = NlqKeywords::default_builtin();
+        assert_eq!(classify_intent("刚认识张明，做地产的", &kw).0, "create_person");
+        assert_eq!(classify_intent("新认识了一个做融资的朋友", &kw).0, "create_person");
+        assert_eq!(classify_intent("新加了一个联系人他的名字叫李悠然，他在上海交通大学当老师", &kw).0, "create_person");
+        assert_eq!(classify_intent("添加一个联系人叫王强", &kw).0, "create_person");
+        assert_eq!(classify_intent("录入一个新同事赵海", &kw).0, "create_person");
+        assert_eq!(classify_intent("加一个联系人叫刘芳", &kw).0, "create_person");
+        assert_eq!(classify_intent("新增联系人张三", &kw).0, "create_person");
     }
 
     #[test]
     fn test_classify_intent_update() {
-        assert_eq!(classify_intent("张明去了新公司XX科技"), "update_person");
-        assert_eq!(classify_intent("李华的职位变成了总监"), "update_person");
+        let kw = NlqKeywords::default_builtin();
+        assert_eq!(classify_intent("张明去了新公司XX科技", &kw).0, "update_person");
+        assert_eq!(classify_intent("李华的职位变成了总监", &kw).0, "update_person");
     }
 
     #[test]
     fn test_classify_intent_interaction() {
-        assert_eq!(classify_intent("刚和李明聊了园区项目"), "add_interaction");
-        assert_eq!(classify_intent("昨天和王总吃饭谈投资"), "add_interaction");
+        let kw = NlqKeywords::default_builtin();
+        assert_eq!(classify_intent("刚和李明聊了园区项目", &kw).0, "add_interaction");
+        assert_eq!(classify_intent("昨天和王总吃饭谈投资", &kw).0, "add_interaction");
     }
 
     #[test]
     fn test_classify_intent_path() {
-        assert_eq!(classify_intent("我怎么认识张三的"), "find_path");
-        assert_eq!(classify_intent("通过谁可以联系到李四"), "find_path");
+        let kw = NlqKeywords::default_builtin();
+        assert_eq!(classify_intent("我怎么认识张三的", &kw).0, "find_path");
+        assert_eq!(classify_intent("通过谁可以联系到李四", &kw).0, "find_path");
+    }
+
+    #[test]
+    fn test_classify_intent_confidence_scores() {
+        let kw = NlqKeywords::default_builtin();
+        // 单关键词 → confidence = 60
+        let (intent, conf) = classify_intent("新加联系人", &kw);
+        assert_eq!(intent, "create_person");
+        assert_eq!(conf, 60);
+
+        // 双关键词 → confidence = 80
+        let (intent, conf) = classify_intent("新加了一个新联系人", &kw);
+        assert_eq!(intent, "create_person");
+        assert_eq!(conf, 80);
+
+        // find_path 有 weight=1.2，单关键词 → 60*1.2=72
+        let (intent, conf) = classify_intent("怎么认识张三", &kw);
+        assert_eq!(intent, "find_path");
+        assert_eq!(conf, 72);
     }
 }
