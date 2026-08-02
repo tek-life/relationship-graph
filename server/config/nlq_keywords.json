@@ -1,0 +1,30 @@
+{
+  "intents": {
+    "create_person": {
+      "keywords": ["新加", "添加", "录入", "新增", "加个", "新联系人", "新建", "刚认识", "新认识", "遇到了", "介绍了", "新朋友", "新同事", "加一个人", "来了个新人", "新建联系人", "加一个"],
+      "weight": 1.0,
+      "confidence_threshold": 50
+    },
+    "update_person": {
+      "keywords": ["换了", "去了", "改为", "变成了", "加入了", "离开了", "新公司", "新职位", "升为", "调到", "跳槽", "晋升", "转岗", "搬到了", "改名了"],
+      "weight": 1.0,
+      "confidence_threshold": 50
+    },
+    "add_interaction": {
+      "keywords": ["聊了", "谈了", "讨论了", "沟通了", "见了面", "吃饭", "开会", "打了电话", "发了消息", "碰过面", "一起开会", "视频了", "约了", "面谈", "同步了"],
+      "weight": 1.0,
+      "confidence_threshold": 50
+    },
+    "find_path": {
+      "keywords": ["怎么认识", "通过谁", "什么关系", "联系到", "认识路径", "关系链", "介绍人", "中间人", "谁引荐的"],
+      "weight": 1.2,
+      "confidence_threshold": 40
+    },
+    "search_people": {
+      "keywords": ["找", "搜索", "查找", "谁是", "哪些人", "列出"],
+      "weight": 0.8,
+      "confidence_threshold": 30
+    }
+  },
+  "version": "1.0"
+}
