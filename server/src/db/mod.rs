@@ -3,6 +3,7 @@ pub mod interaction;
 pub mod person;
 pub mod relationship;
 pub mod schema;
+pub mod user;
 
 #[cfg(test)]
 mod tests;
