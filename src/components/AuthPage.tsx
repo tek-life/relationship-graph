@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { RegisterRequest } from '../hooks/useAuth';
 
 interface Props {
@@ -72,9 +72,9 @@ export default function AuthPage({ onLogin, onRegister }: Props) {
           <div className="flex-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
         </div>
         <div className="mt-4 flex justify-center gap-4">
-          <OAuthButton label="微信" icon="💬" brandColor="#09B83E" />
-          <OAuthButton label="钉钉" icon="📌" brandColor="#0089FF" />
-          <OAuthButton label="飞书" icon="🪶" brandColor="#165DFF" />
+          <OAuthButton label="微信" icon={<WechatIcon />} brandColor="#09B83E" />
+          <OAuthButton label="钉钉" icon={<DingtalkIcon />} brandColor="#0089FF" />
+          <OAuthButton label="飞书" icon={<FeishuIcon />} brandColor="#165DFF" />
         </div>
       </div>
 
@@ -329,7 +329,9 @@ function RegisterForm({ onRegister }: { onRegister: (req: RegisterRequest) => Pr
 
 // ===== 第三方登录按钮 =====
 
-function OAuthButton({ label, icon, brandColor }: { label: string; icon: string; brandColor: string }) {
+function OAuthButton({ label, icon, brandColor }: { label: string; icon: ReactNode; brandColor: string }) {
+  const [hovered, setHovered] = useState(false);
+
   const handleClick = () => {
     alert(`${label}登录即将支持`);
   };
@@ -338,12 +340,55 @@ function OAuthButton({ label, icon, brandColor }: { label: string; icon: string;
     <button
       type="button"
       onClick={handleClick}
-      className="flex h-10 w-10 items-center justify-center rounded-full border text-lg transition hover:opacity-80"
-      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: brandColor }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className="flex h-10 w-10 items-center justify-center rounded-full border transition hover:opacity-80"
+      style={{
+        borderColor: hovered ? brandColor : 'var(--border-color)',
+        backgroundColor: 'var(--bg-secondary)',
+      }}
       title={label}
     >
       {icon}
     </button>
+  );
+}
+
+// ===== 品牌图标 =====
+
+function WechatIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M9.5 4C5.36 4 2 6.69 2 10c0 1.89 1.08 3.56 2.78 4.66l-.7 2.1 2.46-1.23c.82.23 1.69.37 2.6.4-.16-.55-.25-1.13-.25-1.73C8.89 10.47 12.47 8 16.5 8c.34 0 .67.02 1 .05C16.77 5.57 13.41 4 9.5 4zm-3 4.5a.75.75 0 110-1.5.75.75 0 010 1.5zm5 0a.75.75 0 110-1.5.75.75 0 010 1.5z"
+        fill="#09B83E"
+      />
+      <path
+        d="M22 14.2c0-2.76-2.69-5-6-5s-6 2.24-6 5 2.69 5 6 5c.73 0 1.43-.11 2.08-.3l1.92.96-.55-1.65C21.08 17.2 22 15.78 22 14.2zm-8.5-1a.65.65 0 110-1.3.65.65 0 010 1.3zm5 0a.65.65 0 110-1.3.65.65 0 010 1.3z"
+        fill="#09B83E"
+      />
+    </svg>
+  );
+}
+
+function DingtalkIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="#0089FF" />
+      <path
+        d="M17.5 9.5l-2.7 1.2c.3-.5.5-1.1.5-1.7 0-1.7-1.3-3-3-3s-3 1.3-3 3c0 .6.2 1.2.5 1.7L7 9.5c-.3.1-.4.5-.2.7l3.2 4.3c.2.2.6.2.8 0l3.2-4.3c.2-.2.1-.6-.2-.7h-.3z"
+        fill="white"
+      />
+    </svg>
+  );
+}
+
+function FeishuIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="24" height="24" rx="5" fill="#165DFF" />
+      <path d="M7 7l5.5 4.5L7 17h2.5l4-3.5 4 3.5V7h-2.5l-3 3.5L9 7H7z" fill="white" />
+    </svg>
   );
 }
 
