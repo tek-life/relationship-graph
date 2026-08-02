@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import AuthPage from './components/AuthPage';
 import GraphView from './components/GraphView';
 import ImportWizard from './components/ImportWizard';
 import InteractionForm from './components/InteractionForm';
@@ -9,9 +10,12 @@ import PersonForm from './components/PersonForm';
 import PersonList from './components/PersonList';
 import RelationshipForm from './components/RelationshipForm';
 import ThemeSelector from './components/ThemeSelector';
+import { useAuth } from './hooks/useAuth';
 import { useTheme } from './hooks/useTheme';
 import { createPerson, getGraphData, listInteractionsByPerson, listPersons } from './services/db';
 import type { CreatePersonInput, GraphData, Interaction, Person } from './types';
+
+const LEGACY_AUTH = import.meta.env.VITE_LEGACY_AUTH === 'true';
 
 type Tab = 'home' | 'contacts' | 'graph' | 'query' | 'import';
 
@@ -24,6 +28,7 @@ const FOOTER_LINKS: { tab: Tab; label: string }[] = [
 
 function App() {
   const { theme, setTheme } = useTheme();
+  const { isAuthenticated, user, loading: authLoading, login, register, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [persons, setPersons] = useState<Person[]>([]);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
@@ -33,6 +38,20 @@ function App() {
   // 从联系人详情"关系网络"进入图谱页时的初始焦点，手动切 tab 时清除
   const [graphFocusId, setGraphFocusId] = useState<string | null>(null);
   const [error, setError] = useState('');
+
+  // 新认证模式下：未登录时显示AuthPage
+  if (!LEGACY_AUTH) {
+    if (authLoading) {
+      return (
+        <div className="flex min-h-screen items-center justify-center" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
+          正在检查登录状态...
+        </div>
+      );
+    }
+    if (!isAuthenticated) {
+      return <AuthPage onLogin={login} onRegister={register} />;
+    }
+  }
 
   const personsById = useMemo(
     () => Object.fromEntries(persons.map((person) => [person.id, person])),
@@ -109,8 +128,23 @@ function App() {
 
   return (
     <div className="flex min-h-screen flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-      {/* 主题切换器 - 固定右上角 */}
-      <div className="fixed right-4 top-4 z-50">
+      {/* 主题切换器 + 用户信息 - 固定右上角 */}
+      <div className="fixed right-4 top-4 z-50 flex items-center gap-3">
+        {!LEGACY_AUTH && user && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+              {user.display_name || user.username}
+            </span>
+            <button
+              type="button"
+              onClick={logout}
+              className="rounded-md px-2 py-1 text-xs transition hover:opacity-80"
+              style={{ backgroundColor: 'var(--surface-hover)', color: 'var(--text-secondary)' }}
+            >
+              退出
+            </button>
+          </div>
+        )}
         <ThemeSelector theme={theme} setTheme={setTheme} />
       </div>
 
