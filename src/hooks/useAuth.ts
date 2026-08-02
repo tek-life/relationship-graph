@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { API_BASE } from '../services/api';
+import { API_BASE, clearTokens, getAccessToken, getRefreshToken, getTokenExp, saveTokens } from '../services/token';
 
 // ===== 类型定义 =====
 
@@ -25,38 +25,8 @@ interface AuthResponse {
   user: AuthUser;
 }
 
-// ===== Token 存储 =====
-
-const ACCESS_TOKEN_KEY = 'rg_access_token';
-const REFRESH_TOKEN_KEY = 'rg_refresh_token';
-
-export function getAccessToken(): string | null {
-  return localStorage.getItem(ACCESS_TOKEN_KEY);
-}
-
-export function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_TOKEN_KEY);
-}
-
-function saveTokens(access: string, refresh: string): void {
-  localStorage.setItem(ACCESS_TOKEN_KEY, access);
-  localStorage.setItem(REFRESH_TOKEN_KEY, refresh);
-}
-
-function clearTokens(): void {
-  localStorage.removeItem(ACCESS_TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
-}
-
-/** 解析JWT payload中的exp字段（秒级时间戳） */
-function getTokenExp(token: string): number | null {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    return typeof payload.exp === 'number' ? payload.exp : null;
-  } catch {
-    return null;
-  }
-}
+// 重新导出供外部使用
+export { getAccessToken, getRefreshToken } from '../services/token';
 
 // ===== Hook =====
 
