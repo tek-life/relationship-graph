@@ -656,6 +656,9 @@ async fn get_graph_data(
             confirmation_status: r.confirmation_status,
             confidence: r.confidence,
             inference_reason: r.inference_reason,
+            how_established: r.how_established,
+            established_date: r.established_date,
+            strength_rating: r.strength_rating,
         })
         .collect();
 
@@ -689,10 +692,11 @@ async fn nlq_multi_handler(
     Extension(user_id): Extension<UserId>,
     Json(req): Json<NlqMultiRequest>,
 ) -> Result<Json<NlqResponse>, ApiError> {
-    let intent = nlq::classify_intent(&req.query);
-    log::info!(target: "nlq", "nlq_multi_handler intent={} query_len={}", intent, req.query.chars().count());
+    let keywords = state.get_nlq_keywords();
+    let (intent, confidence) = nlq::classify_intent(&req.query, &keywords);
+    log::info!(target: "nlq", "nlq_multi_handler intent={} confidence={} query_len={}", intent, confidence, req.query.chars().count());
 
-    match intent {
+    match intent.as_str() {
         "search_people" => {
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
@@ -707,25 +711,25 @@ async fn nlq_multi_handler(
             Ok(Json(NlqResponse::SearchPeople { results }))
         }
         "create_person" => {
-            let draft = crate::llm::extract_person_fields(&req.query).await;
+            let draft = state.llm.extract_person_fields(&req.query).await;
             Ok(Json(NlqResponse::CreatePersonDraft { draft }))
         }
         "update_person" => {
-            let (target_name, changes) = crate::llm::extract_update_fields(&req.query).await;
+            let (target_name, changes) = state.llm.extract_update_fields(&req.query).await;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
             let response = nlq::handle_update_person_sync(conn, &user_id.0, &target_name, changes)?;
             Ok(Json(response))
         }
         "add_interaction" => {
-            let draft = crate::llm::extract_interaction_data(&req.query).await;
+            let draft = state.llm.extract_interaction_data(&req.query).await;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
             let response = nlq::handle_add_interaction_sync(conn, &user_id.0, draft)?;
             Ok(Json(response))
         }
         "find_path" => {
-            let target_name = crate::llm::extract_path_target(&req.query).await;
+            let target_name = state.llm.extract_path_target(&req.query).await;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
             let response = nlq::handle_find_path_sync(conn, &user_id.0, &target_name)?;

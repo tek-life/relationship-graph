@@ -152,6 +152,26 @@ fn ensure_relationship_columns(conn: &Connection) -> Result<(), rusqlite::Error>
             log::info!(target: "db", "schema_migrate_add_column table=relationships column={}", name);
         }
     }
+
+    // v2.0 商业关系类型扩展：建立方式、建立日期、关系强度评分
+    ensure_relationship_business_columns(conn, &existing)?;
+
+    Ok(())
+}
+
+/// v2.0 商业关系类型扩展：为 relationships 表补充 how_established / established_date / strength_rating
+fn ensure_relationship_business_columns(conn: &Connection, existing: &[String]) -> Result<(), rusqlite::Error> {
+    let columns = [
+        ("how_established", "TEXT"),
+        ("established_date", "TEXT"),
+        ("strength_rating", "REAL DEFAULT 0.5"),
+    ];
+    for (name, ddl) in columns {
+        if !existing.iter().any(|col| col == name) {
+            conn.execute(&format!("ALTER TABLE relationships ADD COLUMN {} {}", name, ddl), [])?;
+            log::info!(target: "db", "schema_migrate_add_column table=relationships column={}", name);
+        }
+    }
     Ok(())
 }
 

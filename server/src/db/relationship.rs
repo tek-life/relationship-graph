@@ -7,9 +7,9 @@ pub fn create(conn: &Connection, owner_id: &str, req: CreateRelationshipRequest)
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO relationships (id, from_person_id, to_person_id, relationship_type, strength, description, created_at, source, confidence, confirmation_status, inference_reason, owner_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'manual', NULL, 'confirmed', NULL, ?8)",
-        params![id, req.from_person_id, req.to_person_id, req.relationship_type, req.strength, req.description, now, owner_id],
+        "INSERT INTO relationships (id, from_person_id, to_person_id, relationship_type, strength, description, created_at, source, confidence, confirmation_status, inference_reason, owner_id, how_established, established_date, strength_rating)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'manual', NULL, 'confirmed', NULL, ?8, ?9, ?10, ?11)",
+        params![id, req.from_person_id, req.to_person_id, req.relationship_type, req.strength, req.description, now, owner_id, req.how_established, req.established_date, req.strength_rating],
     )?;
     get_by_id(conn, owner_id, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
@@ -95,7 +95,7 @@ pub fn delete(conn: &Connection, owner_id: &str, id: &str) -> Result<(), rusqlit
     Ok(())
 }
 
-const RELATIONSHIP_SELECT_SQL: &str = "SELECT id, from_person_id, to_person_id, relationship_type, strength, description, created_at, source, confidence, confirmation_status, inference_reason FROM relationships";
+const RELATIONSHIP_SELECT_SQL: &str = "SELECT id, from_person_id, to_person_id, relationship_type, strength, description, created_at, source, confidence, confirmation_status, inference_reason, how_established, established_date, strength_rating FROM relationships";
 
 fn map_relationship(row: &Row) -> Result<Relationship, rusqlite::Error> {
     Ok(Relationship {
@@ -110,5 +110,8 @@ fn map_relationship(row: &Row) -> Result<Relationship, rusqlite::Error> {
         confidence: row.get(8)?,
         confirmation_status: row.get(9)?,
         inference_reason: row.get(10)?,
+        how_established: row.get(11)?,
+        established_date: row.get(12)?,
+        strength_rating: row.get(13)?,
     })
 }

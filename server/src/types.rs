@@ -100,6 +100,13 @@ pub struct CreatePersonRequest {
     pub projects: Vec<String>,
 }
 
+/// relationship_type 合法值:
+/// colleague, ex_colleague, business_partner, client, vendor, investor,
+/// mentor, mentee, friend, acquaintance, classmate, neighbor, family,
+/// introduced_by, online_met, event_met
+///
+/// how_established 合法值:
+/// direct_meeting, introduction, work_project, social_event, online, school, other
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Relationship {
@@ -114,6 +121,9 @@ pub struct Relationship {
     pub confidence: Option<f64>,
     pub confirmation_status: String,
     pub inference_reason: Option<String>,
+    pub how_established: Option<String>,
+    pub established_date: Option<String>,
+    pub strength_rating: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,6 +134,9 @@ pub struct CreateRelationshipRequest {
     pub relationship_type: String,
     pub strength: Option<String>,
     pub description: Option<String>,
+    pub how_established: Option<String>,
+    pub established_date: Option<String>,
+    pub strength_rating: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +205,9 @@ pub struct GraphEdge {
     pub confirmation_status: String,
     pub confidence: Option<f64>,
     pub inference_reason: Option<String>,
+    pub how_established: Option<String>,
+    pub established_date: Option<String>,
+    pub strength_rating: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
