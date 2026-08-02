@@ -107,7 +107,7 @@ export default function OnboardingWizard({ onComplete, onManualAdd, onQuerySubmi
               </h2>
               <p className="mt-3 text-sm leading-relaxed" style={{ color: 'var(--text-secondary, #64748b)' }}>
                 管理你的人脉网络，记录互动历程，用 AI 自然语言查询快速找到你需要的联系人。
-                本地优先、加密存储、端侧智能辅助。
+                加密存储、多端协同、智能辅助。
               </p>
               <div className="mt-4 grid grid-cols-3 gap-3 text-xs" style={{ color: 'var(--text-muted, #94a3b8)' }}>
                 <div className="rounded-lg p-2" style={{ backgroundColor: 'var(--bg-secondary, #f8fafc)' }}>

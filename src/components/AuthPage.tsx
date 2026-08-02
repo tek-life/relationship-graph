@@ -26,7 +26,7 @@ export default function AuthPage({ onLogin, onRegister }: Props) {
             个人关系图谱
           </h1>
           <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
-            本地优先、加密存储、端侧智能辅助
+            加密存储、多端协同、智能辅助
           </p>
         </div>
 
