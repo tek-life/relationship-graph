@@ -8,7 +8,7 @@ export interface AuthUser {
   username: string;
   email?: string;
   phone?: string;
-  display_name?: string;
+  displayName?: string;
 }
 
 export interface RegisterRequest {
@@ -16,12 +16,12 @@ export interface RegisterRequest {
   password: string;
   email?: string;
   phone?: string;
-  display_name?: string;
+  displayName?: string;
 }
 
 interface AuthResponse {
-  access_token: string;
-  refresh_token: string;
+  accessToken: string;
+  refreshToken: string;
   user: AuthUser;
 }
 
@@ -67,17 +67,17 @@ export function useAuth() {
       const res = await fetch(`${API_BASE}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: rt }),
+        body: JSON.stringify({ refreshToken: rt }),
       });
       if (!res.ok) {
         logout();
         return false;
       }
       const data: AuthResponse = await res.json();
-      saveTokens(data.access_token, data.refresh_token);
+      saveTokens(data.accessToken, data.refreshToken);
       setUser(data.user);
       setIsAuthenticated(true);
-      scheduleRefresh(data.access_token);
+      scheduleRefresh(data.accessToken);
       return true;
     } catch {
       logout();
@@ -90,7 +90,7 @@ export function useAuth() {
     const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ login: username, password }),
     });
     if (!res.ok) {
       let message = `登录失败（${res.status}）`;
@@ -101,10 +101,10 @@ export function useAuth() {
       throw new Error(message);
     }
     const data: AuthResponse = await res.json();
-    saveTokens(data.access_token, data.refresh_token);
+    saveTokens(data.accessToken, data.refreshToken);
     setUser(data.user);
     setIsAuthenticated(true);
-    scheduleRefresh(data.access_token);
+    scheduleRefresh(data.accessToken);
   }, [scheduleRefresh]);
 
   // 注册
@@ -123,10 +123,10 @@ export function useAuth() {
       throw new Error(message);
     }
     const data: AuthResponse = await res.json();
-    saveTokens(data.access_token, data.refresh_token);
+    saveTokens(data.accessToken, data.refreshToken);
     setUser(data.user);
     setIsAuthenticated(true);
-    scheduleRefresh(data.access_token);
+    scheduleRefresh(data.accessToken);
   }, [scheduleRefresh]);
 
   // 退出

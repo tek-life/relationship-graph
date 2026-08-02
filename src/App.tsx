@@ -159,7 +159,7 @@ function App() {
         {!LEGACY_AUTH && user && (
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-              {user.display_name || user.username}
+              {user.displayName || user.username}
             </span>
             <button
               type="button"

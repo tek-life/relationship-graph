@@ -38,11 +38,11 @@ async function tryRefreshToken(): Promise<boolean> {
     const res = await fetch(`${API_BASE}/api/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: rt }),
+      body: JSON.stringify({ refreshToken: rt }),
     });
     if (!res.ok) return false;
     const data = await res.json();
-    saveTokens(data.access_token, data.refresh_token);
+    saveTokens(data.accessToken, data.refreshToken);
     return true;
   } catch {
     return false;
@@ -134,7 +134,7 @@ export function apiDelete<T>(path: string): Promise<T> {
 // ===== Auth API 函数 =====
 
 export interface AuthLoginRequest {
-  username: string;
+  login: string;
   password: string;
 }
 
@@ -143,18 +143,18 @@ export interface AuthRegisterRequest {
   password: string;
   email?: string;
   phone?: string;
-  display_name?: string;
+  displayName?: string;
 }
 
 export interface AuthResponse {
-  access_token: string;
-  refresh_token: string;
+  accessToken: string;
+  refreshToken: string;
   user: {
     id: string;
     username: string;
     email?: string;
     phone?: string;
-    display_name?: string;
+    displayName?: string;
   };
 }
 
@@ -163,7 +163,7 @@ export interface AuthMeResponse {
   username: string;
   email?: string;
   phone?: string;
-  display_name?: string;
+  displayName?: string;
 }
 
 export async function authLogin(req: AuthLoginRequest): Promise<AuthResponse> {
@@ -204,7 +204,7 @@ export async function authRefresh(refreshToken: string): Promise<AuthResponse> {
   const res = await fetch(`${API_BASE}/api/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: refreshToken }),
+    body: JSON.stringify({ refreshToken: refreshToken }),
   });
   if (!res.ok) {
     throw new Error('刷新token失败');
