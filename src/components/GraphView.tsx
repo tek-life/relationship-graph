@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import { pinyin } from 'pinyin-pro';
 import { inferRelationships, setRelationshipConfirmation } from '../services/db';
 import type { GraphData, GraphEdge, Person } from '../types';
 import { RELATIONSHIP_TYPES, HOW_ESTABLISHED } from '../types';
+import GraphFilter, { type FilterState } from './GraphFilter';
 
 interface Props {
   data: GraphData;
@@ -320,6 +321,17 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
   const [tooltip, setTooltip] = useState<{ person: Person; x: number; y: number } | null>(null);
   // 外部初始焦点只应用一次，避免数据刷新后覆盖用户手动重置的焦点
   const appliedInitialFocusRef = useRef<string | null>(null);
+  // 筛选状态
+  const [filter, setFilter] = useState<FilterState>({ companies: [], locations: [], strengthRange: [0, 1] });
+  // 移动端检测
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
 
   const labelById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -359,6 +371,41 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
     }
     return map;
   }, [data.edges]);
+
+  // 每个节点的 degree（关系连接数）
+  const degreeMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const node of data.nodes) {
+      map.set(node.id, adjacency.get(node.id)?.length ?? 0);
+    }
+    return map;
+  }, [data.nodes, adjacency]);
+
+  // 筛选：按公司、城市、关系强度过滤节点
+  const filteredNodeIds = useMemo(() => {
+    const hasFilter = filter.companies.length > 0 || filter.locations.length > 0 || filter.strengthRange[0] > 0 || filter.strengthRange[1] < 1;
+    if (!hasFilter) return null; // null = 无筛选，显示全部
+    const ids = new Set<string>();
+    for (const node of data.nodes) {
+      const person = personsById[node.id];
+      if (!person) continue;
+      if (filter.companies.length > 0 && !filter.companies.includes(person.company ?? '')) continue;
+      if (filter.locations.length > 0 && !filter.locations.includes(person.location ?? '')) continue;
+      // strength rating: 从关系边中取最大值
+      const edges = adjacency.get(node.id) ?? [];
+      const maxStrength = edges.length > 0 ? Math.max(...edges.map(e => e.strengthRating ?? 0.5)) : 0.5;
+      if (maxStrength < filter.strengthRange[0] || maxStrength > filter.strengthRange[1]) continue;
+      ids.add(node.id);
+    }
+    return ids;
+  }, [data.nodes, personsById, adjacency, filter]);
+
+  // 适配视窗
+  const handleFitToView = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.animate({ fit: { eles: cy.elements(), padding: 40 }, duration: 300, easing: 'ease-in-out-cubic' } as any);
+  }, []);
 
   // 焦点：仅手动指定；默认以"我"为中心展示辐射全景
   const effectiveFocus = useMemo(
@@ -447,7 +494,11 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
     if (!ref.current) return;
     boxModeRef.current = boxMode;
 
-    const baseNodes = visible ? data.nodes.filter((node) => visible.has(node.id)) : data.nodes;
+    let baseNodes = visible ? data.nodes.filter((node) => visible.has(node.id)) : data.nodes;
+    // 应用筛选面板过滤
+    if (filteredNodeIds) {
+      baseNodes = baseNodes.filter((node) => filteredNodeIds.has(node.id));
+    }
     // 圈选过滤只在"我"为中心的全景模式下生效：仅保留选中节点
     const nodes = !effectiveFocus && selection
       ? baseNodes.filter((node) => selection.has(node.id))
@@ -469,7 +520,8 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
             id: node.id,
             label: node.label,
             sensitivityLevel: node.sensitivityLevel,
-            size: nodeSize(node.id, effectiveFocus, personsById),
+            size: nodeSize(node.id, effectiveFocus, degreeMap.get(node.id) ?? 0),
+            degree: degreeMap.get(node.id) ?? 0,
           },
           classes: [
             node.id === effectiveFocus ? 'focus' : '',
@@ -711,14 +763,39 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
     cy.on('mouseout', 'node', () => setTooltip(null));
     cy.on('pan zoom drag', () => setTooltip(null));
 
+    // 分层渲染 + 标签字号自适应缩放级别（节流处理）
+    let zoomTimer: ReturnType<typeof setTimeout> | null = null;
+    const handleZoom = () => {
+      if (zoomTimer) return;
+      zoomTimer = setTimeout(() => {
+        zoomTimer = null;
+        const z = cy.zoom();
+        const fontSize = Math.max(8, Math.min(16, 12 / z));
+        cy.nodes().forEach((node) => {
+          const deg = node.data('degree') ?? 0;
+          const id = node.id();
+          if (id === ME_ID) return;
+          // 分层显示
+          let show = true;
+          if (z < 0.5) show = deg > 3;
+          else if (z <= 0.8) show = deg > 1;
+          node.style('display', show ? 'element' : 'none');
+          // 标签字号随缩放动态调整
+          node.style('font-size', `${fontSize}px`);
+        });
+      }, 100);
+    };
+    cy.on('zoom', handleZoom);
+
     return () => {
       if (tapTimer) clearTimeout(tapTimer);
+      if (zoomTimer) clearTimeout(zoomTimer);
       // 保存视野，便于圈选模式切换重建实例后无缝恢复
       viewportRef.current = { sig, zoom: cy.zoom(), pan: cy.pan() };
       cyRef.current = null;
       cy.destroy();
     };
-  }, [data, personsById, onNodeClick, effectiveFocus, depthMap, visible, path, labelById, selection, boxMode]);
+  }, [data, personsById, onNodeClick, effectiveFocus, depthMap, visible, path, labelById, selection, boxMode, filteredNodeIds, degreeMap]);
 
   const handleInfer = async () => {
     setBusy(true);
@@ -828,7 +905,27 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
 
       {notice && <div className="mb-3 rounded bg-blue-50 p-2 text-sm text-blue-700">{notice}</div>}
 
+      {/* 移动端提示 */}
+      {isMobile && (
+        <div className="mb-3 rounded-lg bg-amber-50 p-2 text-center text-sm text-amber-700">
+          建议在桌面端查看完整图谱
+        </div>
+      )}
+
       <div className="relative">
+        {/* 筛选面板 */}
+        <GraphFilter persons={Object.values(personsById)} filter={filter} onChange={setFilter} />
+        {/* 适配视窗按钮 */}
+        <button
+          type="button"
+          onClick={handleFitToView}
+          className="absolute right-3 top-3 z-10 rounded-lg bg-white/90 p-2 shadow-md hover:bg-white transition"
+          title="适配视窗"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
+          </svg>
+        </button>
         <div
           ref={ref}
           className="h-[560px] w-full rounded-xl border bg-white"
@@ -940,12 +1037,9 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
   );
 }
 
-function nodeSize(id: string, focusId: string | null, personsById: Record<string, Person>): number {
+function nodeSize(id: string, focusId: string | null, degree: number): number {
   if (id === focusId) return 70;
-  const strength = personsById[id]?.relationshipStrength;
-  if (strength === 'strong') return 58;
-  if (strength === 'medium') return 48;
-  return 38;
+  return 30 + Math.min(degree * 5, 50);
 }
 
 function relationshipLabel(value: string) {
