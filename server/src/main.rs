@@ -41,8 +41,9 @@ async fn main() {
     });
 
     let nlq_keywords = nlq_config::load_keywords_arc();
+    let llm_chain = llm::build_llm_chain();
 
-    let state = Arc::new(AppState::new(data_dir, &jwt_secret, nlq_keywords));
+    let state = Arc::new(AppState::new(data_dir, &jwt_secret, nlq_keywords, llm_chain));
 
     // MVP 阶段面向局域网开放 CORS；对公网暴露前必须收紧为可信域名白名单并启用 HTTPS
     let app = api::router(state)

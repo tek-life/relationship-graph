@@ -1,3 +1,4 @@
+use crate::llm::LlmProvider;
 use crate::nlq_config::NlqKeywords;
 use crate::security::auth::{JwtManager, TokenStore};
 use rusqlite::Connection;
@@ -10,18 +11,20 @@ pub struct AppState {
     pub jwt: JwtManager,
     pub data_dir: PathBuf,
     pub nlq_keywords: RwLock<Arc<NlqKeywords>>,
+    pub llm: Arc<dyn LlmProvider>,
 }
 
 pub type SharedState = Arc<AppState>;
 
 impl AppState {
-    pub fn new(data_dir: PathBuf, jwt_secret: &str, nlq_keywords: Arc<NlqKeywords>) -> Self {
+    pub fn new(data_dir: PathBuf, jwt_secret: &str, nlq_keywords: Arc<NlqKeywords>, llm: Arc<dyn LlmProvider>) -> Self {
         Self {
             db: Mutex::new(None),
             tokens: Mutex::new(TokenStore::default()),
             jwt: JwtManager::new(jwt_secret),
             data_dir,
             nlq_keywords: RwLock::new(nlq_keywords),
+            llm,
         }
     }
 
