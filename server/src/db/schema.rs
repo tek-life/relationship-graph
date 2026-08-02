@@ -73,6 +73,22 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             value TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE,
+            phone TEXT UNIQUE,
+            password_hash TEXT NOT NULL,
+            display_name TEXT,
+            oauth_provider TEXT,
+            oauth_id TEXT,
+            created_at TEXT NOT NULL,
+            last_login_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+        CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
+
         CREATE INDEX IF NOT EXISTS idx_persons_name ON persons(name);
         CREATE INDEX IF NOT EXISTS idx_persons_location ON persons(location);
         CREATE INDEX IF NOT EXISTS idx_persons_status ON persons(status);
@@ -93,7 +109,8 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     }
     result?;
     ensure_relationship_columns(conn)?;
-    ensure_person_columns(conn)
+    ensure_person_columns(conn)?;
+    ensure_owner_id_columns(conn)
 }
 
 /// 老库升级：为 persons 表补充学校/项目列（v1.4 推断规则扩展）
@@ -135,5 +152,33 @@ fn ensure_relationship_columns(conn: &Connection) -> Result<(), rusqlite::Error>
             log::info!(target: "db", "schema_migrate_add_column table=relationships column={}", name);
         }
     }
+    Ok(())
+}
+
+/// 多用户升级：为主表添加 owner_id 列
+pub fn ensure_owner_id_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let tables = ["persons", "relationships", "interactions", "entity_mentions"];
+    for table in tables {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+        let existing: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+
+        if !existing.iter().any(|col| col == "owner_id") {
+            conn.execute(
+                &format!("ALTER TABLE {} ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy'", table),
+                [],
+            )?;
+            log::info!(target: "db", "schema_migrate_add_column table={} column=owner_id", table);
+        }
+    }
+
+    // 索引
+    conn.execute_batch("
+        CREATE INDEX IF NOT EXISTS idx_persons_owner ON persons(owner_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_relationships_owner ON relationships(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_interactions_owner ON interactions(owner_id);
+    ")?;
+
     Ok(())
 }

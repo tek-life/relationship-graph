@@ -9,6 +9,7 @@ mod types;
 
 use state::AppState;
 use std::sync::Arc;
+use rand::RngCore;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -28,7 +29,17 @@ async fn main() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(8790);
 
-    let state = Arc::new(AppState::new(data_dir));
+    let jwt_secret = std::env::var("RG_JWT_SECRET").unwrap_or_else(|_| {
+        log::warn!(
+            target: "auth",
+            "RG_JWT_SECRET not set, using random secret (tokens won't survive restart)"
+        );
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        hex::encode(bytes)
+    });
+
+    let state = Arc::new(AppState::new(data_dir, &jwt_secret));
 
     // MVP 阶段面向局域网开放 CORS；对公网暴露前必须收紧为可信域名白名单并启用 HTTPS
     let app = api::router(state)
