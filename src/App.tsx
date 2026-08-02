@@ -12,7 +12,7 @@ import PersonList from './components/PersonList';
 import RelationshipForm from './components/RelationshipForm';
 import ThemeSelector from './components/ThemeSelector';
 import { useAuth } from './hooks/useAuth';
-import { useTheme } from './hooks/useTheme';
+import { useTheme, type Theme } from './hooks/useTheme';
 import { createPerson, getGraphData, listInteractionsByPerson, listPersons } from './services/db';
 import type { CreatePersonInput, GraphData, Interaction, Person } from './types';
 
@@ -27,9 +27,51 @@ const FOOTER_LINKS: { tab: Tab; label: string }[] = [
   { tab: 'import', label: '导入' },
 ];
 
+// ===== Auth 类型（从 useAuth 提取） =====
+
+interface AuthState {
+  isAuthenticated: boolean;
+  user: ReturnType<typeof useAuth>['user'];
+  loading: boolean;
+  login: ReturnType<typeof useAuth>['login'];
+  register: ReturnType<typeof useAuth>['register'];
+  logout: ReturnType<typeof useAuth>['logout'];
+  refreshToken: ReturnType<typeof useAuth>['refreshToken'];
+}
+
+interface AppContentProps {
+  theme: Theme;
+  setTheme: (t: Theme) => void;
+  auth: AuthState;
+}
+
+// ===== 顶层 App：仅负责认证守卫 =====
+
 function App() {
   const { theme, setTheme } = useTheme();
-  const { isAuthenticated, user, loading: authLoading, login, register, logout } = useAuth();
+  const auth = useAuth();
+
+  // 新认证模式下：未登录时显示 AuthPage
+  if (!LEGACY_AUTH) {
+    if (auth.loading) {
+      return (
+        <div className="flex min-h-screen items-center justify-center" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
+          正在检查登录状态...
+        </div>
+      );
+    }
+    if (!auth.isAuthenticated) {
+      return <AuthPage onLogin={auth.login} onRegister={auth.register} />;
+    }
+  }
+
+  return <AppContent theme={theme} setTheme={setTheme} auth={auth} />;
+}
+
+// ===== 主应用内容：所有 hooks 在此组件内无条件调用 =====
+
+function AppContent({ theme, setTheme, auth }: AppContentProps) {
+  const { user, logout } = auth;
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [persons, setPersons] = useState<Person[]>([]);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
@@ -42,20 +84,6 @@ function App() {
   // 新用户引导
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
-
-  // 新认证模式下：未登录时显示AuthPage
-  if (!LEGACY_AUTH) {
-    if (authLoading) {
-      return (
-        <div className="flex min-h-screen items-center justify-center" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}>
-          正在检查登录状态...
-        </div>
-      );
-    }
-    if (!isAuthenticated) {
-      return <AuthPage onLogin={login} onRegister={register} />;
-    }
-  }
 
   const personsById = useMemo(
     () => Object.fromEntries(persons.map((person) => [person.id, person])),

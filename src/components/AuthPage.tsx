@@ -72,9 +72,9 @@ export default function AuthPage({ onLogin, onRegister }: Props) {
           <div className="flex-1 border-t" style={{ borderColor: 'var(--border-color)' }} />
         </div>
         <div className="mt-4 flex justify-center gap-4">
-          <OAuthButton label="微信" icon="💬" />
-          <OAuthButton label="钉钉" icon="📌" />
-          <OAuthButton label="飞书" icon="🪶" />
+          <OAuthButton label="微信" icon="💬" brandColor="#09B83E" />
+          <OAuthButton label="钉钉" icon="📌" brandColor="#0089FF" />
+          <OAuthButton label="飞书" icon="🪶" brandColor="#165DFF" />
         </div>
       </div>
 
@@ -329,7 +329,7 @@ function RegisterForm({ onRegister }: { onRegister: (req: RegisterRequest) => Pr
 
 // ===== 第三方登录按钮 =====
 
-function OAuthButton({ label, icon }: { label: string; icon: string }) {
+function OAuthButton({ label, icon, brandColor }: { label: string; icon: string; brandColor: string }) {
   const handleClick = () => {
     alert(`${label}登录即将支持`);
   };
@@ -339,7 +339,7 @@ function OAuthButton({ label, icon }: { label: string; icon: string }) {
       type="button"
       onClick={handleClick}
       className="flex h-10 w-10 items-center justify-center rounded-full border text-lg transition hover:opacity-80"
-      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: brandColor }}
       title={label}
     >
       {icon}
