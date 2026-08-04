@@ -214,59 +214,40 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
 
   return (
     <div className="w-full">
-      <div className={`grid gap-4 ${chatPanelContent ? 'grid-cols-1 xl:grid-cols-[1.15fr_0.85fr]' : 'grid-cols-1'}`}>
-        <section className="space-y-4">
-          {!hasMessages ? (
-            <div className="flex min-h-[56vh] flex-col justify-end">
-              <div className="space-y-4">
-                <AgentBar
-                  leadingMention={leadingMention}
-                  onPickMention={insertAgentMention}
-                  onPickExample={() => applyRelationshipExample('谁在上海做地产，和我关系比较近？')}
-                />
-                <Composer
-                  ref={textareaRef}
-                  query={query}
-                  busy={busy}
-                  loading={loading}
-                  voice={voice}
-                  onChange={setQuery}
-                  onKeyDown={handleKeyDown}
-                  onPaste={handlePaste}
-                  onSubmit={submit}
-                  onToggleVoice={() => voice.toggle()}
-                  onStopVoice={voice.stop}
-                  onOcrText={appendText}
-                  ocrRef={ocrRef}
-                />
-              </div>
+      <div className={`grid gap-5 ${chatPanelContent ? 'xl:grid-cols-[minmax(0,1fr)_360px]' : 'grid-cols-1'}`}>
+        <section className="min-h-[72vh]">
+          <div className="mx-auto flex min-h-[72vh] max-w-4xl flex-col">
+            <div className="flex-1 space-y-6 py-2">
+              {hasMessages ? (
+                <>
+                  {messages.map((message) => (
+                    <ChatBubble
+                      key={message.id}
+                      message={message}
+                      onPersonClick={onPersonClick}
+                      onShowPanel={(content, title) => {
+                        setChatPanelContent(content);
+                        setPanelTitle(title);
+                      }}
+                      onClosePanel={() => setChatPanelContent(null)}
+                      onConfirm={handleConfirm}
+                    />
+                  ))}
+                  <div ref={messagesEndRef} />
+                </>
+              ) : (
+                <div className="min-h-[42vh]" />
+              )}
             </div>
-          ) : (
-            <div className="space-y-4">
+
+            {error && <p className="mb-3 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+            <div className="space-y-3 pb-2">
               <AgentBar
                 leadingMention={leadingMention}
                 onPickMention={insertAgentMention}
                 onPickExample={() => applyRelationshipExample('谁在上海做地产，和我关系比较近？')}
               />
-
-              {error && <p className="rounded-2xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-
-              <div className="space-y-4">
-                {messages.map((message) => (
-                  <ChatBubble
-                    key={message.id}
-                    message={message}
-                    onPersonClick={onPersonClick}
-                    onShowPanel={(content, title) => {
-                      setChatPanelContent(content);
-                      setPanelTitle(title);
-                    }}
-                    onClosePanel={() => setChatPanelContent(null)}
-                    onConfirm={handleConfirm}
-                  />
-                ))}
-                <div ref={messagesEndRef} />
-              </div>
 
               <Composer
                 ref={textareaRef}
@@ -282,10 +263,9 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
                 onStopVoice={voice.stop}
                 onOcrText={appendText}
                 ocrRef={ocrRef}
-                compact
               />
             </div>
-          )}
+          </div>
         </section>
 
         {chatPanelContent && (
@@ -326,18 +306,18 @@ interface AgentBarProps {
 
 function AgentBar({ leadingMention, onPickMention, onPickExample }: AgentBarProps) {
   return (
-    <div className="rounded-3xl border p-3 shadow-sm" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}>
-      <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap items-center gap-3 px-1">
+      <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>数字人</span>
         {DIGITAL_AGENTS.map((agent) => {
           const active = leadingMention === agent.mention || agent.aliases.includes(leadingMention);
           return (
             <button
               key={agent.id}
               type="button"
-              className="flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition"
+              className="flex items-center gap-2 rounded-full border px-3 py-2 text-sm transition shadow-sm"
               style={{
                 borderColor: active ? 'var(--accent-color)' : 'var(--border-color)',
-                backgroundColor: active ? 'var(--surface-hover)' : 'var(--bg-primary)',
+                backgroundColor: active ? 'var(--surface-hover)' : 'var(--bg-card)',
                 color: 'var(--text-primary)',
               }}
               onClick={() => onPickMention(agent.mention)}
@@ -349,13 +329,12 @@ function AgentBar({ leadingMention, onPickMention, onPickExample }: AgentBarProp
         })}
         <button
           type="button"
-          className="rounded-full border px-3 py-1.5 text-sm transition"
-          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+          className="rounded-full border px-3 py-2 text-sm transition"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)', color: 'var(--text-secondary)' }}
           onClick={onPickExample}
         >
           示例：@联系人管家
         </button>
-      </div>
     </div>
   );
 }
@@ -389,7 +368,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
         <textarea
           ref={ref}
           rows={2}
-          className="w-full resize-none rounded-3xl bg-transparent px-4 pb-2 pt-4 text-base outline-none"
+          className="w-full resize-none rounded-3xl bg-transparent px-4 pb-2 pt-4 text-[15px] outline-none"
           style={{ color: 'var(--text-primary)' }}
           placeholder="直接开始聊天；若要维护联系人，请输入 @联系人管家。"
           value={query}
@@ -453,61 +432,77 @@ interface ChatBubbleProps {
 }
 
 function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfirm }: ChatBubbleProps) {
+  const isUser = message.role === 'user';
+  const bubbleStyle = isUser
+    ? { borderColor: 'rgba(148,163,184,0.35)', backgroundColor: 'rgba(255,255,255,0.92)' }
+    : { borderColor: 'transparent', backgroundColor: 'transparent' };
+
   return (
-    <div
-      className={`rounded-3xl border p-4 shadow-sm ${message.role === 'user' ? 'ml-10' : 'mr-10'}`}
-      style={{
-        borderColor: 'var(--border-color)',
-        backgroundColor: message.role === 'user' ? 'var(--bg-secondary)' : 'var(--bg-card)',
-      }}
-    >
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-[0.2em]" style={{ color: 'var(--text-secondary)' }}>
-          {message.role === 'user' ? '你' : '助理'}
-        </span>
-        {message.attachment && (
-          <button
-            type="button"
-            className="flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition hover:shadow-sm"
-            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
-            onClick={() => onShowPanel(message.attachment?.content ?? '', message.attachment?.title ?? '输出内容.md')}
-          >
-            <span>📎</span>
-            <span>{message.attachment.title}</span>
-          </button>
-        )}
-      </div>
+    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className={`flex w-full max-w-3xl gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
+        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-white shadow-sm" style={{ borderColor: 'var(--border-color)' }}>
+          {isUser ? (
+            <span className="text-sm font-semibold" style={{ color: 'var(--accent-color)' }}>你</span>
+          ) : (
+            <AssistantAvatar />
+          )}
+        </div>
 
-      <div className="space-y-3">
-        <MarkdownContent content={message.content} className="text-[15px] leading-7" />
-
-        {message.attachment && (
-          <button
-            type="button"
-            className="flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition hover:bg-slate-50"
-            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-primary)' }}
-            onClick={() => onShowPanel(message.attachment?.content ?? '', message.attachment?.title ?? '输出内容.md')}
-          >
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white">
-              📄
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{message.attachment.title}</p>
-              <p className="truncate text-xs" style={{ color: 'var(--text-secondary)' }}>点击查看完整 Markdown 输出</p>
-            </div>
-          </button>
-        )}
-
-        {message.resultType === 'search' && message.results && message.results.length > 0 && (
+        <div className={`min-w-0 flex-1 ${isUser ? 'flex justify-end' : 'flex justify-start'}`}>
           <div className="space-y-2">
-            {message.results.map((result) => (
-              <NlqResultCard key={result.personId} result={result} onPersonClick={onPersonClick} />
-            ))}
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                {isUser ? '你' : '助理'}
+              </span>
+            </div>
+
+            <div
+              className={`rounded-3xl border px-4 py-3 shadow-sm ${isUser ? 'max-w-[34rem]' : 'max-w-[46rem]'}`}
+              style={bubbleStyle}
+            >
+              <MarkdownContent content={message.content} className={`text-[15px] leading-7 ${isUser ? 'text-right' : 'text-left'}`} />
+
+              {message.attachment && (
+                <button
+                  type="button"
+                  className="mt-3 flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition hover:bg-slate-50"
+                  style={{ borderColor: 'var(--border-color)', backgroundColor: 'rgba(255,255,255,0.75)' }}
+                  onClick={() => onShowPanel(message.attachment?.content ?? '', message.attachment?.title ?? '输出内容.md')}
+                >
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white">
+                    📄
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{message.attachment.title}</p>
+                    <p className="truncate text-xs" style={{ color: 'var(--text-secondary)' }}>点击查看完整 Markdown 输出</p>
+                  </div>
+                </button>
+              )}
+
+              {message.resultType === 'search' && message.results && message.results.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {message.results.map((result) => (
+                    <NlqResultCard key={result.personId} result={result} onPersonClick={onPersonClick} />
+                  ))}
+                </div>
+              )}
+              {message.resultType === 'path' && message.response && <div className="mt-3"><PathResultDisplay path={(message.response as Extract<NlqResponse, { intentType: 'findPath' }>).path} onPersonClick={onPersonClick} /></div>}
+              {message.resultType === 'draft' && message.response && <div className="mt-3"><DraftConfirmation response={message.response as Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }>} onConfirm={onConfirm} onCancel={onClosePanel} /></div>}
+            </div>
           </div>
-        )}
-        {message.resultType === 'path' && message.response && <PathResultDisplay path={(message.response as Extract<NlqResponse, { intentType: 'findPath' }>).path} onPersonClick={onPersonClick} />}
-        {message.resultType === 'draft' && message.response && <DraftConfirmation response={message.response as Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }>} onConfirm={onConfirm} onCancel={onClosePanel} />}
+        </div>
       </div>
     </div>
+  );
+}
+
+function AssistantAvatar() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+      <circle cx="9" cy="7.2" r="4.2" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M3.5 15C3.5 12.5 5.7 11 9 11C12.3 11 14.5 12.5 14.5 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="7.6" cy="7.1" r="0.8" fill="currentColor" />
+      <circle cx="10.4" cy="7.1" r="0.8" fill="currentColor" />
+    </svg>
   );
 }
