@@ -4,7 +4,8 @@ use log::{info, warn};
 
 use crate::types::{PersonDraft, FieldChange, InteractionDraft};
 
-const OLLAMA_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 45;
+const DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS: u64 = 120;
 
 fn ollama_url() -> String {
     std::env::var("RG_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string())
@@ -12,6 +13,15 @@ fn ollama_url() -> String {
 
 fn ollama_model() -> String {
     std::env::var("RG_OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_string())
+}
+
+fn ollama_timeout(env_key: &str, default_secs: u64) -> Duration {
+    std::env::var(env_key)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(default_secs))
 }
 
 #[derive(Serialize)]
@@ -28,9 +38,9 @@ struct OllamaResponse {
     response: Option<String>,
 }
 
-async fn call_ollama(prompt: &str, format: Option<&str>) -> Result<String, String> {
+async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .timeout(OLLAMA_TIMEOUT)
+        .timeout(timeout)
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -49,7 +59,17 @@ async fn call_ollama(prompt: &str, format: Option<&str>) -> Result<String, Strin
         .json(&req)
         .send()
         .await
-        .map_err(|e| format!("Ollama request failed: {}", e))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                format!(
+                    "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
+                    req.model,
+                    timeout.as_secs()
+                )
+            } else {
+                format!("Ollama request failed: {}", e)
+            }
+        })?;
 
     if !resp.status().is_success() {
         return Err(format!("Ollama returned status {}", resp.status()));
@@ -67,7 +87,12 @@ pub async fn general_chat(query: &str) -> Result<String, String> {
         query
     );
 
-    call_ollama(&prompt, None).await
+    call_ollama(
+        &prompt,
+        None,
+        ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
+    )
+    .await
 }
 
 /// 从自然语言中提取联系人字段（用于 create_person 意图）
@@ -88,7 +113,11 @@ pub async fn extract_person_fields(query: &str) -> PersonDraft {
         query
     );
 
-    match call_ollama(&prompt, Some("json")).await {
+    match call_ollama(
+        &prompt,
+        Some("json"),
+        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+    ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(v) => PersonDraft {
@@ -129,7 +158,11 @@ pub async fn extract_update_fields(query: &str) -> (String, Vec<FieldChange>) {
         query
     );
 
-    match call_ollama(&prompt, Some("json")).await {
+    match call_ollama(
+        &prompt,
+        Some("json"),
+        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+    ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(v) => {
@@ -175,7 +208,11 @@ pub async fn extract_interaction_data(query: &str) -> InteractionDraft {
         query
     );
 
-    match call_ollama(&prompt, Some("json")).await {
+    match call_ollama(
+        &prompt,
+        Some("json"),
+        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+    ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(v) => InteractionDraft {
@@ -210,7 +247,11 @@ pub async fn extract_path_target(query: &str) -> String {
         query
     );
 
-    match call_ollama(&prompt, Some("json")).await {
+    match call_ollama(
+        &prompt,
+        Some("json"),
+        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+    ).await {
         Ok(json_str) => {
             serde_json::from_str::<serde_json::Value>(&json_str)
                 .ok()

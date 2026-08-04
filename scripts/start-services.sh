@@ -13,6 +13,8 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DATA_DIR="${HOME}/.local/share/relationship-graph"
 SERVER_LOG="/tmp/relationship-graph-server.log"
+RG_OLLAMA_TIMEOUT_SECS="${RG_OLLAMA_TIMEOUT_SECS:-45}"
+RG_OLLAMA_CHAT_TIMEOUT_SECS="${RG_OLLAMA_CHAT_TIMEOUT_SECS:-120}"
 
 mkdir -p "${APP_DATA_DIR}"
 
@@ -50,7 +52,10 @@ echo "==> 启动 Axum 服务端（后台，端口 8790）"
 if ! lsof -i :8790 >/dev/null 2>&1; then
   cd "${PROJECT_DIR}/server"
   source "${HOME}/.cargo/env"
-  nohup cargo run --release >"${SERVER_LOG}" 2>&1 &
+  nohup env \
+    RG_OLLAMA_TIMEOUT_SECS="${RG_OLLAMA_TIMEOUT_SECS}" \
+    RG_OLLAMA_CHAT_TIMEOUT_SECS="${RG_OLLAMA_CHAT_TIMEOUT_SECS}" \
+    cargo run --release >"${SERVER_LOG}" 2>&1 &
   echo "Axum 服务端已启动，日志：${SERVER_LOG}"
   # 等待服务就绪
   for i in {1..60}; do
