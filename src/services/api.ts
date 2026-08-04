@@ -6,6 +6,7 @@ export const API_BASE: string =
   `http://${window.location.hostname}:8790`;
 
 const TOKEN_KEY = 'rg_token';
+export const AUTH_EXPIRED_EVENT = 'rg:auth-expired';
 
 export function getToken(): string | null {
   return sessionStorage.getItem(TOKEN_KEY);
@@ -37,8 +38,16 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 
   if (response.status === 401) {
     clearToken();
+    window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT));
   }
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error('登录会话已过期，请重新解锁数据库后再试。');
+    }
+    if (response.status === 404 && path === '/api/chat') {
+      throw new Error('当前服务端版本不支持通用问答接口 /api/chat，请重启并升级后端服务。');
+    }
+
     let message = `请求失败（${response.status}）`;
     try {
       const body = await response.json();

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AUTH_EXPIRED_EVENT } from '../services/api';
 import { checkDbState, loadDatabaseFromKeychain, setupDatabase, unlockDatabase } from '../services/security';
 
 interface Props {
@@ -36,6 +37,16 @@ export default function PasswordGate({ children }: Props) {
       }
     }
     bootstrap();
+  }, []);
+
+  useEffect(() => {
+    const onAuthExpired = () => {
+      setMode('unlock');
+      setPassword('');
+      setError('登录会话已过期，请重新输入主密码解锁。');
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
   }, []);
 
   const handleSubmit = async (event: React.FormEvent) => {
