@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Relationship Graph 集成到个人内观智能体的设计方案 v0.2</title>
+  <style>
+    :root {
+      --bg-color:#f8fafc;
+      --text-color:#334155;
+      --heading-color:#0f172a;
+      --accent-color:#2563eb;
+      --border-color:#cbd5e1;
+      --code-bg:#eff6ff;
+      --card-bg:#ffffff;
+      --table-header-bg:#e2e8f0;
+      --table-row-alt:#f8fafc;
+      --good-bg:#ecfdf5;
+      --warn-bg:#fff7ed;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-color:#020617;
+        --text-color:#cbd5e1;
+        --heading-color:#f8fafc;
+        --accent-color:#60a5fa;
+        --border-color:#334155;
+        --code-bg:#0f172a;
+        --card-bg:#111827;
+        --table-header-bg:#1e293b;
+        --table-row-alt:#0f172a;
+        --good-bg:#052e16;
+        --warn-bg:#431407;
+      }
+    }
+    body {
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+      line-height:1.75;
+      color:var(--text-color);
+      background:var(--bg-color);
+      max-width:1120px;
+      margin:0 auto;
+      padding:2rem 1.25rem 4rem;
+    }
+    h1 {
+      color:var(--heading-color);
+      font-size:2rem;
+      margin:0 0 1rem;
+      padding-bottom:.6rem;
+      border-bottom:3px solid var(--accent-color);
+    }
+    h2 {
+      color:var(--heading-color);
+      font-size:1.45rem;
+      margin-top:2.4rem;
+      margin-bottom:.9rem;
+      padding-bottom:.35rem;
+      border-bottom:1px solid var(--border-color);
+    }
+    h3 {
+      color:var(--heading-color);
+      font-size:1.15rem;
+      margin-top:1.6rem;
+      margin-bottom:.7rem;
+    }
+    p { margin:.7rem 0; }
+    ul, ol { margin:.8rem 0; padding-left:1.6rem; }
+    li { margin:.35rem 0; }
+    code {
+      background:var(--code-bg);
+      padding:.16rem .38rem;
+      border-radius:4px;
+      font-family:"SF Mono",Monaco,"Cascadia Code",monospace;
+      font-size:.92em;
+    }
+    pre {
+      background:var(--code-bg);
+      border:1px solid var(--border-color);
+      border-radius:10px;
+      padding:1rem;
+      overflow-x:auto;
+    }
+    pre code { background:none; padding:0; }
+    table {
+      width:100%;
+      border-collapse:collapse;
+      margin:1rem 0 1.25rem;
+      border:1px solid var(--border-color);
+    }
+    th, td {
+      text-align:left;
+      vertical-align:top;
+      padding:.75rem;
+      border-bottom:1px solid var(--border-color);
+    }
+    th {
+      background:var(--table-header-bg);
+      color:var(--heading-color);
+      font-weight:600;
+    }
+    tr:nth-child(even) { background:var(--table-row-alt); }
+    blockquote {
+      margin:1rem 0;
+      padding:.75rem 1rem;
+      border-left:4px solid var(--accent-color);
+      background:var(--code-bg);
+      border-radius:0 10px 10px 0;
+    }
+    .card {
+      background:var(--card-bg);
+      border:1px solid var(--border-color);
+      border-radius:12px;
+      padding:1rem 1.1rem;
+      margin:1rem 0;
+    }
+    .good { background:var(--good-bg); }
+    .warn { background:var(--warn-bg); }
+    .muted { color:#64748b; }
+  </style>
+</head>
+<body>
+  <h1>Relationship Graph 集成到个人内观智能体的设计方案 v0.2</h1>
+
+  <blockquote>
+    <p>日期：2026-08-03</p>
+    <p>目标：评估将 <strong>relationship-graph</strong> 作为“个人内观智能体”的一部分嵌入到 <strong>LangGraph</strong> 后端与 <strong>agent-chat-ui</strong> 前端体系中的可行性，并基于新增的通用聊天、用户画像、智囊团与事务边界要求补齐架构、实现细节与执行计划。</p>
+  </blockquote>
+
+  <h2>1. 结论摘要</h2>
+  <div class="card">
+    <p><strong>平台约束：</strong>未来用户访问本服务时，唯一入口是浏览器或 PWA；不会提供原生 App。因此所有前端壳、权限模型、本地能力都要以 Web 访问为前提设计。</p>
+  </div>
+  <div class="card good">
+    <p><strong>总体结论：可行，而且方向是对的。</strong></p>
+    <ul>
+      <li><strong>前端可行</strong>：relationship-graph 现有交互已经向“统一多模态输入框 + 结果卡片 + 草稿确认”收敛，与 agent-chat-ui 的消息流形态天然兼容。</li>
+      <li><strong>编排可行</strong>：个人内观智能体已经明确以 LangGraph 做意图路由和多子图编排，relationship-graph 恰好适合作为其中一个领域子图 / 工具集。</li>
+      <li><strong>能力边界清晰</strong>：relationship-graph 适合作为“关系记忆层 + 查询执行层 + 写入确认层”，而不是单独再做一套平行 Agent。</li>
+      <li><strong>主要挑战不在技术不可实现</strong>，而在于数据分级存储、前后端协议统一、以及 Tauri 本地能力如何与 LangGraph 服务端协同。</li>
+    </ul>
+  </div>
+
+  <p><strong>推荐路线：</strong>不要把当前 relationship-graph 当成一个完整独立应用“硬嵌进去”，而是把它<strong>重构为个人内观智能体中的一个领域模块</strong>：</p>
+  <ol>
+    <li><strong>前端统一</strong>：用 agent-chat-ui 作为主聊天壳。</li>
+    <li><strong>编排统一</strong>：用 LangGraph 负责意图分类、上下文拼装、多意图链执行。</li>
+    <li><strong>能力保留</strong>：保留 relationship-graph 的联系人、关系、互动记录、图谱、NLQ、路径查找、导入能力。</li>
+    <li><strong>本地增强</strong>：保留 Tauri / 本地助手处理高敏感库、语音文件、本地工具调用、Deep Link。</li>
+  </ol>
+
+  <h2>2. 为什么说可行</h2>
+
+  <h3>2.1 现有 relationship-graph 已具备可复用基础</h3>
+  <table>
+    <thead>
+      <tr><th>现状</th><th>说明</th><th>对集成的意义</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>统一输入雏形已存在</td><td>当前已有多模态查询入口，支持文本、语音、截图 OCR、草稿确认。</td><td>可以映射为 agent-chat-ui 的主输入框和消息卡片。</td></tr>
+      <tr><td>领域模型清晰</td><td>已定义 Person / Relationship / Interaction / EntityMention / GraphData / NLQ 响应等结构。</td><td>容易提炼为 LangGraph tool schema 和前后端 API contract。</td></tr>
+      <tr><td>规则驱动 NLQ 已落地</td><td>当前 NLQ 并非让 LLM 直接写 SQL，而是 QueryIntent + 参数化检索。</td><td>非常适合放进 Agent 体系，作为可靠、可控的检索工具。</td></tr>
+      <tr><td>安全模型已有 MVP</td><td>已有敏感级别、脱敏展示、SQLCipher、主密码/密钥链解锁设计。</td><td>后续可演进为“服务端中低敏感 + 本地高敏感”的分级记忆架构。</td></tr>
+      <tr><td>已向 HTTP API 过渡</td><td>前端服务层已通过 HTTP API 调用，而不再只依赖 Tauri invoke。</td><td>说明系统边界正在服务化，适合集成进 LangGraph 后端。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>2.2 个人内观智能体的目标架构与 relationship-graph 高度互补</h3>
+  <p>个人内观智能体强调：</p>
+  <ul>
+    <li>单一多模态入口</li>
+    <li>LangGraph 意图路由</li>
+    <li>画像驱动问答</li>
+    <li>幕僚团决策辅助</li>
+    <li>桌面工具调用</li>
+  </ul>
+  <p>而 relationship-graph 恰好补足其中“<strong>谁、通过谁、什么时候、聊过什么、下一步怎么跟</strong>”这一层长期关系记忆。它最合适的角色不是主控，而是为主智能体提供：</p>
+  <ul>
+    <li><strong>结构化关系记忆</strong></li>
+    <li><strong>可解释的人脉检索</strong></li>
+    <li><strong>路径查找与推荐</strong></li>
+    <li><strong>互动记录写入与确认</strong></li>
+    <li><strong>高敏感联系人分级保护</strong></li>
+  </ul>
+
+  <h2>3. 不推荐的集成方式</h2>
+  <table>
+    <thead>
+      <tr><th>方案</th><th>判断</th><th>问题</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>把当前 relationship-graph 整个 UI 作为独立页面或 iframe 嵌入</td><td>不推荐</td><td>会形成两套交互心智：一套 chat，一套 CRUD/tab；消息流和确认流无法统一。</td></tr>
+      <tr><td>把 relationship-graph 重写成一个完全独立的 Agent，与主智能体并列</td><td>不推荐</td><td>容易导致画像、会话状态、权限控制、工具调用上下文重复维护。</td></tr>
+      <tr><td>完全推翻 Rust/Tauri，全部重写到 Python/LangGraph</td><td>不推荐</td><td>会损失已有 SQLCipher、本地能力和已完成的数据模型，成本高且风险大。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. 推荐目标架构</h2>
+
+  <h3>4.1 一句话</h3>
+  <p><strong>agent-chat-ui 负责统一交互壳，LangGraph 负责工作流编排，relationship-graph 负责关系域能力，本地桌面层负责高敏感数据和本机工具执行。</strong></p>
+
+  <h3>4.2 总体架构图</h3>
+  <pre><code>agent-chat-ui (Web / PWA / Tauri WebView)
+  ├── 单一多模态输入框
+  ├── 聊天消息流
+  ├── 工具结果卡片 / 草稿确认卡片 / 图谱侧栏
+  └── Artifact / Panel: 联系人详情、关系图谱、导入预览
+
+                ↓ HTTP / SSE / WebSocket
+
+LangGraph Orchestrator
+  ├── Session State / Conversation Memory
+  ├── Intent Router
+  ├── Profile Context Loader
+  ├── Relationship Graph Subgraph
+  ├── Daily Briefing Subgraph
+  ├── Council / Skills Subgraph
+  └── Desktop Action Subgraph
+
+                ↓ tool calls / service calls
+
+Domain Services
+  ├── Relationship Graph Service
+  │   ├── Person / Relationship / Interaction CRUD
+  │   ├── NLQ QueryIntent Engine
+  │   ├── Path Search
+  │   ├── Import / OCR / ASR pipeline
+  │   └── Sensitivity / Audit
+  ├── Profile Service
+  ├── Briefing Service
+  └── Tool Registry Service
+
+                ↓
+
+Storage & Local Capability
+  ├── Remote DB: low / medium sensitivity
+  ├── Vector / retrieval index
+  ├── Object storage
+  └── Local secure store (Tauri + SQLCipher): high sensitivity
+</code></pre>
+
+  <h3>4.3 模块职责划分</h3>
+  <table>
+    <thead>
+      <tr><th>层</th><th>职责</th><th>建议技术</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>交互层</td><td>聊天输入、历史消息、确认卡片、图谱侧栏、结果卡片</td><td>agent-chat-ui + React 自定义 renderer</td></tr>
+      <tr><td>编排层</td><td>意图分类、多意图拆分、状态流转、错误恢复</td><td>LangGraph</td></tr>
+      <tr><td>关系域服务层</td><td>关系图谱相关的所有业务规则和 API</td><td>建议独立 service；短期可沿用当前后端能力</td></tr>
+      <tr><td>本地能力层</td><td>高敏感本地库、文件访问、语音文件、飞书/浏览器 Deep Link</td><td>Tauri companion / localhost helper</td></tr>
+      <tr><td>数据层</td><td>远程中低敏感数据、本地高敏感数据、检索索引、审计日志</td><td>PostgreSQL + pgvector + SQLCipher</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. LangGraph 中 relationship-graph 的定位</h2>
+
+  <h3>5.1 不是“第二个 Agent”，而是“领域子图”</h3>
+  <p>推荐在 LangGraph 中将 relationship-graph 实现为一个 <strong>RelationshipGraphSubgraph</strong>，由主 Supervisor 统一调度。</p>
+
+  <pre><code>SupervisorGraph
+  ├── classify_intent
+  ├── load_profile_context
+  ├── maybe_load_relationship_context
+  ├── route_to_subgraph
+  │   ├── RelationshipGraphSubgraph
+  │   ├── IntrospectionQASubgraph
+  │   ├── CouncilSubgraph
+  │   └── DesktopToolSubgraph
+  └── synthesize_final_response
+
+RelationshipGraphSubgraph
+  ├── detect_action
+  ├── resolve_entities
+  ├── fetch_candidates_or_path
+  ├── produce_draft_or_result
+  ├── await_user_confirmation (for writes)
+  └── persist_and_emit_summary
+</code></pre>
+
+  <h3>5.2 RelationshipGraphSubgraph 适合承担的意图</h3>
+  <table>
+    <thead>
+      <tr><th>意图</th><th>示例</th><th>输出</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>search_people</code></td><td>谁在上海做地产，和我关系比较近？</td><td>结果卡片列表</td></tr>
+      <tr><td><code>find_path</code></td><td>我通过谁能联系到王局长？</td><td>路径卡片 + 图谱高亮数据</td></tr>
+      <tr><td><code>create_person_draft</code></td><td>刚认识了一个人，做园区招商</td><td>联系人草稿卡片</td></tr>
+      <tr><td><code>update_person_draft</code></td><td>张明换去新公司了</td><td>字段变更确认卡片</td></tr>
+      <tr><td><code>add_interaction_draft</code></td><td>今天和老张聊了融资</td><td>互动记录草稿卡片</td></tr>
+      <tr><td><code>import_business_card</code></td><td>上传名片图片</td><td>OCR 结构化草稿</td></tr>
+      <tr><td><code>import_chat_excerpt</code></td><td>把这段聊天整理一下</td><td>候选联系人 + 草稿</td></tr>
+    </tbody>
+  </table>
+
+  <h3>5.3 多意图链中的协作方式</h3>
+  <p>relationship-graph 最有价值的地方之一，是给后续子图提供中间上下文。</p>
+  <blockquote>
+    <p>例子：<code>查一下老张上次聊的融资进展，然后给他发消息约下周见面</code></p>
+    <p>执行顺序：relationship-graph 查询 → 生成上下文摘要 → desktop tool 子图拉起飞书 → 预填消息。</p>
+  </blockquote>
+
+  <h3>5.4 通用聊天与用户画像约束</h3>
+  <p>relationship-graph 不应只是“维护联系人”的子系统，还要承接“普通聊天”这类通用需求。建议把它放在更大的个人内观智能体里，并明确以下约束：</p>
+  <ul>
+    <li>用户发起的普通闲聊、写作、总结、提纲、邮件草拟等，不必强制进入联系人模块。</li>
+    <li>但只要涉及“人、关系、互动、跟进、路径、项目机会”时，系统必须自动挂上关系上下文与用户画像。</li>
+    <li>用户画像在注册时强制收集，并在后续所有会话中默认加载；它是偏好、价值观、约束、决策风格的基础上下文。</li>
+    <li>注册期画像可由一轮引导式问答完成，后续通过对话补充，但不能完全跳过。</li>
+  </ul>
+
+  <h3>5.5 智囊团虚拟人物与 skill 机制</h3>
+  <p>建议把“智囊团”中的每个人都建模为一个虚拟人物实体，拥有固定角色、能力边界和 skill schema。</p>
+  <ul>
+    <li>每个虚拟人物都不是普通联系人，而是一个“能力角色”，例如“财务顾问”“项目推进官”“写作助手”。</li>
+    <li>在消息框中通过 <code>@</code> 或明确要求“请某某来…”时，系统应以该虚拟人物的 skill 为入口生成针对性回答。</li>
+    <li>当任务需要生成报告、决策分析、邮件草稿、反复迭代方案时，优先调度对应 council skill，而不是让主模型硬做。</li>
+    <li>relationship-graph 需要把“谁 / 为何 / 关系强度 / 最近互动”作为 council skill 的输入上下文之一。</li>
+  </ul>
+
+  <h2>6. agent-chat-ui 集成设计</h2>
+
+  <h3>6.1 为什么 agent-chat-ui 适合承载 relationship-graph</h3>
+  <ul>
+    <li>它天然是“消息驱动 + 工具结果渲染”的 UI 模型。</li>
+    <li>relationship-graph 已经在向“输入一句话，返回卡片/草稿/路径”演进，和表单页模型相比，更适合聊天 UI。</li>
+    <li>多媒体输入框与语音、图片、文本的统一入口需求一致。</li>
+    <li>它同时适合承载“通用聊天”和“关系维护”这两类任务，避免用户因为场景不同而切换产品入口。</li>
+  </ul>
+
+  <h3>6.2 前端呈现建议</h3>
+  <table>
+    <thead>
+      <tr><th>能力</th><th>建议呈现形态</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>联系人查询结果</td><td>消息流中的 result cards，可点击打开详情侧栏</td></tr>
+      <tr><td>新增/更新草稿</td><td>消息流中的 confirmation card，支持确认 / 修改 / 取消</td></tr>
+      <tr><td>路径查找</td><td>消息内简版路径 + 右侧 graph panel 高亮完整链路</td></tr>
+      <tr><td>互动记录详情</td><td>详情侧栏中时间线展示</td></tr>
+      <tr><td>高敏感数据</td><td>默认脱敏；用户点击 reveal 后二次确认</td></tr>
+      <tr><td>OCR / ASR 导入</td><td>上传后先显示 processing 消息，再显示草稿消息</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.3 建议的消息类型</h3>
+  <pre><code>type ChatArtifact =
+  | { type: "relationship-search-results"; payload: NlqResult[] }
+  | { type: "person-draft"; payload: PersonDraft }
+  | { type: "person-update-draft"; payload: UpdateDraft }
+  | { type: "interaction-draft"; payload: InteractionDraft }
+  | { type: "relationship-path"; payload: PathData }
+  | { type: "graph-focus"; payload: { nodeIds: string[]; edgeIds: string[] } }
+  | { type: "sensitivity-reveal-request"; payload: { personId: string } };
+</code></pre>
+
+  <h3>6.4 UI 组织建议</h3>
+  <ul>
+    <li><strong>主区</strong>：agent-chat-ui 消息流，承接普通聊天、结果卡片、草稿卡片和二次确认。</li>
+    <li><strong>右侧面板</strong>：联系人详情 / 图谱 / 导入预览 / 审计提示；图谱和详情不直接塞进消息流，避免消息内容过于复杂。</li>
+    <li><strong>顶部上下文条</strong>：显示当前会话是否已加载“画像上下文”“关系上下文”“工具权限”。</li>
+  </ul>
+
+  <h2>7. Relationship Graph 服务化设计</h2>
+
+  <h3>7.1 推荐的服务边界</h3>
+  <p>建议把 relationship-graph 能力提炼为独立服务边界，而不是让 LangGraph 直接操作数据库。</p>
+
+  <pre><code>Relationship Graph Service
+  ├── /persons
+  ├── /relationships
+  ├── /interactions
+  ├── /graph
+  ├── /nlq/search
+  ├── /nlq/multi
+  ├── /nlq/confirm
+  ├── /path/find
+  ├── /imports/business-card
+  ├── /imports/chat-excerpt
+  └── /sensitivity/reveal
+</code></pre>
+
+  <h3>7.2 LangGraph 中的工具抽象</h3>
+  <p>LangGraph 调用的不是 SQL，而是明确的领域工具。</p>
+  <table>
+    <thead>
+      <tr><th>Tool 名称</th><th>输入</th><th>输出</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>search_relationship_graph</code></td><td>自然语言查询 / 结构化过滤器</td><td>候选联系人列表</td></tr>
+      <tr><td><code>find_contact_path</code></td><td>起点、终点、项目上下文</td><td>路径与推荐理由</td></tr>
+      <tr><td><code>draft_contact_creation</code></td><td>原始文本 / OCR 结果</td><td>联系人草稿</td></tr>
+      <tr><td><code>draft_interaction_record</code></td><td>文本 / ASR 结果</td><td>互动草稿 + 候选联系人</td></tr>
+      <tr><td><code>confirm_relationship_write</code></td><td>草稿 ID + 用户确认动作</td><td>持久化结果</td></tr>
+      <tr><td><code>get_graph_context</code></td><td>personId / query context</td><td>局部子图</td></tr>
+    </tbody>
+  </table>
+
+  <h3>7.3 写操作必须走“草稿 -> 确认 -> 持久化”</h3>
+  <p>这是整个集成中最重要的设计原则之一。原因很简单：relationship-graph 是长期记忆，脏数据比没有数据更危险。</p>
+  <ol>
+    <li>LLM / 规则层只生成草稿。</li>
+    <li>LangGraph 将草稿发给前端。</li>
+    <li>用户确认或修改。</li>
+    <li>后端做字段白名单、枚举校验、权限校验。</li>
+    <li>确认后才真正写入。</li>
+  </ol>
+
+  <h2>8. 数据与隐私架构建议</h2>
+
+  <h3>8.1 推荐采用分层记忆架构</h3>
+  <table>
+    <thead>
+      <tr><th>层</th><th>内容</th><th>存储位置</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>会话短期记忆</td><td>当前轮对话中的代词、最近上下文</td><td>LangGraph state / memory store</td><td>不作为长期事实源</td></tr>
+      <tr><td>结构化关系长期记忆</td><td>联系人、关系、互动、路径</td><td>relationship-graph service</td><td>主事实来源</td></tr>
+      <tr><td>画像长期记忆</td><td>价值观、驱动模式、原则库</td><td>profile service</td><td>回答和幕僚团的底座</td></tr>
+      <tr><td>高敏感本地记忆</td><td>不宜上云的人脉和互动</td><td>Tauri + SQLCipher</td><td>由本地 companion 暴露受控查询接口</td></tr>
+    </tbody>
+  </table>
+
+  <h3>8.2 关于高敏感数据的建议</h3>
+  <div class="card warn">
+    <p><strong>建议不要在第一阶段就试图把“所有高敏感本地数据”无缝并入服务端 LangGraph。</strong></p>
+    <p>更稳妥的做法：</p>
+    <ol>
+      <li>P1：先把低/中敏感 relationship-graph 能力完整接入主智能体。</li>
+      <li>P2：为 Tauri 本地 companion 增加受控查询接口，例如 <code>searchLocalGraph</code>、<code>getLocalPerson</code>。</li>
+      <li>P3：再做“远程结果 + 本地结果”的统一排序和脱敏展示。</li>
+    </ol>
+  </div>
+
+  <h3>8.3 LLM 使用边界</h3>
+  <ul>
+    <li>LLM 可以参与意图识别、摘要、实体提取、话题提取、候选重排。</li>
+    <li>LLM 不直接生成 SQL，不直接最终写库。</li>
+    <li>对高敏感联系人，只注入必要片段，不注入完整原始互动内容。</li>
+  </ul>
+
+  <h2>9. 实现细节建议</h2>
+
+  <h3>9.1 后端实现路线</h3>
+  <table>
+    <thead>
+      <tr><th>阶段</th><th>建议</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>P1</td><td>保留现有 relationship-graph 领域逻辑，先封装成稳定 HTTP API，优先接入 <code>/nlq/multi</code>、<code>/nlq/confirm</code>、<code>/graph</code>、联系人详情查询。</td></tr>
+      <tr><td>P2</td><td>将意图分类和子图编排迁入 LangGraph；relationship-graph 只负责领域执行。</td></tr>
+      <tr><td>P3</td><td>引入本地 companion 统一暴露高敏感查询和桌面能力。</td></tr>
+      <tr><td>P4</td><td>补齐路径搜索、提醒、导入流水线、审计和分级索引。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>9.2 前端实现路线</h3>
+  <ol>
+    <li>把现有 relationship-graph 首页多模态输入框能力，迁移为 agent-chat-ui composer 的自定义扩展。</li>
+    <li>把现有结果卡片 / 草稿确认卡片改造成 agent-chat-ui 的 message renderers。</li>
+    <li>保留图谱可视化，但从“主页面 tab”改成“侧栏 / artifact panel”。</li>
+    <li>联系人详情从整页切换为 side panel 或 modal drill-down。</li>
+  </ol>
+
+  <h3>9.3 推荐的前后端协议风格</h3>
+  <p>建议明确区分三类响应：</p>
+  <table>
+    <thead>
+      <tr><th>响应类型</th><th>适用场景</th><th>示例</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>final_text</td><td>普通问答摘要</td><td>“找到 3 位合适联系人”</td></tr>
+      <tr><td>artifact</td><td>结构化结果</td><td>联系人卡片、路径卡片、草稿卡片</td></tr>
+      <tr><td>action_required</td><td>等待用户确认</td><td>确认新建联系人、确认写入互动记录</td></tr>
+    </tbody>
+  </table>
+
+  <h3>9.4 关系图谱与画像的联动</h3>
+  <p>个人内观智能体的回答不能只“知道这个人是谁”，还要“知道这个人对你意味着什么”。建议在 LangGraph 中增加一个融合节点：</p>
+  <pre><code>load_profile_context
+  + load_relationship_context
+  -> merge_personal_relevance
+
+输出：
+- 这个联系人和你的关系强度
+- 最近互动和待跟进事项
+- 与你的画像目标/价值观的关联原因
+- 是否适合推荐给幕僚团作为参考联系人
+</code></pre>
+
+  <h2>10. 推荐里程碑</h2>
+  <table>
+    <thead>
+      <tr><th>阶段</th><th>目标</th><th>交付物</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Phase 1</td><td>打通最小闭环</td><td>agent-chat-ui 中可查询联系人、查看详情、做草稿确认</td></tr>
+      <tr><td>Phase 2</td><td>打通多意图链</td><td>“查人 -> 发消息”“记互动 -> 设置提醒”等串联能力</td></tr>
+      <tr><td>Phase 3</td><td>引入图谱与路径</td><td>图谱侧栏、路径高亮、项目场景路径搜索</td></tr>
+      <tr><td>Phase 4</td><td>接入高敏感本地库</td><td>本地 companion、脱敏 reveal、远程/本地混合检索</td></tr>
+      <tr><td>Phase 5</td><td>主动化</td><td>提醒、简报联动、幕僚团引用关系图谱上下文</td></tr>
+    </tbody>
+  </table>
+
+  <h2>11. 需要重点讨论的 Open 问题</h2>
+
+  <h3>11.1 relationship-graph 的后端最终放在哪里</h3>
+  <ul>
+    <li>继续以 Rust 服务承载关系域？</li>
+    <li>还是迁到 Python 服务，和 LangGraph 同语言栈？</li>
+  </ul>
+  <p><strong>建议：</strong>短期保留现有领域逻辑，先服务化；不要为统一语言而牺牲已有稳定能力。</p>
+
+  <h3>11.2 高敏感本地库如何纳入统一智能体</h3>
+  <p><strong>建议采用“服务端主链路 + 本地 companion 受控桥接”的双轨方案。</strong>也就是说：对普通浏览器/手机端，保持 LangGraph 与数据库都在服务端，保持最简单的统一架构；对 Windows 桌面端，才通过本地 companion 暴露受控 tool bridge，接入本机高敏感 SQLCipher 数据。</p>
+  <ul>
+    <li><strong>默认架构</strong>：Windows / 手机 / 浏览器都先走服务端 LangGraph + 服务端数据库；这样不需要为每个入口单独维护一套本地访问路径。</li>
+    <li><strong>本地增强入口</strong>：只有在 Windows 桌面端，且用户明确进入“高敏感上下文”时，才通过本地 companion 调用本地 SQLCipher。</li>
+    <li><strong>允许走本地的查询</strong>：仅限只读、白名单、无副作用的查询，例如按 ID 取联系人、按条件搜索本地联系人、看最近互动、查本地路径预览。</li>
+    <li><strong>必须本地确认的写入</strong>：新增/修改联系人、关系、互动记录、敏感字段 reveal、任何可能改变长期记忆的动作，都必须先产出草稿，再由用户确认后再写入本地。</li>
+    <li><strong>结果如何参与全局排序</strong>：先分别给远程结果和本地结果计算一份可解释的相关性分数，然后按“来源、敏感级别、上下文匹配度、用户确认状态”做统一合并；默认远程结果优先，只有在本地高敏感上下文或用户显式开启本地检索时，本地结果才提升排序权重。</li>
+  </ul>
+  <p>这套方案的优点是：既保留了你现在“浏览器访问即服务端运行”的简洁模型，也给 Windows 本地高敏感能力留下了一个受控、可扩展的入口，不需要一开始就把 LangGraph 变成“能直接访问本机数据库”的架构。</p>
+
+  <h3>11.3 agent-chat-ui 需要扩展到什么程度</h3>
+  <ul>
+    <li>是否支持复杂 artifact panel？建议第一版先支持基础 artifact panel 和可扩展插槽，后续再把它做成复杂工作区。</li>
+    <li>是否支持消息中的表单编辑与二次确认？建议支持，但优先保证小型字段编辑和确认操作，避免把消息流变成一个低效表单页面。</li>
+    <li>图谱这种富交互组件放在消息内，还是放右侧面板？建议放 right-side panel，消息流只展示摘要、状态和入口。</li>
+  </ul>
+  <p><strong>建议：</strong>第一版可以先不支持超复杂 artifact panel，但要保留扩展性；图谱和联系人详情优先走 side panel，更稳定也更利于多任务并行。</p>
+
+  <h3>11.4 多意图链的事务边界</h3>
+  <p>例如“查老张 -> 生成消息 -> 拉起飞书”。前三步可回滚，最后一步不是；因此需要把动作分为三类：</p>
+  <ul>
+    <li><strong>可自动执行</strong>：查询、摘要、草稿生成、路径规划、候选排序、生成邮件/消息草稿。</li>
+    <li><strong>必须用户确认</strong>：写入联系人、更新关系、发送消息、拉起外部系统动作、涉及高敏感内容的 reveal。</li>
+    <li><strong>不可回滚或强副作用</strong>：真实发送消息、创建正式事项、调用外部工具完成业务动作。此类动作必须在明确确认后才执行。</li>
+  </ul>
+  <p>当部分步骤失败时，应直接在消息流中说明失败原因、已完成的步骤、下一步建议和重试入口，而不是静默失败。</p>
+
+  <h3>11.5 关系图谱与画像哪个是主事实源</h3>
+  <p>画像中也可能提到“重要人物”“长期合作对象”，关系图谱中也会维护类似信息。需要明确：</p>
+  <ul>
+    <li>人物实体以 relationship-graph 为准</li>
+    <li>价值判断和偏好以 profile 为准</li>
+    <li>跨域链接靠稳定 ID，而不是靠自然语言模糊匹配</li>
+  </ul>
+
+  <h3>11.6 导入与沉淀流程是否统一</h3>
+  <p>语音、名片、聊天截图、表格导入，本质上都是“非结构化输入 -> 草稿 -> 确认 -> 写入”。建议统一为一套 ingestion pipeline，而不是每种入口各写一套逻辑。</p>
+
+  <h3>11.7 通用聊天与关系维护是否共用一个输入入口</h3>
+  <p>推荐共用一个统一输入入口，而不是把“聊天”和“维护联系人”拆成两个产品。这样用户在同一个对话框里可以：</p>
+  <ul>
+    <li>正常聊天、写作、总结、提纲、邮件草拟；</li>
+    <li>顺手查人、记互动、更新关系、找路径；</li>
+    <li>在不切换场景的情况下，自动把关系上下文与画像上下文挂到当前请求里。</li>
+  </ul>
+
+  <h3>11.8 智囊团与虚拟人物的执行模式</h3>
+  <p>当用户在消息框中通过主动 <code>@</code> 或明确要求某人来“生成报告”“做分析”“起草邮件”时，优先使用智囊团的 skill，而不是让主模型直接承担所有推理。建议把智囊团中的每个成员视为一个虚拟人物，并为其提供稳定的人设、能力边界和输入/输出 schema。</p>
+  <ul>
+    <li>这能让“报告生成”“项目推进”“冲突分析”等任务更可控、更可复用；</li>
+    <li>也让 relationship-graph 能把“谁、谁和我有什么关系、最近发生了什么”作为这些 skill 的上下文注入点。</li>
+  </ul>
+
+  <h2>12. 最终建议</h2>
+  <div class="card">
+    <ol>
+      <li><strong>确定总体方向：</strong>relationship-graph 作为个人内观智能体中的“关系域模块”，不是独立平行产品。</li>
+      <li><strong>优先统一前端壳：</strong>用 agent-chat-ui 承接统一输入、消息流、确认流、通用聊天与关系维护。</li>
+      <li><strong>优先统一编排层：</strong>用 LangGraph 负责意图分类、多意图链、事务边界和上下文拼装。</li>
+      <li><strong>明确记忆分层：</strong>用户画像在注册期强约束，关系图谱是结构化长期事实源，智囊团则通过 skill 生成针对性输出。</li>
+      <li><strong>保留 relationship-graph 的核心护城河：</strong>规则驱动 NLQ、结构化关系数据、图谱、路径、敏感级别控制。</li>
+      <li><strong>分阶段做本地高敏感能力：</strong>不要一上来就做最复杂的远程/本地混合检索。</li>
+    </ol>
+  </div>
+
+  <p class="muted">结论：这件事不是“能不能做”的问题，而是“以什么边界和节奏做最稳”。最优策略是：<strong>统一交互、统一编排、明确画像与智囊团机制、保留 relationship-graph 的领域能力、渐进接入本地高敏感能力</strong>。</p>
+</body>
+</html>

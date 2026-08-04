@@ -142,6 +142,57 @@ export interface NlqResult {
   suggestion: string;
 }
 
+export type AgentRole = 'user' | 'assistant';
+
+export interface AgentContextArtifact {
+  id: string;
+  kind: 'context';
+  title: string;
+  summary: string;
+  context: string;
+}
+
+export interface AgentSearchArtifact {
+  id: string;
+  kind: 'search';
+  title: string;
+  summary: string;
+  results: NlqResult[];
+}
+
+export interface AgentDraftArtifact {
+  id: string;
+  kind: 'draft';
+  title: string;
+  summary: string;
+  response: Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }>;
+}
+
+export interface AgentPathArtifact {
+  id: string;
+  kind: 'path';
+  title: string;
+  summary: string;
+  path: PathData;
+}
+
+export type AgentArtifact = AgentContextArtifact | AgentSearchArtifact | AgentDraftArtifact | AgentPathArtifact;
+
+export interface AgentWorkflowTrace {
+  mode: 'relationship' | 'local-bridge';
+  steps: string[];
+  policy: string;
+}
+
+export interface AgentChatMessage {
+  id: string;
+  role: AgentRole;
+  content: string;
+  artifact?: AgentArtifact;
+  workflowTrace?: AgentWorkflowTrace;
+  status: 'idle' | 'success' | 'error';
+}
+
 // === NLQ 多意图响应 ===
 
 export type NlqResponse =

@@ -12,10 +12,8 @@ const FALLBACK_EXTRACTION: ExtractedEntities = {
   summary: '',
 };
 
-// 根据当前部署环境的硬件资源选择模型：
-// - qwen2.5:7b 效果最好，需要 8GB+内存
-// - qwen2:0.5b 适合 4GB 内存的 WSL/轻量级环境
-const OLLAMA_MODEL = 'qwen2:0.5b';
+// 默认使用本地 Ollama 的 qwen2.5:7b 模型；如需覆盖，可通过 Vite 环境变量 VITE_OLLAMA_MODEL 指定。
+const OLLAMA_MODEL = import.meta.env.VITE_OLLAMA_MODEL || 'qwen2.5:7b';
 const OLLAMA_TIMEOUT_MS = 30_000;
 
 export async function extractFromText(text: string): Promise<ExtractedEntities> {

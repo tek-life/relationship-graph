@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import AgentWorkspace from './components/AgentWorkspace';
 import GraphView from './components/GraphView';
 import ImportWizard from './components/ImportWizard';
 import InteractionForm from './components/InteractionForm';
 import MultimodalQuery from './components/MultimodalQuery';
-import NaturalLanguageQuery from './components/NaturalLanguageQuery';
+import NaturalLanguageQuery, { NLQ_EXAMPLES } from './components/NaturalLanguageQuery';
 import PersonDetail from './components/PersonDetail';
 import PersonForm from './components/PersonForm';
 import PersonList from './components/PersonList';
@@ -13,11 +14,12 @@ import { useTheme } from './hooks/useTheme';
 import { createPerson, getGraphData, listInteractionsByPerson, listPersons } from './services/db';
 import type { CreatePersonInput, GraphData, Interaction, Person } from './types';
 
-type Tab = 'home' | 'contacts' | 'graph' | 'query' | 'import';
-
+type Tab = 'home' | 'contacts' | 'graph' | 'query' | 'import' | 'agent';
+ 
 const FOOTER_LINKS: { tab: Tab; label: string }[] = [
   { tab: 'contacts', label: '联系人' },
   { tab: 'graph', label: '图谱' },
+  { tab: 'agent', label: 'Agent 工作台' },
   { tab: 'query', label: 'AI 查询(旧)' },
   { tab: 'import', label: '导入' },
 ];
@@ -107,6 +109,21 @@ function App() {
     setActiveTab(tab);
   };
 
+  const homeFeatures = [
+    {
+      title: '统一聊天入口',
+      description: '自然语言查询联系人、生成草稿、规划路径，都在同一个消息流里完成。',
+    },
+    {
+      title: '高敏感保护',
+      description: '本地桥接默认只读摘要，写入前需要二次确认，适配浏览器/PWA 场景。',
+    },
+    {
+      title: '关系图谱与跟进',
+      description: '从聊天结果直接切到联系人详情或关系图谱，保持上下文连续。',
+    },
+  ];
+
   return (
     <div className="flex min-h-screen flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
       {/* 主题切换器 - 固定右上角 */}
@@ -125,6 +142,7 @@ function App() {
               <TabButton active={false} onClick={() => switchTab('home')}>首页</TabButton>
               <TabButton active={activeTab === 'contacts'} onClick={() => switchTab('contacts')}>联系人</TabButton>
               <TabButton active={activeTab === 'graph'} onClick={() => switchTab('graph')}>图谱</TabButton>
+              <TabButton active={activeTab === 'agent'} onClick={() => switchTab('agent')}>Agent 工作台</TabButton>
               <TabButton active={activeTab === 'query'} onClick={() => switchTab('query')}>AI 查询(旧)</TabButton>
               <TabButton active={activeTab === 'import'} onClick={() => switchTab('import')}>导入</TabButton>
             </nav>
@@ -139,11 +157,34 @@ function App() {
           <div className="flex min-h-[calc(100vh-10rem)] flex-col items-center justify-center px-4 text-center">
             <h1 className="text-4xl font-bold tracking-tight">个人关系图谱</h1>
             <p className="mt-3" style={{ color: 'var(--text-secondary)' }}>本地优先、加密存储，用一句话查询你的人脉网络</p>
-            <div className="mt-8 w-full max-w-2xl">
+            <div className="mt-8 w-full max-w-3xl">
               <MultimodalQuery onPersonClick={(personId) => {
                 setDetailPersonId(personId);
                 setActiveTab('contacts');
               }} />
+            </div>
+            <div className="mt-6 flex flex-wrap justify-center gap-3">
+              <button type="button" className="rounded-full border px-4 py-2 text-sm" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }} onClick={() => switchTab('agent')}>
+                进入 Agent 工作台
+              </button>
+              <button type="button" className="rounded-full border px-4 py-2 text-sm" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }} onClick={() => switchTab('graph')}>
+                查看关系图谱
+              </button>
+            </div>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {NLQ_EXAMPLES.slice(0, 2).map((example) => (
+                <button key={example} type="button" className="rounded-full px-3 py-1 text-xs" style={{ backgroundColor: 'var(--surface-hover)', color: 'var(--text-secondary)' }} onClick={() => switchTab('agent')}>
+                  {example}
+                </button>
+              ))}
+            </div>
+            <div className="mt-8 grid w-full max-w-5xl gap-4 md:grid-cols-3">
+              {homeFeatures.map((feature) => (
+                <div key={feature.title} className="rounded-2xl border p-4 text-left shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
+                  <h2 className="font-semibold">{feature.title}</h2>
+                  <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{feature.description}</p>
+                </div>
+              ))}
             </div>
           </div>
         ) : detailPersonId ? (
@@ -217,6 +258,7 @@ function App() {
                 initialFocusId={graphFocusId ?? undefined}
               />
             )}
+            {activeTab === 'agent' && <AgentWorkspace onPersonClick={handleOpenDetail} />}
             {activeTab === 'query' && <NaturalLanguageQuery />}
             {activeTab === 'import' && <ImportWizard onImported={loadData} />}
           </>
