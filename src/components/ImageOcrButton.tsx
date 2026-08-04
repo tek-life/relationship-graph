@@ -19,7 +19,7 @@ interface Props {
   disabled?: boolean;
 }
 
-const ImageOcrButton = forwardRef<ImageOcrHandle, Props>(function ImageOcrButton({ onText, disabled }, ref) {
+const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOcrButton({ onText, disabled }, ref) {
   const [previewUrl, setPreviewUrl] = useState('');
   const [progress, setProgress] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
