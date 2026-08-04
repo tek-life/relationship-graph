@@ -143,6 +143,7 @@ export interface NlqResult {
 }
 
 export type NlqRouteMode = 'auto' | 'relationship' | 'chat';
+export type AgentWorkflowMode = 'relationship' | 'local-bridge' | 'general-chat';
 
 export type AgentRole = 'user' | 'assistant';
 
@@ -181,9 +182,13 @@ export interface AgentPathArtifact {
 export type AgentArtifact = AgentContextArtifact | AgentSearchArtifact | AgentDraftArtifact | AgentPathArtifact;
 
 export interface AgentWorkflowTrace {
-  mode: 'relationship' | 'local-bridge';
+  mode: AgentWorkflowMode;
   steps: string[];
   policy: string;
+}
+
+export interface ChatResponse {
+  reply: string;
 }
 
 export interface AgentChatMessage {

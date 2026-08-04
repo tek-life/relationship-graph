@@ -1,6 +1,7 @@
 import { apiDelete, apiGet, apiPost, apiPut } from './api';
 import type {
   CreateEntityMentionInput,
+  ChatResponse,
   CreateInteractionInput,
   CreatePersonInput,
   CreateRelationshipInput,
@@ -95,4 +96,8 @@ export async function nlqMulti(
 
 export async function nlqConfirm(intentType: string, data: Record<string, unknown>): Promise<unknown> {
   return apiPost('/api/nlq/confirm', { intentType, data });
+}
+
+export async function generalChat(query: string): Promise<ChatResponse> {
+  return apiPost<ChatResponse>('/api/chat', { query });
 }

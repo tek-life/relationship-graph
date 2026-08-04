@@ -1,20 +1,21 @@
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
-import { nlqMulti } from './db';
+import { generalChat, nlqMulti } from './db';
 import { queryLocalBridge, type LocalBridgeQueryResult } from './localBridge';
 import { getCouncilMember, type CouncilMember } from './council';
 import type { UserProfileContext } from './profile';
-import type { AgentArtifact, AgentWorkflowTrace, NlqResponse } from '../types';
+import type { AgentArtifact, AgentWorkflowMode, AgentWorkflowTrace, NlqResponse } from '../types';
 
 export interface LangGraphAgentOptions {
   profile?: UserProfileContext;
   councilMemberId?: string | null;
+  modeHint?: LangGraphAgentState['mode'];
 }
 
 export interface LangGraphAgentState {
   query: string;
   profile: UserProfileContext | null;
   councilMember: CouncilMember | null;
-  mode: 'relationship' | 'local-bridge';
+  mode: AgentWorkflowMode;
   response: NlqResponse | null;
   artifact: AgentArtifact | null;
   assistantReply: string;
@@ -104,6 +105,10 @@ function renderLocalBridgeReply(query: string): string {
   return `我把“${query}”交给本地桥接层处理，当前只返回脱敏摘要并保留待确认边界。`;
 }
 
+function renderGeneralChatReply(reply: string): string {
+  return reply;
+}
+
 function applyCouncilFraming(reply: string, councilMember: CouncilMember | null): string {
   if (!councilMember) return reply;
   return `【${councilMember.name} · ${councilMember.role}】${reply} ${councilMember.skill}。`;
@@ -117,7 +122,9 @@ function applyProfileConstraints(reply: string, profile: UserProfileContext | nu
 function buildWorkflowTrace(mode: LangGraphAgentState['mode'], step: string): AgentWorkflowTrace {
   const policy = mode === 'local-bridge'
     ? '本地桥接默认只读摘要，写入前强制二次确认'
-    : '关系查询优先生成草稿和确认流，避免直接写入';
+    : mode === 'general-chat'
+      ? '通用问答直接生成回复，不触发联系人写入链路'
+      : '关系查询优先生成草稿和确认流，避免直接写入';
 
   return {
     mode,
@@ -128,10 +135,21 @@ function buildWorkflowTrace(mode: LangGraphAgentState['mode'], step: string): Ag
 
 const workflow = new StateGraph(AgentStateAnnotation)
   .addNode('classifyQuery', async (state: LangGraphAgentState) => {
+    if (state.mode) {
+      return {
+        mode: state.mode,
+        workflowTrace: buildWorkflowTrace(state.mode, `已按提示强制路由：${state.mode}`),
+      };
+    }
     const text = state.query.toLowerCase();
     const isLocal = text.includes('本地') || text.includes('高敏感') || text.includes('桥接');
-    const mode = isLocal ? 'local-bridge' : 'relationship';
-    const step = isLocal ? '已识别为本地桥接请求' : '已识别为关系查询请求';
+    const isRelationship = text.includes('联系人') || text.includes('关系') || text.includes('跟进') || text.includes('人脉');
+    const mode: LangGraphAgentState['mode'] = isLocal ? 'local-bridge' : isRelationship ? 'relationship' : 'general-chat';
+    const step = mode === 'local-bridge'
+      ? '已识别为本地桥接请求'
+      : mode === 'relationship'
+        ? '已识别为关系查询请求'
+        : '已识别为通用问答请求';
     return {
       mode,
       workflowTrace: buildWorkflowTrace(mode, step),
@@ -150,6 +168,23 @@ const workflow = new StateGraph(AgentStateAnnotation)
       nextSteps.push('已执行本地桥接：返回脱敏摘要与待确认边界');
       return {
         artifact: buildLocalBridgeArtifact(state.query, results),
+        assistantReply: reply,
+        workflowTrace: {
+          mode: state.mode,
+          steps: nextSteps,
+          policy: trace.policy,
+        },
+      };
+    }
+
+    if (state.mode === 'general-chat') {
+      const response = await generalChat(state.query);
+      const reply = applyProfileConstraints(
+        applyCouncilFraming(renderGeneralChatReply(response.reply), state.councilMember),
+        state.profile,
+      );
+      nextSteps.push('已执行通用问答：调用后端 /api/chat');
+      return {
         assistantReply: reply,
         workflowTrace: {
           mode: state.mode,
@@ -188,17 +223,18 @@ export async function runLangGraphWorkflow(query: string, options: LangGraphAgen
     query,
     profile: options.profile ?? null,
     councilMember,
+    mode: options.modeHint,
   });
   return {
     query,
     profile: (result.profile as UserProfileContext | null) ?? null,
     councilMember: (result.councilMember as CouncilMember | null) ?? null,
-    mode: (result.mode as LangGraphAgentState['mode']) ?? 'relationship',
+    mode: (result.mode as LangGraphAgentState['mode']) ?? 'general-chat',
     response: result.response as NlqResponse | null,
     artifact: result.artifact as AgentArtifact | null,
     assistantReply: result.assistantReply as string,
     workflowTrace: (result.workflowTrace as AgentWorkflowTrace) ?? {
-      mode: 'relationship',
+      mode: 'general-chat',
       steps: ['未记录工作流'],
       policy: '默认策略',
     },

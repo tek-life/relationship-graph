@@ -178,7 +178,11 @@ export default function AgentWorkspace({ onPersonClick }: AgentWorkspaceProps) {
                 <div className="mt-3 rounded-lg border p-2 text-xs" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}>
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                      {message.workflowTrace.mode === 'local-bridge' ? '本地桥接路线' : '关系域路线'}
+                      {message.workflowTrace.mode === 'local-bridge'
+                        ? '本地桥接路线'
+                        : message.workflowTrace.mode === 'general-chat'
+                          ? '通用问答路线'
+                          : '关系域路线'}
                     </span>
                     <span style={{ color: 'var(--text-secondary)' }}>{message.workflowTrace.policy}</span>
                   </div>

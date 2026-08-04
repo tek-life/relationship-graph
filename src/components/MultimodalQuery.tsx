@@ -3,7 +3,7 @@ import { useVoiceInput } from '../hooks/useVoiceInput';
 import { nlqConfirm, nlqMulti } from '../services/db';
 import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
 import { CONTACT_MANAGER_AGENT_ID, DIGITAL_AGENTS } from '../services/digitalAgents';
-import { classifyUserIntent } from '../services/intentRouter';
+import { runLangGraphWorkflow } from '../services/langgraph';
 import type { NlqResponse, NlqResult, NlqRouteMode } from '../types';
 import DraftConfirmation from './DraftConfirmation';
 import ImageOcrButton, { type ImageOcrHandle } from './ImageOcrButton';
@@ -30,8 +30,6 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [chatPanelContent, setChatPanelContent] = useState<string | null>(null);
-  const [pendingIntent, setPendingIntent] = useState<ReturnType<typeof classifyUserIntent> | null>(null);
-  const [pendingQuery, setPendingQuery] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const ocrRef = useRef<ImageOcrHandle>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -118,23 +116,6 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
     }
   };
 
-  const handleIntentChoice = (mode: 'chat' | 'relationship') => {
-    const queryText = pendingQuery;
-    setPendingIntent(null);
-    setPendingQuery('');
-    if (mode === 'chat') {
-      const reply = generateChatReply(queryText);
-      if (reply.shouldPinToPanel) {
-        setChatPanelContent(reply.panelContent ?? reply.content);
-      } else {
-        setChatPanelContent(null);
-      }
-      setMessages((prev) => [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: reply.content }]);
-      return;
-    }
-    void submitRelationshipQuery(queryText);
-  };
-
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     const trimmed = query.trim();
@@ -162,28 +143,21 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
       return;
     }
 
-    const classification = classifyUserIntent(normalizedQuery);
-    if (classification.kind === 'uncertain') {
-      setPendingIntent(classification);
-      setPendingQuery(normalizedQuery);
-      setMessages((prev) => [...prev, { id: `assistant-clarify-${Date.now()}`, role: 'assistant', content: classification.reason }]);
-      setLoading(false);
-      return;
-    }
-
-    if (classification.kind === 'chat') {
-      const reply = generateChatReply(normalizedQuery);
-      if (reply.shouldPinToPanel) {
-        setChatPanelContent(reply.panelContent ?? reply.content);
+    try {
+      const generalChatState = await runLangGraphWorkflow(normalizedQuery, { modeHint: 'general-chat' });
+      const reply = generalChatState.assistantReply.trim() || '我暂时没生成有效回复，你可以换个说法再试一次。';
+      if (isLongContent(reply)) {
+        setChatPanelContent(reply);
+        setMessages((prev) => [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: '已为你生成长内容，完整内容已展开在右侧面板。' }]);
       } else {
         setChatPanelContent(null);
+        setMessages((prev) => [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: reply }]);
       }
-      setMessages((prev) => [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: reply.content }]);
+    } catch (err) {
+      setError(String(err));
+    } finally {
       setLoading(false);
-      return;
     }
-
-    await submitRelationshipQuery(normalizedQuery);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -296,20 +270,6 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
             </div>
           </form>
 
-          {pendingIntent && (
-            <div className="rounded-2xl border p-4" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}>
-              <p className="text-sm" style={{ color: 'var(--text-primary)' }}>{pendingIntent.reason}</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" className="rounded-full bg-blue-600 px-3 py-1.5 text-sm text-white" onClick={() => handleIntentChoice('chat')}>
-                  继续聊天
-                </button>
-                <button type="button" className="rounded-full bg-purple-600 px-3 py-1.5 text-sm text-white" onClick={() => handleIntentChoice('relationship')}>
-                  维护 / 查询联系人
-                </button>
-              </div>
-            </div>
-          )}
-
           {voice.recording && (
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
               正在聆听{voice.interimText ? `：${voice.interimText}` : '（通过 MediaRecorder 录音，停止后上传转写）...'}
@@ -336,7 +296,7 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
 
           <div className="space-y-3 rounded-2xl border p-3" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}>
             {messages.length === 0 ? (
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>先输入一句话，我会自动判断是通用问答还是联系人管家流程。</p>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>先输入一句话；若要联系人维护，请先 @联系人管家。</p>
             ) : (
               messages.map((message) => (
                 <div key={message.id} className={`rounded-xl border p-3 ${message.role === 'user' ? 'ml-8' : 'mr-8'}`} style={{ borderColor: 'var(--border-color)', backgroundColor: message.role === 'user' ? 'var(--bg-secondary)' : 'var(--bg-primary)' }}>
@@ -374,39 +334,9 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
   );
 }
 
-function generateChatReply(query: string): { content: string; panelContent?: string; shouldPinToPanel: boolean } {
-  const normalized = query.trim().toLowerCase();
-  if (normalized.includes('你好') || normalized.includes('hello')) {
-    return {
-      content: '你好，我是助理。你可以直接问我问题；如果是联系人相关，输入 @联系人管家 我会走维护流程。',
-      shouldPinToPanel: false,
-    };
-  }
-  if (normalized.includes('总结') || normalized.includes('最近')) {
-    return {
-      content: '我先按通用问答理解：你可以继续补充背景，我会帮你整理成可执行结论。',
-      shouldPinToPanel: false,
-    };
-  }
-
-  const longFormSignals = ['写一篇', '写篇', '帮我写', '生成一篇', '生成文章', '写文章', '写邮件', '写一封', '撰写', '草拟', '提纲', '报告', '方案', '文案', '故事', '文章', '邮件', '公告'];
-  const isLongForm = longFormSignals.some((signal) => normalized.includes(signal));
-  if (isLongForm) {
-    const topic = normalized
-      .replace(/^(帮我写|写一篇|写篇|生成一篇|生成文章|写文章|写邮件|写一封|撰写|草拟|生成|帮我)/, '')
-      .replace(/(文章|邮件|报告|方案|文案|故事|公告)$/g, '')
-      .trim();
-    const subject = topic || '这个主题';
-    const panelContent = `下面是一份初稿，已整理到右侧面板：\n\n《${subject}》\n\n${subject}是一个值得认真对待的议题。先从背景、关键问题与目标出发，再给出可执行建议和下一步安排。\n\n1. 背景与现状\n- 说明这个话题为什么值得关注。\n- 提炼当前核心矛盾或机会。\n\n2. 关键要点\n- 列出三到五条最重要观点。\n- 每条都尽量与当前场景相关。\n\n3. 可执行建议\n- 先从最小可行动作开始。\n- 把责任、时间和预期结果写清楚。\n\n4. 结语\n- 用一句简洁有力的话收尾。\n- 给出下一步行动建议。`;
-    return {
-      content: '已为你生成长内容草稿，完整内容已展开在右侧面板。',
-      panelContent,
-      shouldPinToPanel: true,
-    };
-  }
-
-  return {
-    content: '我先按通用问答处理。你可以继续追问，或用 @联系人管家 切到联系人维护流程。',
-    shouldPinToPanel: false,
-  };
+function isLongContent(reply: string): boolean {
+  const normalized = reply.trim();
+  if (normalized.length >= 220) return true;
+  if (normalized.split('\n').length >= 6) return true;
+  return false;
 }
