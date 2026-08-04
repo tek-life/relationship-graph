@@ -18,7 +18,8 @@ fn ollama_model() -> String {
 struct OllamaRequest {
     model: String,
     stream: bool,
-    format: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
     prompt: String,
 }
 
@@ -27,7 +28,7 @@ struct OllamaResponse {
     response: Option<String>,
 }
 
-async fn call_ollama(prompt: &str) -> Result<String, String> {
+async fn call_ollama(prompt: &str, format: Option<&str>) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(OLLAMA_TIMEOUT)
         .build()
@@ -36,7 +37,7 @@ async fn call_ollama(prompt: &str) -> Result<String, String> {
     let req = OllamaRequest {
         model: ollama_model(),
         stream: false,
-        format: "json".to_string(),
+        format: format.map(str::to_string),
         prompt: prompt.to_string(),
     };
 
@@ -58,6 +59,17 @@ async fn call_ollama(prompt: &str) -> Result<String, String> {
     data.response.ok_or_else(|| "Empty response from Ollama".to_string())
 }
 
+pub async fn general_chat(query: &str) -> Result<String, String> {
+    let prompt = format!(
+        "你是关系图谱应用中的通用助理。请直接回答用户问题，默认使用简体中文。\
+当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。\
+\n\n用户问题：{}",
+        query
+    );
+
+    call_ollama(&prompt, None).await
+}
+
 /// 从自然语言中提取联系人字段（用于 create_person 意图）
 pub async fn extract_person_fields(query: &str) -> PersonDraft {
     let prompt = format!(
@@ -76,7 +88,7 @@ pub async fn extract_person_fields(query: &str) -> PersonDraft {
         query
     );
 
-    match call_ollama(&prompt).await {
+    match call_ollama(&prompt, Some("json")).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(v) => PersonDraft {
@@ -117,7 +129,7 @@ pub async fn extract_update_fields(query: &str) -> (String, Vec<FieldChange>) {
         query
     );
 
-    match call_ollama(&prompt).await {
+    match call_ollama(&prompt, Some("json")).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(v) => {
@@ -163,7 +175,7 @@ pub async fn extract_interaction_data(query: &str) -> InteractionDraft {
         query
     );
 
-    match call_ollama(&prompt).await {
+    match call_ollama(&prompt, Some("json")).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(v) => InteractionDraft {
@@ -198,7 +210,7 @@ pub async fn extract_path_target(query: &str) -> String {
         query
     );
 
-    match call_ollama(&prompt).await {
+    match call_ollama(&prompt, Some("json")).await {
         Ok(json_str) => {
             serde_json::from_str::<serde_json::Value>(&json_str)
                 .ok()

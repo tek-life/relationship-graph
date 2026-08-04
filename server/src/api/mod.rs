@@ -7,6 +7,7 @@ use crate::nlq::{self, NlqRequest, NlqResult};
 use crate::security::sensitivity;
 use crate::state::SharedState;
 use crate::types::{
+    ChatRequest, ChatResponse,
     CreateEntityMentionRequest, CreateInteractionRequest, CreatePersonRequest,
     CreateRelationshipRequest, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
     NlqConfirmRequest, NlqMultiRequest, NlqResponse, Person, Relationship,
@@ -42,6 +43,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/graph", get(get_graph_data))
         .route("/api/nlq", post(natural_language_query))
         .route("/api/nlq/multi", post(nlq_multi_handler))
+        .route("/api/chat", post(chat_handler))
         .route("/api/nlq/confirm", post(nlq_confirm_handler))
         .route("/api/import/preview", post(import::preview))
         .route("/api/import/persons", post(import::commit))
@@ -485,6 +487,21 @@ async fn natural_language_query(
     let conn = get_conn(&guard)?;
     let results = nlq::natural_language_query(conn, req)?;
     Ok(Json(results))
+}
+
+async fn chat_handler(Json(req): Json<ChatRequest>) -> Result<Json<ChatResponse>, ApiError> {
+    let query = req.query.trim();
+    if query.is_empty() {
+        return Err(ApiError::bad_request("问题不能为空"));
+    }
+
+    log::info!(
+        target: "chat",
+        "chat_handler query_len={}",
+        query.chars().count()
+    );
+    let reply = crate::llm::general_chat(query).await.map_err(ApiError::internal)?;
+    Ok(Json(ChatResponse { reply }))
 }
 
 // ---------- NLQ Multi-Intent ----------
