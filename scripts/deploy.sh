@@ -9,7 +9,7 @@ set -euo pipefail
 #   - 本脚本会安装系统依赖、开发工具链、AI 服务、数据库及前端/服务端构建依赖。
 #   - 若网络受限，可先 source ./scripts/setup-proxy.sh 配置宿主机代理。
 #   - whisper.cpp 使用 SSH 协议从 GitHub clone，需先配置好 GitHub SSH key。
-#   - 默认使用小参数量模型 qwen2:0.5b，适合 8GB 内存主机。
+#   - 默认使用 qwen2.5:7b（可通过环境变量 OLLAMA_MODEL 覆盖）。
 #
 # 用法：
 #   cd /home/hfli/relationship-graph
@@ -23,7 +23,7 @@ BIN_DIR="${HOME}/.local/bin"
 VENV_DIR="${HOME}/.venvs/${APP_NAME}"
 MODELS_DIR="${APP_DATA_DIR}/models"
 WHISPER_MODEL="${MODELS_DIR}/ggml-base.bin"
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2:0.5b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
 
 # 颜色输出
 RED='\033[0;31m'

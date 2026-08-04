@@ -1,17 +1,15 @@
-// 首页多模态查询框：文字 / 语音 / 图片 OCR 三种输入共享同一 query，
-// 语音与 OCR 结果只追加进输入框，由用户确认后再提交查询。
-import { useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent } from 'react';
-import GraphView from './GraphView';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { useVoiceInput } from '../hooks/useVoiceInput';
-import { getGraphData, getPerson, listPersons, nlqConfirm, nlqMulti } from '../services/db';
+import { nlqConfirm, nlqMulti } from '../services/db';
+import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
+import { CONTACT_MANAGER_AGENT_ID, DIGITAL_AGENTS } from '../services/digitalAgents';
 import { classifyUserIntent } from '../services/intentRouter';
-import type { GraphData, NlqResponse, NlqResult, Person } from '../types';
+import type { NlqResponse, NlqResult, NlqRouteMode } from '../types';
 import DraftConfirmation from './DraftConfirmation';
 import ImageOcrButton, { type ImageOcrHandle } from './ImageOcrButton';
 import { NLQ_EXAMPLES } from './NaturalLanguageQuery';
 import NlqResultCard from './NlqResultCard';
 import PathResultDisplay from './PathResultDisplay';
-import PersonDetail from './PersonDetail';
 
 interface MultimodalQueryProps {
   onPersonClick?: (personId: string) => void;
@@ -26,38 +24,23 @@ interface ChatMessage {
   response?: NlqResponse;
 }
 
-type SidePanelView = 'idle' | 'chat' | 'results' | 'summary' | 'detail' | 'graph';
-
 export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps) {
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [relationshipResults, setRelationshipResults] = useState<NlqResult[]>([]);
-  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
-  const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
-  const [personsById, setPersonsById] = useState<Record<string, Person>>({});
-  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
-  const [sidePanelView, setSidePanelView] = useState<SidePanelView>('idle');
   const [chatPanelContent, setChatPanelContent] = useState<string | null>(null);
   const [pendingIntent, setPendingIntent] = useState<ReturnType<typeof classifyUserIntent> | null>(null);
   const [pendingQuery, setPendingQuery] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const ocrRef = useRef<ImageOcrHandle>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const leadingMention = query.trim().split(/\s+/, 1)[0];
 
-  useEffect(() => {
-    const loadContext = async () => {
-      try {
-        const [people, graph] = await Promise.all([listPersons(), getGraphData()]);
-        setPersonsById(Object.fromEntries(people.map((person) => [person.id, person])));
-        setGraphData(graph);
-      } catch (err) {
-        setError(String(err));
-      }
-    };
-    loadContext();
-  }, []);
+  const contactManager = useMemo(
+    () => DIGITAL_AGENTS.find((agent) => agent.id === CONTACT_MANAGER_AGENT_ID) ?? DIGITAL_AGENTS[0],
+    [],
+  );
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -70,20 +53,6 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  useEffect(() => {
-    if (!selectedPersonId) {
-      setSelectedPerson(null);
-      return;
-    }
-
-    const loadPerson = async () => {
-      const detail = personsById[selectedPersonId] ?? (await getPerson(selectedPersonId));
-      setSelectedPerson(detail ?? null);
-    };
-    loadPerson();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPersonId, selectedPersonId ? personsById[selectedPersonId]?.id : undefined]);
-
   const appendText = (text: string) => {
     setQuery((prev) => {
       const trimmedPrev = prev.replace(/\s+$/, '');
@@ -92,35 +61,23 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
     textareaRef.current?.focus();
   };
 
+  const insertAgentMention = (mention: string) => {
+    setQuery((prev) => withAgentMentionPrefix(prev, mention));
+    textareaRef.current?.focus();
+  };
+
+  const applyRelationshipExample = (example: string) => {
+    const mention = contactManager?.mention ?? '@联系人管家';
+    setQuery(`${mention} ${example}`);
+    textareaRef.current?.focus();
+  };
+
   const voice = useVoiceInput(appendText);
-
-  const showRelationshipPanel = (results: NlqResult[]) => {
-    if (results.length > 1 || results.some((result) => result.realNameHidden || result.sensitivityLevel === 'high' || result.sensitivityLevel === 'medium')) {
-      setSidePanelView('results');
-      return;
-    }
-    setSidePanelView('idle');
-  };
-
-  const openPersonSummary = async (personId: string) => {
-    setSelectedPersonId(personId);
-    setSidePanelView('summary');
-    onPersonClick?.(personId);
-    if (!personsById[personId]) {
-      try {
-        const detail = await getPerson(personId);
-        setSelectedPerson(detail ?? null);
-      } catch (err) {
-        setError(String(err));
-      }
-    }
-  };
 
   const handleConfirm = async (intentType: string, data: Record<string, unknown>) => {
     try {
       await nlqConfirm(intentType, data);
       setQuery('');
-      setSidePanelView('idle');
       setChatPanelContent(null);
       setMessages((prev) => [...prev, { id: `assistant-confirm-${Date.now()}`, role: 'assistant', content: '草稿已确认，后续可以继续补充或取消。' }]);
     } catch (e) {
@@ -128,41 +85,19 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
     }
   };
 
-  const handleIntentChoice = (mode: 'chat' | 'relationship') => {
-    const queryText = pendingQuery;
-    setPendingIntent(null);
-    setPendingQuery('');
-    if (mode === 'chat') {
-      const reply = generateChatReply(queryText);
-      const shouldPinToPanel = reply.shouldPinToPanel || (reply.panelContent ?? reply.content).length > 140;
-      if (shouldPinToPanel) {
-        setChatPanelContent(reply.panelContent ?? reply.content);
-        setSidePanelView('chat');
-      } else {
-        setChatPanelContent(null);
-      }
-      setMessages((prev) => [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: reply.content }]);
-      return;
-    }
-    setChatPanelContent(null);
-    void submitRelationshipQuery(queryText);
-  };
-
-  const submitRelationshipQuery = async (trimmed: string) => {
+  const submitRelationshipQuery = async (trimmed: string, routeMode: NlqRouteMode = 'auto') => {
     try {
       setLoading(true);
       setError('');
       setChatPanelContent(null);
-      const response = await nlqMulti(trimmed, false);
+      const response = await nlqMulti(trimmed, false, routeMode);
       if (response.intentType === 'searchPeople') {
-        setRelationshipResults(response.results);
-        showRelationshipPanel(response.results);
         setMessages((prev) => [
           ...prev,
           {
             id: `assistant-${Date.now()}`,
             role: 'assistant',
-            content: `我按“维护/查询联系人”路径处理了这条请求，找到 ${response.results.length} 条结果。`,
+            content: `我按“联系人管家”路径处理了这条请求，找到 ${response.results.length} 条结果。`,
             resultType: 'search',
             results: response.results,
             response,
@@ -183,34 +118,63 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
     }
   };
 
+  const handleIntentChoice = (mode: 'chat' | 'relationship') => {
+    const queryText = pendingQuery;
+    setPendingIntent(null);
+    setPendingQuery('');
+    if (mode === 'chat') {
+      const reply = generateChatReply(queryText);
+      if (reply.shouldPinToPanel) {
+        setChatPanelContent(reply.panelContent ?? reply.content);
+      } else {
+        setChatPanelContent(null);
+      }
+      setMessages((prev) => [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: reply.content }]);
+      return;
+    }
+    void submitRelationshipQuery(queryText);
+  };
+
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     const trimmed = query.trim();
     if (!trimmed || loading) return;
     if (voice.recording) voice.stop();
 
+    const mentionResult = parseAgentMention(trimmed);
+    const normalizedQuery = mentionResult.cleanedQuery;
+    if (!normalizedQuery) {
+      setMessages((prev) => [
+        ...prev,
+        { id: `assistant-mention-empty-${Date.now()}`, role: 'assistant', content: '你已选择联系人管家，请在 @ 后输入具体内容。' },
+      ]);
+      return;
+    }
+
     const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content: trimmed };
     setMessages((prev) => [...prev, userMessage]);
     setQuery('');
     setLoading(true);
     setError('');
-    setRelationshipResults([]);
 
-    const classification = classifyUserIntent(trimmed);
+    if (mentionResult.routeMode === 'relationship') {
+      await submitRelationshipQuery(normalizedQuery, 'relationship');
+      return;
+    }
+
+    const classification = classifyUserIntent(normalizedQuery);
     if (classification.kind === 'uncertain') {
       setPendingIntent(classification);
-      setPendingQuery(trimmed);
+      setPendingQuery(normalizedQuery);
       setMessages((prev) => [...prev, { id: `assistant-clarify-${Date.now()}`, role: 'assistant', content: classification.reason }]);
       setLoading(false);
       return;
     }
 
     if (classification.kind === 'chat') {
-      const reply = generateChatReply(trimmed);
-      const shouldPinToPanel = reply.shouldPinToPanel || (reply.panelContent ?? reply.content).length > 140;
-      if (shouldPinToPanel) {
+      const reply = generateChatReply(normalizedQuery);
+      if (reply.shouldPinToPanel) {
         setChatPanelContent(reply.panelContent ?? reply.content);
-        setSidePanelView('chat');
       } else {
         setChatPanelContent(null);
       }
@@ -219,7 +183,7 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
       return;
     }
 
-    await submitRelationshipQuery(trimmed);
+    await submitRelationshipQuery(normalizedQuery);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -242,8 +206,33 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
 
   return (
     <div className="w-full space-y-4">
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+      <div className={`grid gap-4 ${chatPanelContent ? 'grid-cols-1 xl:grid-cols-[1.2fr_0.8fr]' : 'grid-cols-1'}`}>
         <section className="space-y-4">
+          <div className="rounded-2xl border p-3" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}>
+            <p className="mb-2 text-xs" style={{ color: 'var(--text-secondary)' }}>数字人：点击头像后，会像微信一样在输入框自动插入 @</p>
+            <div className="flex flex-wrap gap-2">
+              {DIGITAL_AGENTS.map((agent) => {
+                const active = leadingMention === agent.mention || agent.aliases.includes(leadingMention);
+                return (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    className="flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition"
+                    style={{
+                      borderColor: active ? 'var(--accent-color)' : 'var(--border-color)',
+                      backgroundColor: active ? 'var(--surface-hover)' : 'var(--bg-primary)',
+                      color: 'var(--text-primary)',
+                    }}
+                    onClick={() => insertAgentMention(agent.mention)}
+                  >
+                    <img src={agent.avatar} alt={agent.displayName} className="h-6 w-6 rounded-full" />
+                    <span>{agent.displayName}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -256,7 +245,7 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
                 rows={2}
                 className="w-full resize-none rounded-2xl bg-transparent px-4 pb-2 pt-4 text-base outline-none"
                 style={{ color: 'var(--text-primary)' }}
-                placeholder="你可以直接聊天，或者说“谁在上海做地产，和我关系比较近？”这样进入联系人维护/查询流程。（Enter 提交，Shift+Enter 换行）"
+                placeholder="你可以直接问问题；若要维护联系人，可点头像或输入 @联系人管家。（Enter 提交，Shift+Enter 换行）"
                 value={query}
                 disabled={busy}
                 onChange={(event) => setQuery(event.target.value)}
@@ -292,7 +281,7 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
                 </div>
                 <button type="submit" className="btn-primary flex items-center justify-center rounded-full p-2" disabled={busy || !query.trim()}>
                   {loading ? (
-                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">
+                    <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
@@ -336,7 +325,7 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
                 type="button"
                 className="rounded-full px-3 py-1 text-xs transition"
                 style={{ backgroundColor: 'var(--surface-hover)', color: 'var(--text-secondary)' }}
-                onClick={() => setQuery(example)}
+                onClick={() => applyRelationshipExample(example)}
               >
                 {example}
               </button>
@@ -347,21 +336,21 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
 
           <div className="space-y-3 rounded-2xl border p-3" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}>
             {messages.length === 0 ? (
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>先输入一句话，我会自动判断你是想聊天，还是想维护/查询联系人。</p>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>先输入一句话，我会自动判断是通用问答还是联系人管家流程。</p>
             ) : (
               messages.map((message) => (
                 <div key={message.id} className={`rounded-xl border p-3 ${message.role === 'user' ? 'ml-8' : 'mr-8'}`} style={{ borderColor: 'var(--border-color)', backgroundColor: message.role === 'user' ? 'var(--bg-secondary)' : 'var(--bg-primary)' }}>
-                  <div className="mb-2 text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>{message.role === 'user' ? '你' : '助手'}</div>
+                  <div className="mb-2 text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>{message.role === 'user' ? '你' : '助理'}</div>
                   <p className="text-sm" style={{ color: 'var(--text-primary)' }}>{message.content}</p>
                   {message.resultType === 'search' && message.results && message.results.length > 0 && (
                     <div className="mt-3 space-y-2">
-                      {message.results.slice(0, 3).map((result) => (
-                        <NlqResultCard key={result.personId} result={result} onPersonClick={openPersonSummary} />
+                      {message.results.map((result) => (
+                        <NlqResultCard key={result.personId} result={result} onPersonClick={onPersonClick} />
                       ))}
                     </div>
                   )}
-                  {message.resultType === 'path' && message.response && <PathResultDisplay path={(message.response as Extract<NlqResponse, { intentType: 'findPath' }>).path} onPersonClick={openPersonSummary} />}
-                  {message.resultType === 'draft' && message.response && <DraftConfirmation response={message.response as Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }>} onConfirm={handleConfirm} onCancel={() => setSidePanelView('idle')} />}
+                  {message.resultType === 'path' && message.response && <PathResultDisplay path={(message.response as Extract<NlqResponse, { intentType: 'findPath' }>).path} onPersonClick={onPersonClick} />}
+                  {message.resultType === 'draft' && message.response && <DraftConfirmation response={message.response as Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }>} onConfirm={handleConfirm} onCancel={() => setChatPanelContent(null)} />}
                 </div>
               ))
             )}
@@ -369,94 +358,17 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
           </div>
         </section>
 
-        <aside className="space-y-4">
-          <div className="rounded-2xl border p-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-            <h3 className="font-semibold">侧边栏</h3>
-            <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>复杂联系人结果会在这里展开：你可以直接看名片、进入详情、或切到关系网络。</p>
-          </div>
-
-          {sidePanelView === 'chat' && chatPanelContent && (
+        {chatPanelContent && (
+          <aside className="space-y-4">
             <div className="rounded-2xl border p-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-              <h3 className="font-semibold">长回复</h3>
-              <p className="mt-3 whitespace-pre-wrap text-sm" style={{ color: 'var(--text-secondary)' }}>{chatPanelContent}</p>
+              <h3 className="font-semibold">长内容面板</h3>
+              <p className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                当助理判断回复较长（如文章/邮件/方案）时，会自动在右侧展开完整内容。
+              </p>
+              <p className="mt-3 whitespace-pre-wrap text-sm" style={{ color: 'var(--text-primary)' }}>{chatPanelContent}</p>
             </div>
-          )}
-
-          {sidePanelView === 'results' && relationshipResults.length > 0 && (
-            <div className="rounded-2xl border p-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-              <h3 className="font-semibold">联系结果</h3>
-              <div className="mt-3 space-y-2">
-                {relationshipResults.map((result) => (
-                  <button key={result.personId} type="button" className="w-full rounded-lg border p-3 text-left" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }} onClick={() => openPersonSummary(result.personId)}>
-                    <div className="font-medium" style={{ color: 'var(--text-primary)' }}>{result.displayName}</div>
-                    <div className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>{[result.company, result.title].filter(Boolean).join(' / ') || '未填写公司职位'}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {sidePanelView === 'summary' && selectedPerson && (
-            <div className="rounded-2xl border p-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <h3 className="font-semibold">{selectedPerson.aliases[0] || selectedPerson.name}</h3>
-                  <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>{selectedPerson.company || '未填写公司'}{selectedPerson.title ? ` · ${selectedPerson.title}` : ''}</p>
-                </div>
-                <span className="rounded-full px-2 py-0.5 text-xs" style={{ backgroundColor: 'var(--surface-hover)', color: 'var(--text-secondary)' }}>{selectedPerson.status}</span>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" className="rounded-full bg-blue-600 px-3 py-1.5 text-sm text-white" onClick={() => setSidePanelView('detail')}>
-                  查看详情
-                </button>
-                <button type="button" className="rounded-full bg-purple-600 px-3 py-1.5 text-sm text-white" onClick={() => setSidePanelView('graph')}>
-                  查看关系网络
-                </button>
-              </div>
-            </div>
-          )}
-
-          {sidePanelView === 'detail' && selectedPersonId && (
-            <div className="rounded-2xl border p-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-              <PersonDetail
-                personId={selectedPersonId}
-                personsById={personsById}
-                onBack={() => setSidePanelView(selectedPerson ? 'summary' : 'results')}
-                onChanged={async () => {
-                  const [people, graph] = await Promise.all([listPersons(), getGraphData()]);
-                  setPersonsById(Object.fromEntries(people.map((person) => [person.id, person])));
-                  setGraphData(graph);
-                }}
-                onOpenPerson={(personId) => openPersonSummary(personId)}
-                onNetworkView={() => setSidePanelView('graph')}
-              />
-            </div>
-          )}
-
-          {sidePanelView === 'graph' && (
-            <div className="rounded-2xl border p-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="font-semibold">关系网络</h3>
-                {selectedPersonId && (
-                  <button type="button" className="text-sm" style={{ color: 'var(--accent-color)' }} onClick={() => setSidePanelView('detail')}>
-                    查看详情
-                  </button>
-                )}
-              </div>
-              <GraphView
-                data={graphData}
-                personsById={personsById}
-                onNodeClick={(personId) => openPersonSummary(personId)}
-                onRefresh={async () => {
-                  const [people, graph] = await Promise.all([listPersons(), getGraphData()]);
-                  setPersonsById(Object.fromEntries(people.map((person) => [person.id, person])));
-                  setGraphData(graph);
-                }}
-                initialFocusId={selectedPersonId ?? undefined}
-              />
-            </div>
-          )}
-        </aside>
+          </aside>
+        )}
       </div>
     </div>
   );
@@ -466,18 +378,18 @@ function generateChatReply(query: string): { content: string; panelContent?: str
   const normalized = query.trim().toLowerCase();
   if (normalized.includes('你好') || normalized.includes('hello')) {
     return {
-      content: '你好，我现在可以帮你直接聊天，也可以切到联系人维护/查询流程。你可以直接问我“谁在上海做地产，和我关系比较近？”',
+      content: '你好，我是助理。你可以直接问我问题；如果是联系人相关，输入 @联系人管家 我会走维护流程。',
       shouldPinToPanel: false,
     };
   }
   if (normalized.includes('总结') || normalized.includes('最近')) {
     return {
-      content: '我先按通用聊天理解：你可以把想法直接说给我，我会帮你整理成下一步。',
+      content: '我先按通用问答理解：你可以继续补充背景，我会帮你整理成可执行结论。',
       shouldPinToPanel: false,
     };
   }
 
-  const longFormSignals = ['写一篇', '写篇', '帮我写', '生成一篇', '生成文章', '写文章', '写邮件', '写一封', '撰写', '草拟', '提纲', '报告', '方案', '文案', '故事', '文章', '邮件', '公告', '文章'];
+  const longFormSignals = ['写一篇', '写篇', '帮我写', '生成一篇', '生成文章', '写文章', '写邮件', '写一封', '撰写', '草拟', '提纲', '报告', '方案', '文案', '故事', '文章', '邮件', '公告'];
   const isLongForm = longFormSignals.some((signal) => normalized.includes(signal));
   if (isLongForm) {
     const topic = normalized
@@ -485,16 +397,16 @@ function generateChatReply(query: string): { content: string; panelContent?: str
       .replace(/(文章|邮件|报告|方案|文案|故事|公告)$/g, '')
       .trim();
     const subject = topic || '这个主题';
-    const panelContent = `下面是一份初稿，已整理到右侧面板里：\n\n《${subject}》\n\n${subject}是一个值得认真对待的议题。先从背景、关键问题与目标出发，再给出可执行的建议和下一步安排。\n\n1. 背景与现状\n- 说明这个话题为什么值得关注。\n- 提炼当前面临的核心矛盾或机会。\n\n2. 关键要点\n- 列出三到五条最重要的观点。\n- 每条都尽量和目标用户或场景相关。\n\n3. 可执行建议\n- 先从最小可行动作开始。\n- 把责任、时间和预期结果写清楚。\n\n4. 结语\n- 用一句简洁、有力量的话收尾。\n- 给出下一步行动建议。`;
+    const panelContent = `下面是一份初稿，已整理到右侧面板：\n\n《${subject}》\n\n${subject}是一个值得认真对待的议题。先从背景、关键问题与目标出发，再给出可执行建议和下一步安排。\n\n1. 背景与现状\n- 说明这个话题为什么值得关注。\n- 提炼当前核心矛盾或机会。\n\n2. 关键要点\n- 列出三到五条最重要观点。\n- 每条都尽量与当前场景相关。\n\n3. 可执行建议\n- 先从最小可行动作开始。\n- 把责任、时间和预期结果写清楚。\n\n4. 结语\n- 用一句简洁有力的话收尾。\n- 给出下一步行动建议。`;
     return {
-      content: '我已经帮你生成了一份初稿，完整内容已经展开到右侧面板。',
+      content: '已为你生成长内容草稿，完整内容已展开在右侧面板。',
       panelContent,
       shouldPinToPanel: true,
     };
   }
 
   return {
-    content: '我先按通用聊天处理。你可以继续提问，或直接说“维护联系人 / 查联系人”切到关系模块。',
+    content: '我先按通用问答处理。你可以继续追问，或用 @联系人管家 切到联系人维护流程。',
     shouldPinToPanel: false,
   };
 }

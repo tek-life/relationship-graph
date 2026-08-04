@@ -166,6 +166,7 @@ pub enum NlqResponse {
 pub struct NlqMultiRequest {
     pub query: String,
     pub reveal_sensitive: Option<bool>,
+    pub route_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

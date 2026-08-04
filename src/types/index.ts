@@ -142,6 +142,8 @@ export interface NlqResult {
   suggestion: string;
 }
 
+export type NlqRouteMode = 'auto' | 'relationship' | 'chat';
+
 export type AgentRole = 'user' | 'assistant';
 
 export interface AgentContextArtifact {

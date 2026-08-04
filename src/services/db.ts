@@ -9,6 +9,7 @@ import type {
   Interaction,
   NlqResponse,
   NlqResult,
+  NlqRouteMode,
   Person,
   Relationship,
 } from '../types';
@@ -84,8 +85,12 @@ export async function naturalLanguageQuery(query: string, revealSensitive = fals
   return apiPost<NlqResult[]>('/api/nlq', { query, revealSensitive });
 }
 
-export async function nlqMulti(query: string, revealSensitive?: boolean): Promise<NlqResponse> {
-  return apiPost<NlqResponse>('/api/nlq/multi', { query, revealSensitive });
+export async function nlqMulti(
+  query: string,
+  revealSensitive?: boolean,
+  routeMode?: NlqRouteMode,
+): Promise<NlqResponse> {
+  return apiPost<NlqResponse>('/api/nlq/multi', { query, revealSensitive, routeMode });
 }
 
 export async function nlqConfirm(intentType: string, data: Record<string, unknown>): Promise<unknown> {

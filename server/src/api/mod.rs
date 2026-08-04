@@ -493,8 +493,15 @@ async fn nlq_multi_handler(
     State(state): State<SharedState>,
     Json(req): Json<NlqMultiRequest>,
 ) -> Result<Json<NlqResponse>, ApiError> {
+    let route_mode = req.route_mode.as_deref().unwrap_or("auto");
     let intent = nlq::classify_intent(&req.query);
-    log::info!(target: "nlq", "nlq_multi_handler intent={} query_len={}", intent, req.query.chars().count());
+    log::info!(
+        target: "nlq",
+        "nlq_multi_handler route_mode={} intent={} query_len={}",
+        route_mode,
+        intent,
+        req.query.chars().count()
+    );
 
     match intent {
         "search_people" => {
