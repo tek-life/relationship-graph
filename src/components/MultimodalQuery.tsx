@@ -35,6 +35,8 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
   const [error, setError] = useState('');
   const [chatPanelContent, setChatPanelContent] = useState<string | null>(null);
   const [panelTitle, setPanelTitle] = useState('输出内容.md');
+  const [panelMode, setPanelMode] = useState<'rendered' | 'source'>('rendered');
+  const [panelFullscreen, setPanelFullscreen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const ocrRef = useRef<ImageOcrHandle>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -83,6 +85,8 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
       setQuery('');
       setChatPanelContent(null);
       setPanelTitle('输出内容.md');
+      setPanelMode('rendered');
+      setPanelFullscreen(false);
       setMessages((prev) => [
         ...prev,
         {
@@ -102,6 +106,8 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
       setError('');
       setChatPanelContent(null);
       setPanelTitle('输出内容.md');
+      setPanelMode('rendered');
+      setPanelFullscreen(false);
       const response = await nlqMulti(trimmed, false, routeMode);
       if (response.intentType === 'searchPeople') {
         setMessages((prev) => [
@@ -151,32 +157,44 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
     setQuery('');
     setLoading(true);
     setError('');
+    setChatPanelContent(null);
+    setPanelTitle('输出内容.md');
+    setPanelMode('rendered');
+    setPanelFullscreen(false);
 
     if (mentionResult.routeMode === 'relationship') {
-      await submitRelationshipQuery(normalizedQuery, 'relationship');
-      return;
+    await submitRelationshipQuery(normalizedQuery, 'relationship');
+    return;
     }
 
     try {
       const generalChatState = await runLangGraphWorkflow(normalizedQuery, { modeHint: 'general-chat' });
       const reply = generalChatState.assistantReply.trim() || '我暂时没生成有效回复，你可以换个说法再试一次。';
       if (isLongContent(reply)) {
-        setChatPanelContent(reply);
-        setPanelTitle('输出内容.md');
+        const split = splitAssistantReply(reply);
+        setChatPanelContent(split.detail || split.preview);
+        setPanelTitle(split.attachmentTitle);
+        setPanelMode('rendered');
+        setPanelFullscreen(false);
         setMessages((prev) => [
           ...prev,
           {
             id: `assistant-${Date.now()}`,
             role: 'assistant',
-            content: '已为你生成一份较长回答，已附上 `输出内容.md`。',
-            attachment: {
-              title: '输出内容.md',
-              content: reply,
-            },
+            content: split.preview,
+            attachment: split.detail
+              ? {
+                  title: split.attachmentTitle,
+                  content: split.detail,
+                }
+              : undefined,
           },
         ]);
       } else {
         setChatPanelContent(null);
+        setPanelTitle('输出内容.md');
+        setPanelMode('rendered');
+        setPanelFullscreen(false);
         setMessages((prev) => [
           ...prev,
           {
@@ -211,12 +229,14 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
 
   const busy = loading || voice.transcribing;
   const hasMessages = messages.length > 0;
+  const panelContent = chatPanelContent ?? '';
+  const panelIsVisible = Boolean(chatPanelContent);
 
   return (
     <div className="w-full">
-      <div className={`grid gap-5 ${chatPanelContent ? 'xl:grid-cols-[minmax(0,1fr)_360px]' : 'grid-cols-1'}`}>
-        <section className="min-h-[72vh]">
-          <div className="mx-auto flex min-h-[72vh] max-w-4xl flex-col">
+      <div className={`grid gap-5 ${panelIsVisible ? 'xl:grid-cols-[minmax(0,1fr)_420px]' : 'grid-cols-1'}`}>
+        <section className={`min-h-[72vh] ${panelIsVisible ? 'w-full' : ''}`}>
+          <div className={`flex min-h-[72vh] flex-col ${panelIsVisible ? 'w-full pr-2' : 'mx-auto max-w-4xl'}`}>
             <div className="flex-1 space-y-6 py-2">
               {hasMessages ? (
                 <>
@@ -228,6 +248,8 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
                       onShowPanel={(content, title) => {
                         setChatPanelContent(content);
                         setPanelTitle(title);
+                        setPanelMode('rendered');
+                        setPanelFullscreen(false);
                       }}
                       onClosePanel={() => setChatPanelContent(null)}
                       onConfirm={handleConfirm}
@@ -268,21 +290,20 @@ export default function MultimodalQuery({ onPersonClick }: MultimodalQueryProps)
           </div>
         </section>
 
-        {chatPanelContent && (
-          <aside className="space-y-4">
-            <div className="overflow-hidden rounded-3xl border shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-              <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--border-color)' }}>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em]" style={{ color: 'var(--text-secondary)' }}>附件</p>
-                  <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>{panelTitle}</h3>
-                </div>
-                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">Markdown</span>
-              </div>
-              <div className="max-h-[78vh] overflow-y-auto px-5 py-4">
-                <MarkdownContent content={chatPanelContent} className="space-y-4 text-[15px] leading-7" />
-              </div>
-            </div>
-          </aside>
+        {panelIsVisible && (
+          <FilePanel
+            title={panelTitle}
+            content={panelContent}
+            viewMode={panelMode}
+            fullscreen={panelFullscreen}
+            onViewModeChange={setPanelMode}
+            onToggleFullscreen={() => setPanelFullscreen((prev) => !prev)}
+            onClose={() => {
+              setChatPanelContent(null);
+              setPanelMode('rendered');
+              setPanelFullscreen(false);
+            }}
+          />
         )}
       </div>
     </div>
@@ -505,4 +526,167 @@ function AssistantAvatar() {
       <circle cx="10.4" cy="7.1" r="0.8" fill="currentColor" />
     </svg>
   );
+}
+
+interface SplitAssistantReply {
+  preview: string;
+  detail: string;
+  attachmentTitle: string;
+}
+
+function splitAssistantReply(reply: string): SplitAssistantReply {
+  const normalized = reply.trim();
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length > 1) {
+    const preview = paragraphs[0];
+    const detail = paragraphs.slice(1).join('\n\n').trim();
+    return {
+      preview,
+      detail,
+      attachmentTitle: '输出内容.md',
+    };
+  }
+
+  const cut = findSentenceBreak(normalized, 220);
+  const preview = normalized.slice(0, cut).trim();
+  const detail = normalized.slice(cut).trim();
+
+  return {
+    preview: preview || normalized,
+    detail,
+    attachmentTitle: '输出内容.md',
+  };
+}
+
+function findSentenceBreak(text: string, targetIndex: number): number {
+  const safeTarget = Math.min(Math.max(targetIndex, 120), Math.max(text.length - 1, 0));
+  const windowStart = safeTarget;
+  const windowEnd = Math.min(text.length, safeTarget + 120);
+  const punctuation = ['。', '！', '？', '；', '\n'];
+
+  for (const mark of punctuation) {
+    const idx = text.indexOf(mark, windowStart);
+    if (idx !== -1 && idx <= windowEnd) {
+      return idx + 1;
+    }
+  }
+
+  return Math.min(safeTarget, text.length);
+}
+
+interface FilePanelProps {
+  title: string;
+  content: string;
+  viewMode: 'rendered' | 'source';
+  fullscreen: boolean;
+  onViewModeChange: (mode: 'rendered' | 'source') => void;
+  onToggleFullscreen: () => void;
+  onClose: () => void;
+}
+
+function FilePanel({
+  title,
+  content,
+  viewMode,
+  fullscreen,
+  onViewModeChange,
+  onToggleFullscreen,
+  onClose,
+}: FilePanelProps) {
+  const lineCount = content.split('\n').length;
+  const panelClasses = fullscreen
+    ? 'fixed inset-3 z-40'
+    : 'space-y-4';
+
+  return (
+    <aside className={panelClasses}>
+      <div
+        className="flex h-full flex-col overflow-hidden rounded-3xl border shadow-lg"
+        style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}
+      >
+        <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-[0.2em]" style={{ color: 'var(--text-secondary)' }}>
+              附件 · {lineCount} 行
+            </p>
+            <h3 className="truncate font-semibold" style={{ color: 'var(--text-primary)' }}>
+              {title}
+            </h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="rounded-full border px-3 py-1.5 text-xs transition"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+              onClick={() => downloadMarkdown(title, content)}
+            >
+              下载
+            </button>
+            <button
+              type="button"
+              className="rounded-full border px-3 py-1.5 text-xs transition"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+              onClick={() => onViewModeChange(viewMode === 'rendered' ? 'source' : 'rendered')}
+            >
+              {viewMode === 'rendered' ? '看源码' : '渲染'}
+            </button>
+            <button
+              type="button"
+              className="rounded-full border px-3 py-1.5 text-xs transition"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+              onClick={onToggleFullscreen}
+            >
+              {fullscreen ? '退出全屏' : '全屏'}
+            </button>
+            <button
+              type="button"
+              className="rounded-full border px-3 py-1.5 text-xs transition"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+              onClick={onClose}
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+
+        <div className={`min-h-0 flex-1 overflow-y-auto ${viewMode === 'rendered' ? 'px-5 py-4' : 'bg-slate-950 px-0 py-0'}`}>
+          {viewMode === 'rendered' ? (
+            <MarkdownContent content={content} className="space-y-4 text-[15px] leading-7" />
+          ) : (
+            <SourceView content={content} />
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function SourceView({ content }: { content: string }) {
+  const lines = content.split('\n');
+  return (
+    <pre className="h-full overflow-x-auto p-4 text-sm text-slate-100">
+      <code>
+        {lines.map((line, index) => (
+          <div key={index} className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3">
+            <span className="select-none text-right text-slate-500">{index + 1}</span>
+            <span className="whitespace-pre-wrap break-words">{line || ' '}</span>
+          </div>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
+function downloadMarkdown(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename.endsWith('.md') ? filename : `${filename}.md`;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
