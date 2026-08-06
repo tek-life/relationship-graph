@@ -1,3 +1,16 @@
+// === 用户认证 ===
+
+export interface User {
+  id: string;
+  username: string;
+  displayName?: string | null;
+  role: 'admin' | 'user';
+  profileDoc?: string | null;
+  profileCompleted: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type RelationshipStrength = 'strong' | 'medium' | 'weak';
 export type SensitivityLevel = 'low' | 'medium' | 'high';
 export type PersonStatus = 'follow-up' | 'active' | 'cold';
