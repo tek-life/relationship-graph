@@ -39,26 +39,4 @@ sudo apt install -y \
   tesseract-ocr-chi-sim \
   tesseract-ocr-chi-tra
 
-echo "==> 安装 PostgreSQL 客户端（服务端使用 Docker 运行）"
-sudo apt install -y postgresql-client
-
-echo "==> 安装 Docker Engine 与 Docker Compose 插件"
-if ! command -v docker &>/dev/null; then
-  sudo install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu \
-    $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-  sudo apt update
-  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  sudo usermod -aG docker "$USER"
-  echo "提示：已将当前用户加入 docker 组。请退出并重新登录 WSL，或运行 'newgrp docker' 使权限生效。"
-else
-  echo "Docker 已安装，跳过"
-fi
-
 echo "==> 系统依赖安装完成"
-echo "建议执行："
-echo "  newgrp docker"
-echo "  docker run hello-world"
