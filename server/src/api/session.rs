@@ -15,7 +15,8 @@ use axum::Json;
 use super::ApiError;
 
 /// 从请求头中的 token 提取关联的 user_id；
-/// setup/unlock 签发的 token 无 user_id，回退到 "default"。
+/// setup/unlock 签发的 token 无 user_id，回退到首个用户（通常是 admin）。
+/// 不能回退到不存在的占位 ID：sessions.user_id 有外键约束，会导致插入失败。
 fn extract_user_id(state: &SharedState, headers: &HeaderMap) -> Result<String, ApiError> {
     let token = headers
         .get("authorization")
@@ -34,8 +35,18 @@ fn extract_user_id(state: &SharedState, headers: &HeaderMap) -> Result<String, A
             message: "未登录或会话已过期".to_string(),
         })?;
 
-    // setup/unlock 签发的 token 没有 user_id，回退到 "default"
-    Ok(token_info.user_id.unwrap_or_else(|| "default".to_string()))
+    if let Some(user_id) = token_info.user_id {
+        return Ok(user_id);
+    }
+
+    // unlock token 兜底：解析数据库中真实存在的首个用户，保证外键约束成立
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let users = crate::db::user::list_users(conn).map_err(|e| ApiError::internal(e.to_string()))?;
+    users
+        .first()
+        .map(|u| u.id.clone())
+        .ok_or_else(|| ApiError::internal("系统中尚无用户，请先完成注册"))
 }
 
 /// GET /api/sessions — 当前用户的会话列表（按 updated_at 降序）

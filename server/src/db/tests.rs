@@ -80,4 +80,35 @@ mod tests {
             .expect("index check");
         assert!(index_exists);
     }
+
+    /// 数据完整性修复：早期占位 user_id（'default'）创建的孤儿会话，
+    /// 再次 migrate 时应归属到首个真实用户，而不是报错或丢数据
+    #[test]
+    fn repairs_orphan_sessions_with_placeholder_user_id() {
+        let conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, display_name, role, profile_doc, profile_completed, created_at, updated_at)
+             VALUES ('u-admin', 'admin', 'hash', '管理员', 'admin', NULL, 0, '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("insert admin user");
+        // 临时关闭外键约束以模拟历史脏数据（旧版本连接未强制外键）
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("disable fk for test");
+        conn.execute(
+            "INSERT INTO sessions (id, user_id, title, created_at, updated_at)
+             VALUES ('s1', 'default', '旧会话', '2026-01-02', '2026-01-02')",
+            [],
+        )
+        .expect("insert orphan session");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("re-enable fk for test");
+
+        schema::migrate(&conn).expect("schema migration repairs orphans");
+
+        let owner: String = conn
+            .query_row("SELECT user_id FROM sessions WHERE id = 's1'", [], |row| row.get(0))
+            .expect("session still exists");
+        assert_eq!(owner, "u-admin");
+    }
 }

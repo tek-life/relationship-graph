@@ -191,7 +191,26 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     result?;
     ensure_relationship_columns(conn)?;
     ensure_person_columns(conn)?;
+    repair_orphan_sessions(conn)?;
     agent_config::seed_defaults(conn)
+}
+
+/// 数据完整性修复：早期版本曾用不存在的占位 user_id（如 'default'）创建会话，
+/// 这些孤儿会话违反 sessions.user_id → users.id 外键，且无法被任何用户查到。
+/// 将其归属到首个用户（通常是 admin），不删除任何数据。
+fn repair_orphan_sessions(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let repaired = conn.execute(
+        "UPDATE sessions SET user_id = (
+             SELECT id FROM users ORDER BY created_at ASC LIMIT 1
+         )
+         WHERE user_id NOT IN (SELECT id FROM users)
+           AND EXISTS (SELECT 1 FROM users)",
+        [],
+    )?;
+    if repaired > 0 {
+        log::info!(target: "db", "repair_orphan_sessions count={}", repaired);
+    }
+    Ok(())
 }
 
 /// 老库升级：为 users 表补充角色/画像列（v1.3 多用户与画像功能）
