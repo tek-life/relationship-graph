@@ -56,7 +56,13 @@ export default function PasswordGate({ children }: Props) {
         } else if (!state.initialized) {
           setMode('setup-admin');
         } else {
-          setMode('login');
+          // 如果 sessionStorage 中有已保存的用户信息，直接恢复会话（避免深链刷新显示登录页）
+          const savedUser = loadUser();
+          if (savedUser) {
+            setMode('ready');
+          } else {
+            setMode('login');
+          }
         }
       } catch (err) {
         setError(String(err));
