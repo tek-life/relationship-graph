@@ -3,25 +3,10 @@
  * 封装与后端会话相关的 CRUD 操作
  */
 import { apiGet, apiPost, apiPut, apiDelete } from './api';
+import type { Session, ChatMessage } from '../types';
 
-// === 类型定义 ===
-
-export interface Session {
-  id: string;
-  userId: string;
-  title: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ChatMessage {
-  id: string;
-  sessionId: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  metadataJson: string | null;
-  createdAt: string;
-}
+// 从 types 重新导出 Session 和 ChatMessage，方便外部引用
+export type { Session, ChatMessage } from '../types';
 
 // === API 方法 ===
 

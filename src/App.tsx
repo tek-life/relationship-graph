@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import AdminPanel from './components/AdminPanel';
-import AgentDetailPage from './components/AgentDetailPage';
 import ChatView from './components/ChatView';
 import GraphView from './components/GraphView';
 import ImportWizard from './components/ImportWizard';
@@ -30,7 +29,6 @@ function App() {
   const [detailPersonId, setDetailPersonId] = useState<string | null>(null);
   // 从联系人详情"关系网络"进入图谱页时的初始焦点，手动切 tab 时清除
   const [graphFocusId, setGraphFocusId] = useState<string | null>(null);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   const personsById = useMemo(
@@ -105,12 +103,6 @@ function App() {
     setGraphFocusId(null);
     setActiveTab(tab);
   };
-
-  // handleOpenAgentDetail 留给后续 ChatView 内数字人卡片点击使用
-  // const handleOpenAgentDetail = (agentId: string) => {
-  //   setSelectedAgentId(agentId);
-  //   setActiveTab('agent-detail');
-  // };
 
   return (
     <div className="flex h-screen flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
@@ -248,13 +240,21 @@ function App() {
           </div>
         )}
 
-        {activeTab === 'agent-detail' && selectedAgentId && (
-          <div className="h-full overflow-y-auto">
-            <AgentDetailPage
-              agentId={selectedAgentId}
-              isAdmin={isAdmin}
-              onBack={() => switchTab('home')}
-            />
+        {activeTab === 'agent-detail' && (
+          <div className="flex h-full items-center justify-center p-8">
+            <div className="text-center">
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                请从首页点击数字人头像进入详情
+              </p>
+              <button
+                type="button"
+                className="mt-3 text-sm transition hover:underline"
+                style={{ color: 'var(--accent-color)' }}
+                onClick={() => switchTab('home')}
+              >
+                返回首页
+              </button>
+            </div>
           </div>
         )}
 
