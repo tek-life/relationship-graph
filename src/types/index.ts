@@ -279,6 +279,25 @@ export interface PathEdge {
   confirmationStatus: string;
 }
 
+// === 会话管理 ===
+
+export interface Session {
+  id: string;
+  userId: string;
+  title?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  metadataJson?: string | null;
+  createdAt: string;
+}
+
 // === 聊天路由响应 ===
 
 export interface ChatRouterResponse {

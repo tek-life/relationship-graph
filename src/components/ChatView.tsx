@@ -1,0 +1,770 @@
+/**
+ * 统一聊天视图组件
+ * 合并 MultimodalQuery + AgentWorkspace 功能，作为应用主交互界面
+ * 布局：消息流 + 右侧面板 + CouncilBar + 输入框
+ */
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type RefObject,
+} from 'react';
+import { useChat, type ChatDisplayMessage } from '../hooks/useChat';
+import CouncilBar from './CouncilBar';
+import SessionSidebar from './SessionSidebar';
+import DraftConfirmation from './DraftConfirmation';
+import NlqResultCard from './NlqResultCard';
+import PathResultDisplay from './PathResultDisplay';
+import MarkdownContent from './MarkdownContent';
+import ImageOcrButton, { type ImageOcrHandle } from './ImageOcrButton';
+import { useVoiceInput } from '../hooks/useVoiceInput';
+import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
+import { DIGITAL_AGENTS, CONTACT_MANAGER_AGENT_ID } from '../services/digitalAgents';
+import type { NlqResponse } from '../types';
+
+// === 示例查询 ===
+
+const NLQ_EXAMPLES = [
+  '谁在上海做地产，和我关系比较近？',
+  '上次聊过融资的人里，还没跟进的有谁？',
+  '最近3个月没联系但标记了待跟进的人有哪些？',
+  '这个懂车帝的投标，谁能帮上忙？',
+];
+
+// === Props ===
+
+interface ChatViewProps {
+  onPersonClick?: (personId: string) => void;
+}
+
+// === 主组件 ===
+
+export default function ChatView({ onPersonClick }: ChatViewProps) {
+  const {
+    sessions,
+    currentSessionId,
+    messages,
+    loading,
+    error,
+    createSession,
+    switchSession,
+    deleteSession,
+    sendMessage,
+    confirmDraft,
+  } = useChat();
+
+  const [query, setQuery] = useState('');
+  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // 右侧面板状态
+  const [panelContent, setPanelContent] = useState<string | null>(null);
+  const [panelTitle, setPanelTitle] = useState('输出内容.md');
+  const [panelMode, setPanelMode] = useState<'rendered' | 'source'>('rendered');
+  const [panelFullscreen, setPanelFullscreen] = useState(false);
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const ocrRef = useRef<ImageOcrHandle>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const contactManager = useMemo(
+    () => DIGITAL_AGENTS.find((a) => a.id === CONTACT_MANAGER_AGENT_ID) ?? DIGITAL_AGENTS[0],
+    [],
+  );
+
+  // textarea 自动增高
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+  }, [query]);
+
+  // 新消息自动滚动到底部
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // 语音输入回调
+  const appendText = useCallback((text: string) => {
+    setQuery((prev) => {
+      const trimmedPrev = prev.replace(/\s+$/, '');
+      return trimmedPrev ? `${trimmedPrev} ${text}` : text;
+    });
+    textareaRef.current?.focus();
+  }, []);
+
+  const voice = useVoiceInput(appendText);
+
+  // 插入 @ 数字人 mention
+  const insertAgentMention = useCallback((mention: string) => {
+    setQuery((prev) => withAgentMentionPrefix(prev, mention));
+    textareaRef.current?.focus();
+  }, []);
+
+  // 应用示例查询
+  const applyExample = useCallback(
+    (example: string) => {
+      const mention = contactManager?.mention ?? '@联系人管家';
+      setQuery(`${mention} ${example}`);
+      textareaRef.current?.focus();
+    },
+    [contactManager],
+  );
+
+  // 切换数字人选中状态
+  const toggleAgent = useCallback((agentId: string) => {
+    setSelectedAgentIds((prev) =>
+      prev.includes(agentId) ? prev.filter((id) => id !== agentId) : [...prev, agentId],
+    );
+  }, []);
+
+  // 发送消息
+  const handleSend = useCallback(async () => {
+    const text = query.trim();
+    if (!text || loading) return;
+    if (voice.recording) voice.stop();
+
+    // 解析 @ 数字人 mention
+    const { agentId, cleanedQuery } = parseAgentMention(text);
+    if (!cleanedQuery) {
+      setQuery('');
+      return;
+    }
+
+    // 构建 active agent IDs
+    const activeIds = selectedAgentIds.length > 0 ? selectedAgentIds : undefined;
+
+    setQuery('');
+    await sendMessage(cleanedQuery, agentId, activeIds);
+  }, [query, loading, voice, selectedAgentIds, sendMessage]);
+
+  // Enter 发送，Shift+Enter 换行
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        void handleSend();
+      }
+    },
+    [handleSend],
+  );
+
+  // 粘贴图片 OCR
+  const handlePaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const item = Array.from(event.clipboardData.items).find((it) => it.type.startsWith('image/'));
+      const file = item?.getAsFile();
+      if (file) {
+        event.preventDefault();
+        ocrRef.current?.processFile(file);
+      }
+    },
+    [],
+  );
+
+  // 草稿确认
+  const handleConfirm = useCallback(
+    async (intentType: string, data: Record<string, unknown>) => {
+      await confirmDraft(intentType, data);
+      setPanelContent(null);
+      setPanelTitle('输出内容.md');
+      setPanelMode('rendered');
+      setPanelFullscreen(false);
+    },
+    [confirmDraft],
+  );
+
+  // 右侧面板操作
+  const showPanel = useCallback((content: string, title: string) => {
+    setPanelContent(content);
+    setPanelTitle(title);
+    setPanelMode('rendered');
+    setPanelFullscreen(false);
+  }, []);
+
+  const closePanel = useCallback(() => {
+    setPanelContent(null);
+    setPanelMode('rendered');
+    setPanelFullscreen(false);
+  }, []);
+
+  const busy = loading || voice.transcribing;
+  const hasMessages = messages.length > 0;
+  const panelIsVisible = Boolean(panelContent);
+
+  return (
+    <div className="flex flex-col h-full w-full" style={{ minHeight: '70vh' }}>
+      {/* 顶部工具栏 */}
+      <div
+        className="flex items-center gap-3 px-4 py-2 border-b shrink-0"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}
+      >
+        <button
+          type="button"
+          onClick={() => setSidebarOpen(true)}
+          className="rounded-lg p-2 transition hover:bg-gray-100"
+          style={{ color: 'var(--text-secondary)' }}
+          title="会话列表"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+          {currentSessionId
+            ? sessions.find((s) => s.id === currentSessionId)?.title || '新会话'
+            : '开始新对话'}
+        </span>
+      </div>
+
+      {/* 会话侧边栏 */}
+      <SessionSidebar
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onSelectSession={switchSession}
+        onNewSession={createSession}
+        onDeleteSession={deleteSession}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      {/* 主体区域：消息流 + 右侧面板 */}
+      <div className="flex-1 flex overflow-hidden">
+        <div
+          className={`grid gap-0 flex-1 ${
+            panelIsVisible ? 'xl:grid-cols-[minmax(0,1fr)_420px]' : 'grid-cols-1'
+          }`}
+        >
+          {/* 消息流区域 */}
+          <section className="flex flex-col min-h-0 overflow-hidden">
+            <div className="flex-1 overflow-y-auto px-4 py-4">
+              <div className={`mx-auto ${panelIsVisible ? 'w-full' : 'max-w-4xl'}`}>
+                {hasMessages ? (
+                  <div className="space-y-6">
+                    {messages.map((message) => (
+                      <ChatBubble
+                        key={message.id}
+                        message={message}
+                        onPersonClick={onPersonClick}
+                        onShowPanel={showPanel}
+                        onClosePanel={closePanel}
+                        onConfirm={handleConfirm}
+                      />
+                    ))}
+                    <div ref={messagesEndRef} />
+                  </div>
+                ) : (
+                  <EmptyState
+                    onApplyExample={applyExample}
+                    onPickMention={insertAgentMention}
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* 错误提示 */}
+            {error && (
+              <div className="px-4 pb-2">
+                <p className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>
+              </div>
+            )}
+
+            {/* 数字人头像栏 */}
+            <CouncilBar selectedAgentIds={selectedAgentIds} onToggleAgent={toggleAgent} />
+
+            {/* 输入区域 */}
+            <div className="px-4 pb-4 pt-2 shrink-0">
+              <div className={`${panelIsVisible ? '' : 'mx-auto max-w-4xl'}`}>
+                <Composer
+                  ref={textareaRef}
+                  query={query}
+                  busy={busy}
+                  loading={loading}
+                  voice={voice}
+                  onChange={setQuery}
+                  onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
+                  onSubmit={handleSend}
+                  onToggleVoice={() => voice.toggle()}
+                  onStopVoice={voice.stop}
+                  onOcrText={appendText}
+                  ocrRef={ocrRef}
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* 右侧文件面板 */}
+          {panelIsVisible && (
+            <FilePanel
+              title={panelTitle}
+              content={panelContent!}
+              viewMode={panelMode}
+              fullscreen={panelFullscreen}
+              onViewModeChange={setPanelMode}
+              onToggleFullscreen={() => setPanelFullscreen((prev) => !prev)}
+              onClose={closePanel}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === 空状态组件 ===
+
+interface EmptyStateProps {
+  onApplyExample: (example: string) => void;
+  onPickMention: (mention: string) => void;
+}
+
+function EmptyState({ onApplyExample, onPickMention }: EmptyStateProps) {
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[40vh] py-12">
+      <h2
+        className="text-2xl font-bold mb-2"
+        style={{ color: 'var(--text-primary)' }}
+      >
+        你好，有什么可以帮你的？
+      </h2>
+      <p className="text-sm mb-8" style={{ color: 'var(--text-secondary)' }}>
+        直接输入问题，或 @ 数字人开始专项工作
+      </p>
+
+      {/* 数字人快捷入口 */}
+      <div className="flex flex-wrap justify-center gap-3 mb-6">
+        {DIGITAL_AGENTS.map((agent) => (
+          <button
+            key={agent.id}
+            type="button"
+            className="flex items-center gap-2 rounded-full border px-4 py-2 text-sm 
+                       transition shadow-sm hover:shadow-md"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-card)',
+              color: 'var(--text-primary)',
+            }}
+            onClick={() => onPickMention(agent.mention)}
+          >
+            <img
+              src={agent.avatar}
+              alt={agent.displayName}
+              className="h-6 w-6 rounded-full border border-white/60 shadow-sm"
+            />
+            <span>{agent.displayName}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* 示例查询 */}
+      <div className="flex flex-wrap justify-center gap-2 max-w-2xl">
+        {NLQ_EXAMPLES.map((example) => (
+          <button
+            key={example}
+            type="button"
+            className="rounded-full border px-3 py-1.5 text-xs transition hover:shadow-sm"
+            style={{
+              borderColor: 'var(--border-color)',
+              backgroundColor: 'var(--bg-card)',
+              color: 'var(--text-secondary)',
+            }}
+            onClick={() => onApplyExample(example)}
+          >
+            {example}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// === 消息气泡组件 ===
+
+interface ChatBubbleProps {
+  message: ChatDisplayMessage;
+  onPersonClick?: (personId: string) => void;
+  onShowPanel: (content: string, title: string) => void;
+  onClosePanel: () => void;
+  onConfirm: (intentType: string, data: Record<string, unknown>) => Promise<void>;
+}
+
+function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfirm }: ChatBubbleProps) {
+  const isUser = message.role === 'user';
+  const isSystem = message.role === 'system';
+
+  // 系统消息居中显示
+  if (isSystem) {
+    return (
+      <div className="flex justify-center">
+        <div className="rounded-full px-4 py-1.5 text-xs" style={{ backgroundColor: 'var(--surface-hover, #f5f5f5)', color: 'var(--text-secondary)' }}>
+          {message.content}
+        </div>
+      </div>
+    );
+  }
+
+  const bubbleStyle = isUser
+    ? { borderColor: 'rgba(148,163,184,0.35)', backgroundColor: 'rgba(255,255,255,0.92)' }
+    : { borderColor: 'transparent', backgroundColor: 'transparent' };
+
+  return (
+    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className={`flex w-full max-w-3xl gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
+        {/* 头像 */}
+        <div
+          className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-white shadow-sm"
+          style={{ borderColor: 'var(--border-color)' }}
+        >
+          {isUser ? (
+            <span className="text-sm font-semibold" style={{ color: 'var(--accent-color)' }}>
+              你
+            </span>
+          ) : (
+            <AssistantAvatar />
+          )}
+        </div>
+
+        {/* 消息体 */}
+        <div className={`min-w-0 flex-1 ${isUser ? 'flex justify-end' : 'flex justify-start'}`}>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                {isUser ? '你' : '助理'}
+              </span>
+            </div>
+
+            <div
+              className={`rounded-3xl border px-4 py-3 shadow-sm ${
+                isUser ? 'max-w-[34rem]' : 'max-w-[46rem]'
+              }`}
+              style={bubbleStyle}
+            >
+              <MarkdownContent
+                content={message.content}
+                className={`text-[15px] leading-7 ${isUser ? 'text-right' : 'text-left'}`}
+              />
+
+              {/* 附件按钮 */}
+              {message.attachment && (
+                <button
+                  type="button"
+                  className="mt-3 flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition hover:bg-slate-50"
+                  style={{ borderColor: 'var(--border-color)', backgroundColor: 'rgba(255,255,255,0.75)' }}
+                  onClick={() =>
+                    onShowPanel(message.attachment?.content ?? '', message.attachment?.title ?? '输出内容.md')
+                  }
+                >
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white">
+                    📄
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                      {message.attachment.title}
+                    </p>
+                    <p className="truncate text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      点击查看完整 Markdown 输出
+                    </p>
+                  </div>
+                </button>
+              )}
+
+              {/* NLQ 搜索结果 */}
+              {message.resultType === 'search' && message.results && message.results.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {message.results.map((result) => (
+                    <NlqResultCard key={result.personId} result={result} onPersonClick={onPersonClick} />
+                  ))}
+                </div>
+              )}
+
+              {/* 路径展示 */}
+              {message.resultType === 'path' && message.response && (
+                <div className="mt-3">
+                  <PathResultDisplay
+                    path={(message.response as Extract<NlqResponse, { intentType: 'findPath' }>).path}
+                    onPersonClick={onPersonClick}
+                  />
+                </div>
+              )}
+
+              {/* 草稿确认 */}
+              {message.resultType === 'draft' && message.response && (
+                <div className="mt-3">
+                  <DraftConfirmation
+                    response={
+                      message.response as Extract<
+                        NlqResponse,
+                        { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }
+                      >
+                    }
+                    onConfirm={onConfirm}
+                    onCancel={onClosePanel}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === 助手头像 ===
+
+function AssistantAvatar() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+      <circle cx="9" cy="7.2" r="4.2" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M3.5 15C3.5 12.5 5.7 11 9 11C12.3 11 14.5 12.5 14.5 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="7.6" cy="7.1" r="0.8" fill="currentColor" />
+      <circle cx="10.4" cy="7.1" r="0.8" fill="currentColor" />
+    </svg>
+  );
+}
+
+// === 输入组件 ===
+
+type VoiceState = ReturnType<typeof useVoiceInput>;
+
+interface ComposerProps {
+  query: string;
+  busy: boolean;
+  loading: boolean;
+  voice: VoiceState;
+  onChange: (value: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
+  onSubmit: () => void;
+  onToggleVoice: () => void;
+  onStopVoice: () => void;
+  onOcrText: (text: string) => void;
+  ocrRef: RefObject<ImageOcrHandle | null>;
+}
+
+const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Composer(
+  {
+    query,
+    busy,
+    loading,
+    voice,
+    onChange,
+    onKeyDown,
+    onPaste,
+    onSubmit,
+    onToggleVoice,
+    onStopVoice,
+    onOcrText,
+    ocrRef,
+  },
+  ref,
+) {
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void onSubmit();
+      }}
+    >
+      <div
+        className="rounded-3xl border shadow-sm transition focus-within:ring-2"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}
+      >
+        <textarea
+          ref={ref}
+          rows={2}
+          className="w-full resize-none rounded-3xl bg-transparent px-4 pb-2 pt-4 text-[15px] outline-none"
+          style={{ color: 'var(--text-primary)' }}
+          placeholder="直接开始聊天；若要维护联系人，请输入 @联系人管家。"
+          value={query}
+          disabled={busy}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={onKeyDown}
+          onPaste={onPaste}
+        />
+        <div className="flex items-center justify-between px-3 pb-3">
+          <div className="flex items-center gap-1">
+            {/* 语音按钮 */}
+            <button
+              type="button"
+              title={
+                !voice.supported
+                  ? voice.unsupportedReason || '当前环境不支持语音输入'
+                  : voice.recording
+                    ? '点击停止录音'
+                    : '语音输入'
+              }
+              className={`rounded-full p-2 text-lg leading-none transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                voice.recording ? 'animate-pulse bg-red-100 text-red-600' : 'hover:bg-slate-100'
+              }`}
+              style={!voice.supported ? { color: 'var(--text-tertiary, #aaa)' } : undefined}
+              disabled={loading || !voice.supported || voice.transcribing}
+              onClick={onToggleVoice}
+            >
+              {voice.recording ? '⏹' : '🎤'}
+            </button>
+            {voice.recording && (
+              <button
+                type="button"
+                className="text-xs font-medium text-red-600"
+                onClick={onStopVoice}
+              >
+                停止
+              </button>
+            )}
+            {/* OCR 图片识别 */}
+            <ImageOcrButton ref={ocrRef} onText={onOcrText} disabled={busy} />
+          </div>
+          {/* 发送按钮 */}
+          <button
+            type="submit"
+            className="btn-primary flex items-center justify-center rounded-full p-2"
+            disabled={busy || !query.trim()}
+          >
+            {loading ? (
+              <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                />
+              </svg>
+            ) : (
+              <svg
+                className="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            )}
+          </button>
+        </div>
+      </div>
+    </form>
+  );
+});
+
+// === 右侧文件面板 ===
+
+interface FilePanelProps {
+  title: string;
+  content: string;
+  viewMode: 'rendered' | 'source';
+  fullscreen: boolean;
+  onViewModeChange: (mode: 'rendered' | 'source') => void;
+  onToggleFullscreen: () => void;
+  onClose: () => void;
+}
+
+function FilePanel({
+  title,
+  content,
+  viewMode,
+  fullscreen,
+  onViewModeChange,
+  onToggleFullscreen,
+  onClose,
+}: FilePanelProps) {
+  const lineCount = content.split('\n').length;
+  const panelClasses = fullscreen ? 'fixed inset-3 z-40' : 'h-full overflow-hidden border-l';
+
+  return (
+    <aside className={panelClasses} style={{ borderColor: fullscreen ? undefined : 'var(--border-color)' }}>
+      <div
+        className="flex h-full flex-col overflow-hidden rounded-3xl border shadow-lg"
+        style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}
+      >
+        {/* 面板头部 */}
+        <div
+          className="flex items-center justify-between border-b px-4 py-3"
+          style={{ borderColor: 'var(--border-color)' }}
+        >
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-[0.2em]" style={{ color: 'var(--text-secondary)' }}>
+              附件 · {lineCount} 行
+            </p>
+            <h3 className="truncate font-semibold" style={{ color: 'var(--text-primary)' }}>
+              {title}
+            </h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <PanelButton onClick={() => downloadMarkdown(title, content)}>下载</PanelButton>
+            <PanelButton onClick={() => onViewModeChange(viewMode === 'rendered' ? 'source' : 'rendered')}>
+              {viewMode === 'rendered' ? '看源码' : '渲染'}
+            </PanelButton>
+            <PanelButton onClick={onToggleFullscreen}>
+              {fullscreen ? '退出全屏' : '全屏'}
+            </PanelButton>
+            <PanelButton onClick={onClose}>关闭</PanelButton>
+          </div>
+        </div>
+
+        {/* 面板内容 */}
+        <div
+          className={`min-h-0 flex-1 overflow-y-auto ${
+            viewMode === 'rendered' ? 'px-5 py-4' : 'bg-slate-950 px-0 py-0'
+          }`}
+        >
+          {viewMode === 'rendered' ? (
+            <MarkdownContent content={content} className="space-y-4 text-[15px] leading-7" />
+          ) : (
+            <SourceView content={content} />
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function PanelButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="rounded-full border px-3 py-1.5 text-xs transition hover:bg-gray-50"
+      style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SourceView({ content }: { content: string }) {
+  const lines = content.split('\n');
+  return (
+    <pre className="h-full overflow-x-auto p-4 text-sm text-slate-100">
+      <code>
+        {lines.map((line, index) => (
+          <div key={index} className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3">
+            <span className="select-none text-right text-slate-500">{index + 1}</span>
+            <span className="whitespace-pre-wrap break-words">{line || ' '}</span>
+          </div>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
+function downloadMarkdown(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename.endsWith('.md') ? filename : `${filename}.md`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
