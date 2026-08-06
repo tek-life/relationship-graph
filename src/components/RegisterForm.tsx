@@ -18,7 +18,7 @@ export default function RegisterForm({ inviteToken, onRegistered }: RegisterForm
     if (!username.trim()) return '请输入用户名';
     if (username.trim().length < 2) return '用户名至少 2 个字符';
     if (!password) return '请输入密码';
-    if (password.length < 6) return '密码长度至少 6 位';
+    if (password.length < 8) return '密码长度至少 8 位';
     if (password !== confirmPassword) return '两次输入的密码不一致';
     return null;
   };

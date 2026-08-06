@@ -19,9 +19,18 @@ type Tab = 'home' | 'contacts' | 'graph' | 'import' | 'admin' | 'agent-detail' |
 
 function App() {
   const { theme, setTheme } = useTheme();
-  const { user, isAdmin, logout } = useAuth();
+  const { user, isAdmin, logout, refreshUser } = useAuth();
 
   const [activeTab, setActiveTab] = useState<Tab>('home');
+  // 新用户首次进入时自动引导到画像问卷；完成/跳过后本轮不再强制
+  const [profilePrompted, setProfilePrompted] = useState(false);
+
+  useEffect(() => {
+    if (user && !user.profileCompleted && !profilePrompted) {
+      setProfilePrompted(true);
+      setActiveTab('profile-qa');
+    }
+  }, [user, profilePrompted]);
   const [persons, setPersons] = useState<Person[]>([]);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [interactionsByPerson, setInteractionsByPerson] = useState<Record<string, Interaction[]>>({});
@@ -260,7 +269,13 @@ function App() {
 
         {activeTab === 'profile-qa' && (
           <div className="h-full overflow-y-auto">
-            <ProfileQA onComplete={() => switchTab('home')} />
+            <ProfileQA
+              onComplete={() => {
+                // 完成后刷新用户信息，使 profileCompleted 状态生效
+                void refreshUser();
+                switchTab('home');
+              }}
+            />
           </div>
         )}
       </main>

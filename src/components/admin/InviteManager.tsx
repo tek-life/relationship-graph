@@ -63,9 +63,9 @@ export default function InviteManager() {
     }
   };
 
-  /** 构建完整邀请链接 */
+  /** 构建完整邀请链接（参数名需与 PasswordGate 读取的 invite 一致） */
   const buildInviteUrl = (token: string): string => {
-    const base = `${window.location.origin}/register?token=${token}`;
+    const base = `${window.location.origin}/?invite=${token}`;
     return base;
   };
 
