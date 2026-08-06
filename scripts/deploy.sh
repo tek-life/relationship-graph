@@ -12,8 +12,22 @@ set -euo pipefail
 #   - 默认使用 qwen2.5:7b（可通过环境变量 OLLAMA_MODEL 覆盖）。
 #
 # 用法：
-#   cd /home/hfli/relationship-graph
+#   cd /home/hfli/personal_ai_workspace
 #   ./scripts/deploy.sh
+#
+# 部署流程：
+#   1.  系统依赖安装
+#   2.  Node.js 安装
+#   3.  Rust 工具链
+#   4.  Python 虚拟环境
+#   5.  AI 依赖安装（Ollama + Whisper）
+#   6.  前端 npm 依赖安装
+#   7.  前端生产构建（npm run build → dist/）
+#   8.  后端编译（cargo build --release）
+#   9.  启动服务（后端 + 前端静态/Caddy 反向代理）
+#   10. 健康检查（Axum + 前端）
+#   11. 初始化 SQLite 加密数据库
+#   12. 导入演示数据
 # =============================================================================
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -50,13 +64,13 @@ mkdir -p "${APP_DATA_DIR}" "${BIN_DIR}" "${MODELS_DIR}"
 # =============================================================================
 # 1. 系统依赖
 # =============================================================================
-log_info "步骤 1/10: 安装系统依赖"
+log_info "步骤 1/12: 安装系统依赖"
 "${PROJECT_DIR}/scripts/install-system-deps.sh"
 
 # =============================================================================
 # 2. Node.js（推荐 20.x LTS）
 # =============================================================================
-log_info "步骤 2/10: 检查并安装 Node.js"
+log_info "步骤 2/12: 检查并安装 Node.js"
 if ! command -v node &>/dev/null || [[ "$(node --version | cut -d'v' -f2 | cut -d'.' -f1)" -lt 20 ]]; then
   NODE_VERSION="20.15.1"
   NODE_TARBALL="node-v${NODE_VERSION}-linux-x64.tar.xz"
@@ -79,7 +93,7 @@ fi
 # =============================================================================
 # 3. Rust
 # =============================================================================
-log_info "步骤 3/10: 检查并安装 Rust"
+log_info "步骤 3/12: 检查并安装 Rust"
 if ! command -v cargo &>/dev/null; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
   # shellcheck source=/dev/null
@@ -94,7 +108,7 @@ fi
 # =============================================================================
 # 4. Python venv + AI/OCR 库
 # =============================================================================
-log_info "步骤 4/10: 配置 Python 虚拟环境"
+log_info "步骤 4/12: 配置 Python 虚拟环境"
 if ! command -v python3 &>/dev/null; then
   sudo apt install -y python3 python3-venv python3-pip
 fi
@@ -119,7 +133,7 @@ log_info "Python 虚拟环境已就绪：${VENV_DIR}"
 # =============================================================================
 # 5. AI 服务：Ollama + Whisper
 # =============================================================================
-log_info "步骤 5/10: 安装 AI 服务（Ollama、Whisper）"
+log_info "步骤 5/12: 安装 AI 服务（Ollama、Whisper）"
 log_info "若网络受限，请先运行: source ./scripts/setup-proxy.sh"
 "${PROJECT_DIR}/scripts/install-ai-deps.sh"
 
@@ -132,7 +146,7 @@ ollama list
 # =============================================================================
 # 6. 前端 npm 依赖
 # =============================================================================
-log_info "步骤 6/10: 安装前端 npm 依赖"
+log_info "步骤 6/12: 安装前端 npm 依赖"
 cd "${PROJECT_DIR}"
 
 # 配置 npm 使用代理（如环境变量已设置）
@@ -153,9 +167,30 @@ done
 log_info "前端依赖安装完成"
 
 # =============================================================================
-# 7. 构建 Axum 服务端
+# 7. 前端生产构建（npm run build → dist/）
 # =============================================================================
-log_info "步骤 7/10: 构建 Axum 服务端"
+log_info "步骤 7/12: 前端生产构建"
+cd "${PROJECT_DIR}"
+npm run build
+
+# 校验构建产物
+if [ ! -d "${PROJECT_DIR}/dist" ] || [ ! -f "${PROJECT_DIR}/dist/index.html" ]; then
+  log_error "前端构建失败：dist/ 目录或 index.html 不存在"
+  exit 1
+fi
+log_info "前端生产构建完成，输出目录：${PROJECT_DIR}/dist"
+
+# 校验 PWA 资源是否已复制到 dist/（manifest.json 和 sw.js 在 public/ 中，Vite 构建会自动复制）
+for pwa_file in manifest.json sw.js; do
+  if [ ! -f "${PROJECT_DIR}/dist/${pwa_file}" ]; then
+    log_warn "PWA 资源 ${pwa_file} 未出现在 dist/ 中，PWA 功能可能受限"
+  fi
+done
+
+# =============================================================================
+# 8. 构建 Axum 服务端
+# =============================================================================
+log_info "步骤 8/12: 构建 Axum 服务端"
 cd "${PROJECT_DIR}/server"
 cargo build --release
 
@@ -166,27 +201,56 @@ fi
 log_info "服务端构建完成"
 
 # =============================================================================
-# 8. 启动服务
+# 9. 启动服务（后端 + 前端静态/Caddy 反向代理）
 # =============================================================================
-log_info "步骤 8/10: 启动服务"
+log_info "步骤 9/12: 启动服务"
 "${PROJECT_DIR}/scripts/start-services.sh"
 
 # =============================================================================
-# 9. 初始化 SQLite 加密数据库
+# 10. 健康检查
 # =============================================================================
-log_info "步骤 9/10: 初始化 SQLite 加密数据库"
+log_info "步骤 10/12: 健康检查"
 
 # 等待 Axum 服务就绪
+HEALTH_OK=false
 for i in $(seq 1 60); do
   if curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
+    HEALTH_OK=true
     break
   fi
   sleep 1
 done
-if ! curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
-  log_error "Axum 服务未就绪，无法初始化数据库"
+
+if [ "${HEALTH_OK}" = "true" ]; then
+  log_info "Axum 后端健康检查通过（http://localhost:8790/api/health）"
+else
+  log_error "Axum 后端健康检查失败"
   exit 1
 fi
+
+# 检查前端服务（生产模式检查 8080 端口 / Caddy，开发模式检查 1420 端口 / Vite）
+if [ -d "${PROJECT_DIR}/dist" ]; then
+  # 生产模式：前端由 Caddy（8080）或 Python http.server（8000）提供服务
+  if curl -s http://localhost:8080 >/dev/null 2>&1; then
+    log_info "前端（Caddy）健康检查通过（http://localhost:8080）"
+  elif curl -s http://localhost:8000 >/dev/null 2>&1; then
+    log_info "前端（Python http.server）健康检查通过（http://localhost:8000）"
+  else
+    log_warn "前端静态服务未检测到，请手动检查 Caddy 或 Python http.server 是否已启动"
+  fi
+else
+  # 开发模式：Vite 开发服务器
+  if curl -s http://localhost:1420 >/dev/null 2>&1; then
+    log_info "前端（Vite）健康检查通过（http://localhost:1420）"
+  else
+    log_warn "前端开发服务器未就绪，请查看日志：/tmp/relationship-graph-frontend.log"
+  fi
+fi
+
+# =============================================================================
+# 11. 初始化 SQLite 加密数据库
+# =============================================================================
+log_info "步骤 11/12: 初始化 SQLite 加密数据库"
 
 # 获取主密码
 if [ -z "${RG_INIT_PASSWORD:-}" ]; then
@@ -226,9 +290,9 @@ else
 fi
 
 # =============================================================================
-# 10. 导入演示数据
+# 12. 导入演示数据
 # =============================================================================
-log_info "步骤 10/10: 导入演示数据"
+log_info "步骤 12/12: 导入演示数据"
 if RG_SEED_PASSWORD="$RG_INIT_PASSWORD" node "${PROJECT_DIR}/scripts/seed-demo-data.mjs"; then
   log_info "演示数据导入成功"
 else
@@ -238,16 +302,23 @@ fi
 log_info "部署完成！"
 echo ""
 echo "============================================"
-echo "前端访问地址："
-echo "  http://$(hostname -I | awk '{print $1}'):1420"
+echo "访问地址："
+if [ -d "${PROJECT_DIR}/dist" ]; then
+  echo "  生产模式（Caddy/反向代理）：http://$(hostname -I | awk '{print $1}'):8080"
+  echo "  前端构建产物目录：${PROJECT_DIR}/dist"
+else
+  echo "  开发模式（Vite）：http://$(hostname -I | awk '{print $1}'):1420"
+fi
 echo ""
 echo "Axum API 地址："
 echo "  http://$(hostname -I | awk '{print $1}'):8790"
+echo "  健康检查：http://localhost:8790/api/health"
 echo ""
 echo "常用命令："
-echo "  启动前端：npm run dev"
-echo "  启动服务端：cd server && cargo run --release"
-echo "  查看服务：${PROJECT_DIR}/scripts/start-services.sh"
+echo "  生产部署：./scripts/deploy.sh"
+echo "  启动服务：./scripts/start-services.sh"
+echo "  开发环境：./scripts/dev.sh"
+echo "  Caddy 代理：caddy run --config ${PROJECT_DIR}/scripts/Caddyfile"
 echo "============================================"
 
 # =============================================================================
@@ -269,6 +340,23 @@ if curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
   echo "  Axum服务端  - http://localhost:8790   - [已就绪]"
 else
   echo "  Axum服务端  - http://localhost:8790   - [启动中]"
+fi
+
+# 前端（生产模式检查 8080/8000，开发模式检查 1420）
+if [ -d "${PROJECT_DIR}/dist" ]; then
+  if curl -s http://localhost:8080 >/dev/null 2>&1; then
+    echo "  前端(Caddy)  - http://localhost:8080   - [已就绪]"
+  elif curl -s http://localhost:8000 >/dev/null 2>&1; then
+    echo "  前端(http)   - http://localhost:8000   - [已就绪]"
+  else
+    echo "  前端静态服务 -                          - [未运行]"
+  fi
+else
+  if curl -s http://localhost:1420 >/dev/null 2>&1; then
+    echo "  前端(Vite)   - http://localhost:1420   - [已就绪]"
+  else
+    echo "  前端(Vite)   - http://localhost:1420   - [启动中]"
+  fi
 fi
 
 echo "============================================================"
