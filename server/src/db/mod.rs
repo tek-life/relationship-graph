@@ -1,8 +1,11 @@
+pub mod agent_config;
 pub mod crypto;
 pub mod interaction;
 pub mod person;
 pub mod relationship;
 pub mod schema;
+pub mod session;
+pub mod user;
 
 #[cfg(test)]
 mod tests;

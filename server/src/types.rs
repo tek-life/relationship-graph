@@ -258,3 +258,173 @@ pub struct NlqConfirmRequest {
     pub intent_type: String,
     pub data: serde_json::Value,
 }
+
+// === 用户与邀请 ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct User {
+    pub id: String,
+    pub username: String,
+    pub password_hash: String,
+    pub display_name: Option<String>,
+    pub role: String,
+    pub profile_doc: Option<String>,
+    pub profile_completed: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateUserRequest {
+    pub username: String,
+    pub password_hash: String,
+    pub display_name: Option<String>,
+    pub role: Option<String>,
+    pub profile_doc: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteToken {
+    pub id: String,
+    pub token: String,
+    pub created_by: String,
+    pub used_by: Option<String>,
+    pub expires_at: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInviteTokenRequest {
+    pub token: String,
+    pub created_by: String,
+    pub expires_at: String,
+}
+
+// === 会话与消息 ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    pub id: String,
+    pub user_id: String,
+    pub title: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionRequest {
+    pub user_id: String,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub metadata_json: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateChatMessageRequest {
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub metadata_json: Option<String>,
+}
+
+// === 数字人配置 ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DigitalAgent {
+    pub id: String,
+    pub display_name: String,
+    pub mention: String,
+    pub aliases: Vec<String>,
+    pub route_mode: String,
+    pub avatar_url: Option<String>,
+    pub description: Option<String>,
+    pub skill_description: Option<String>,
+    pub is_active: bool,
+    pub sort_order: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateDigitalAgentRequest {
+    pub display_name: String,
+    pub mention: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    pub route_mode: Option<String>,
+    pub avatar_url: Option<String>,
+    pub description: Option<String>,
+    pub skill_description: Option<String>,
+    pub is_active: Option<bool>,
+    pub sort_order: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkill {
+    pub id: String,
+    pub agent_id: String,
+    pub skill_name: String,
+    pub skill_config_json: String,
+    pub trigger_scenario: Option<String>,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAgentSkillRequest {
+    pub agent_id: String,
+    pub skill_name: String,
+    pub skill_config_json: String,
+    pub trigger_scenario: Option<String>,
+    pub is_active: Option<bool>,
+}
+
+// === Profile QA 指令配置 ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QaInstructionModule {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub system_prompt: String,
+    pub guidance_text: Option<String>,
+    pub sort_order: i32,
+    pub trigger_scenario: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateQaInstructionModuleRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub system_prompt: String,
+    pub guidance_text: Option<String>,
+    pub sort_order: Option<i32>,
+    pub trigger_scenario: Option<String>,
+    pub is_active: Option<bool>,
+}
