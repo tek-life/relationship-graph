@@ -2,26 +2,29 @@
 //! 日志遵循脱敏原则：不记录密码、token、姓名、电话及内容原文。
 
 use crate::db::crypto::{derive_key, generate_salt, open_encrypted_db, validate_encrypted_db};
-use crate::db::{get_conn, interaction, person, relationship, schema};
+use crate::db::{agent_config, get_conn, interaction, person, relationship, schema, user as user_db};
 use crate::nlq::{self, NlqRequest, NlqResult};
+use crate::security::auth;
 use crate::security::sensitivity;
 use crate::state::SharedState;
 use crate::types::{
-    ChatRequest, ChatResponse,
+    ChatRequest, ChatResponse, CreateUserRequest,
     CreateEntityMentionRequest, CreateInteractionRequest, CreatePersonRequest,
-    CreateRelationshipRequest, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
+    CreateRelationshipRequest, DigitalAgent, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
     NlqConfirmRequest, NlqMultiRequest, NlqResponse, Person, Relationship,
 };
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
+mod admin;
 mod import;
+mod user;
 mod voice;
 
 pub fn router(state: SharedState) -> Router {
@@ -41,6 +44,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/interactions", post(create_interaction))
         .route("/api/entity-mentions", post(create_entity_mention))
         .route("/api/graph", get(get_graph_data))
+        .route("/api/digital-agents", get(list_digital_agents))
         .route("/api/nlq", post(natural_language_query))
         .route("/api/nlq/multi", post(nlq_multi_handler))
         .route("/api/chat", post(chat_handler))
@@ -53,14 +57,29 @@ pub fn router(state: SharedState) -> Router {
             post(voice::transcribe).layer(DefaultBodyLimit::max(voice::MAX_AUDIO_BYTES + 1024 * 1024)),
         )
         .route("/api/auth/lock", post(lock_database))
+        // 用户认证相关受保护路由
+        .route("/api/auth/me", get(user::get_current_user))
+        .route("/api/users/profile", put(user::update_profile))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    // Admin 路由（需要 admin 角色）
+    let admin_router = Router::new()
+        .route("/api/admin/users", get(admin::list_users))
+        .route("/api/admin/users/:id/role", put(admin::update_user_role))
+        .route("/api/admin/invite", post(admin::create_invite))
+        .route("/api/admin/invites", get(admin::list_invites))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
     Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/state", get(auth_state))
         .route("/api/auth/setup", post(setup_database))
         .route("/api/auth/unlock", post(unlock_database))
+        // 公开认证路由（不需要 auth，register 需要邀请令牌）
+        .route("/api/auth/register", post(user::register))
+        .route("/api/auth/login", post(user::login))
         .merge(protected)
+        .merge(admin_router)
         .with_state(state)
 }
 
@@ -113,21 +132,60 @@ async fn require_auth(State(state): State<SharedState>, req: Request, next: Next
         .unwrap_or_default()
         .to_string();
 
-    let valid = state
+    let token_info = state
         .tokens
         .lock()
-        .map(|mut store| store.validate(&token))
-        .unwrap_or(false);
+        .map(|mut store| store.get_token_info(&token))
+        .unwrap_or(None);
 
-    if !valid {
-        log::warn!(target: "auth", "request_rejected reason=invalid_token path={}", req.uri().path());
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "未登录或会话已过期" })),
-        )
-            .into_response();
+    match token_info {
+        Some(_) => next.run(req).await,
+        None => {
+            log::warn!(target: "auth", "request_rejected reason=invalid_token path={}", req.uri().path());
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "未登录或会话已过期" })),
+            )
+                .into_response()
+        }
     }
-    next.run(req).await
+}
+
+/// Admin 权限中间件：验证 token 且 role 必须为 admin
+async fn require_admin(State(state): State<SharedState>, req: Request, next: Next) -> Response {
+    let token = req
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default()
+        .to_string();
+
+    let token_info = state
+        .tokens
+        .lock()
+        .map(|mut store| store.get_token_info(&token))
+        .unwrap_or(None);
+
+    match token_info {
+        Some(info) if info.role.as_deref() == Some("admin") => next.run(req).await,
+        Some(_) => {
+            log::warn!(target: "auth", "admin_request_rejected reason=forbidden path={}", req.uri().path());
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "需要管理员权限" })),
+            )
+                .into_response()
+        }
+        None => {
+            log::warn!(target: "auth", "admin_request_rejected reason=invalid_token path={}", req.uri().path());
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "未登录或会话已过期" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 // ---------- 健康检查与认证 ----------
@@ -188,6 +246,21 @@ async fn setup_database(
     let conn = open_encrypted_db(state.db_path(), &key_hex)
         .map_err(|e| ApiError::internal(e.to_string()))?;
     schema::migrate(&conn)?;
+
+    // 首次 setup 时自动创建 admin 用户（主密码同时作为 admin 登录密码）
+    let existing_users = user_db::list_users(&conn)?;
+    if existing_users.is_empty() {
+        let password_hash = auth::hash_password(&req.password)
+            .map_err(ApiError::internal)?;
+        user_db::create_user(&conn, CreateUserRequest {
+            username: "admin".to_string(),
+            password_hash,
+            display_name: Some("管理员".to_string()),
+            role: Some("admin".to_string()),
+            profile_doc: None,
+        })?;
+        log::info!(target: "security", "setup_database admin_user_created");
+    }
 
     let mut guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     *guard = Some(conn);
@@ -475,6 +548,16 @@ async fn get_graph_data(State(state): State<SharedState>) -> Result<Json<GraphDa
         started.elapsed().as_millis()
     );
     Ok(Json(GraphData { nodes, edges }))
+}
+
+// ---------- Digital Agents ----------
+
+async fn list_digital_agents(State(state): State<SharedState>) -> Result<Json<Vec<DigitalAgent>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let agents = agent_config::list_digital_agents(conn)?;
+    log::info!(target: "agent_config", "list_digital_agents_success count={}", agents.len());
+    Ok(Json(agents))
 }
 
 // ---------- NLQ ----------

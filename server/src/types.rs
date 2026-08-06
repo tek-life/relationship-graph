@@ -428,3 +428,52 @@ pub struct CreateQaInstructionModuleRequest {
     pub trigger_scenario: Option<String>,
     pub is_active: Option<bool>,
 }
+
+// === 用户认证与邀请注册 ===
+
+/// 注册请求：需要邀请令牌
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterRequest {
+    pub username: String,
+    pub password: String,
+    pub invite_token: String,
+}
+
+/// 注册响应：返回 auth token + 用户信息（自动登录）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterResponse {
+    pub token: String,
+    pub user: User,
+}
+
+/// 登录请求
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// 登录响应：返回 auth token + 用户信息
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginResponse {
+    pub token: String,
+    pub user: User,
+}
+
+/// 更新个人画像请求
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProfileRequest {
+    pub profile_doc: String,
+}
+
+/// 更新用户角色请求（admin 操作）
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRoleRequest {
+    pub role: String,
+}
