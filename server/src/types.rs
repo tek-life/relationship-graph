@@ -499,3 +499,69 @@ pub struct UpdateSessionRequest {
 pub struct CreateSessionBody {
     pub title: Option<String>,
 }
+
+// === Profile QA 流程类型 ===
+
+/// QA 流程中的单轮问答
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QaExchange {
+    pub question: String,
+    pub answer: String,
+    pub module_id: String,
+}
+
+/// 生成下一个问题的请求
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextQuestionRequest {
+    pub module_index: usize,
+    pub history: Vec<QaExchange>,
+}
+
+/// 生成下一个问题的响应
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextQuestionResponse {
+    pub question: String,
+    pub module_name: String,
+    pub module_index: usize,
+    pub is_module_complete: bool,
+    pub is_flow_complete: bool,
+}
+
+/// 生成画像文档的请求
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateProfileRequest {
+    pub history: Vec<QaExchange>,
+}
+
+/// 生成画像文档的响应
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateProfileResponse {
+    pub profile_doc: String,
+}
+
+/// 保存画像到用户记录的请求
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfileRequest {
+    pub profile_doc: String,
+}
+
+/// QA 模块配置列表响应（前端获取阶段名称）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QaModulesResponse {
+    pub modules: Vec<QaModuleInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QaModuleInfo {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}

@@ -292,7 +292,7 @@ export interface Session {
 export interface ChatMessage {
   id: string;
   sessionId: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   metadataJson?: string | null;
   createdAt: string;

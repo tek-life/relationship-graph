@@ -1,12 +1,12 @@
 /**
  * 聊天会话管理 hook
  * 提供会话 CRUD、消息发送/接收、会话切换等核心聊天功能
- * 整合 chatRouter 路由分发与后端 session API
+ * 整合 chatRouter 路由分发与 session.ts API 客户端
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiGet, apiPost, apiDelete } from '../services/api';
 import { routeQuery } from '../services/chatRouter';
 import { nlqConfirm } from '../services/db';
+import * as sessionApi from '../services/session';
 import type {
   Session,
   ChatMessage,
@@ -55,53 +55,16 @@ export interface UseChatReturn {
   switchSession: (sessionId: string) => Promise<void>;
   /** 删除会话 */
   deleteSession: (sessionId: string) => Promise<void>;
+  /** 更新会话标题 */
+  updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
   /** 发送消息 */
   sendMessage: (
     text: string,
     agentId?: string | null,
     activeAgentIds?: string[],
-  ) => Promise<void>;
+  ) => Promise<ChatRouterResponse | null>;
   /** 确认草稿 */
   confirmDraft: (intentType: string, data: Record<string, unknown>) => Promise<void>;
-}
-
-// === 后端 API 调用封装 ===
-
-async function fetchSessions(): Promise<Session[]> {
-  try {
-    return await apiGet<Session[]>('/api/sessions');
-  } catch {
-    return [];
-  }
-}
-
-async function createSessionApi(title?: string): Promise<Session> {
-  return apiPost<Session>('/api/sessions', { title });
-}
-
-async function fetchMessages(sessionId: string): Promise<ChatMessage[]> {
-  try {
-    return await apiGet<ChatMessage[]>(`/api/sessions/${sessionId}/messages`);
-  } catch {
-    return [];
-  }
-}
-
-async function addMessageApi(
-  sessionId: string,
-  role: string,
-  content: string,
-  metadataJson?: string,
-): Promise<ChatMessage> {
-  return apiPost<ChatMessage>(`/api/sessions/${sessionId}/messages`, {
-    role,
-    content,
-    metadataJson,
-  });
-}
-
-async function deleteSessionApi(sessionId: string): Promise<void> {
-  await apiDelete(`/api/sessions/${sessionId}`);
 }
 
 // === 工具函数 ===
@@ -171,10 +134,14 @@ export function useChat(): UseChatReturn {
     currentSessionRef.current = currentSessionId;
   }, [currentSessionId]);
 
-  // 加载会话列表
+  // 加载会话列表（复用 session.ts）
   const loadSessions = useCallback(async () => {
-    const list = await fetchSessions();
-    setSessions(list);
+    try {
+      const list = await sessionApi.listSessions();
+      setSessions(list);
+    } catch {
+      setSessions([]);
+    }
   }, []);
 
   // 初始加载
@@ -184,7 +151,7 @@ export function useChat(): UseChatReturn {
 
   // 创建新会话
   const createSession = useCallback(async (): Promise<string> => {
-    const session = await createSessionApi();
+    const session = await sessionApi.createSession();
     setSessions((prev) => [session, ...prev]);
     setCurrentSessionId(session.id);
     setMessages([]);
@@ -194,14 +161,18 @@ export function useChat(): UseChatReturn {
   // 切换会话
   const switchSession = useCallback(async (sessionId: string) => {
     setCurrentSessionId(sessionId);
-    const serverMessages = await fetchMessages(sessionId);
-    setMessages(serverMessages.map(toDisplayMessage));
+    try {
+      const serverMessages = await sessionApi.getSessionMessages(sessionId);
+      setMessages(serverMessages.map(toDisplayMessage));
+    } catch {
+      setMessages([]);
+    }
   }, []);
 
   // 删除会话
   const deleteSession = useCallback(
     async (sessionId: string) => {
-      await deleteSessionApi(sessionId);
+      await sessionApi.deleteSession(sessionId);
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
       if (currentSessionId === sessionId) {
         setCurrentSessionId(null);
@@ -211,13 +182,29 @@ export function useChat(): UseChatReturn {
     [currentSessionId],
   );
 
+  // 更新会话标题
+  const updateSessionTitle = useCallback(
+    async (sessionId: string, title: string) => {
+      await sessionApi.updateSessionTitle(sessionId, title);
+      // 更新本地列表中的标题
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, title } : s)),
+      );
+    },
+    [],
+  );
+
   // 发送消息
   const sendMessage = useCallback(
-    async (text: string, agentId?: string | null, activeAgentIds?: string[]) => {
+    async (
+      text: string,
+      agentId?: string | null,
+      activeAgentIds?: string[],
+    ): Promise<ChatRouterResponse | null> => {
       // 确保有活跃会话
       let sessionId = currentSessionRef.current;
       if (!sessionId) {
-        const session = await createSessionApi();
+        const session = await sessionApi.createSession();
         setSessions((prev) => [session, ...prev]);
         sessionId = session.id;
         setCurrentSessionId(sessionId);
@@ -234,8 +221,8 @@ export function useChat(): UseChatReturn {
       setError('');
 
       try {
-        // 持久化用户消息
-        await addMessageApi(sessionId!, 'user', text);
+        // 持久化用户消息到后端
+        await sessionApi.addMessage(sessionId!, 'user', text);
 
         // 通过路由分发查询
         const response = await routeQuery(text, agentId, activeAgentIds);
@@ -289,7 +276,7 @@ export function useChat(): UseChatReturn {
 
         setMessages((prev) => [...prev, assistantMsg]);
 
-        // 持久化助手消息
+        // 持久化助手消息到后端（session.ts 已正确使用 metadata_json 字段名）
         const metadata = assistantMsg.resultType
           ? JSON.stringify({
               resultType: assistantMsg.resultType,
@@ -297,10 +284,12 @@ export function useChat(): UseChatReturn {
               response: assistantMsg.response,
             })
           : undefined;
-        await addMessageApi(sessionId!, 'assistant', response.reply, metadata);
+        await sessionApi.addMessage(sessionId!, 'assistant', response.reply, metadata);
 
         // 刷新会话列表（更新排序和标题）
         await loadSessions();
+
+        return response;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         setError(errMsg);
@@ -310,6 +299,7 @@ export function useChat(): UseChatReturn {
           content: `抱歉，处理失败：${errMsg}`,
         };
         setMessages((prev) => [...prev, errorMsg]);
+        return null;
       } finally {
         setLoading(false);
       }
@@ -345,6 +335,7 @@ export function useChat(): UseChatReturn {
     createSession,
     switchSession,
     deleteSession,
+    updateSessionTitle,
     sendMessage,
     confirmDraft,
   };

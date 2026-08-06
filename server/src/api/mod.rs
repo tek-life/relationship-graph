@@ -24,6 +24,7 @@ use std::time::Instant;
 
 mod admin;
 mod import;
+mod profile_qa;
 mod session;
 mod user;
 mod voice;
@@ -75,6 +76,11 @@ pub fn router(state: SharedState) -> Router {
             "/api/sessions/:id/messages",
             get(session::list_messages).post(session::add_message),
         )
+        // Profile QA（个人画像构建）受保护路由
+        .route("/api/profile-qa/modules", get(profile_qa::list_modules))
+        .route("/api/profile-qa/next", post(profile_qa::next_question))
+        .route("/api/profile-qa/generate", post(profile_qa::generate_profile))
+        .route("/api/profile-qa/save", post(profile_qa::save_profile))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     // Admin 路由（需要 admin 角色）

@@ -1,31 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
-import AgentWorkspace from './components/AgentWorkspace';
+import AdminPanel from './components/AdminPanel';
+import AgentDetailPage from './components/AgentDetailPage';
+import ChatView from './components/ChatView';
 import GraphView from './components/GraphView';
 import ImportWizard from './components/ImportWizard';
 import InteractionForm from './components/InteractionForm';
-import MultimodalQuery from './components/MultimodalQuery';
-import NaturalLanguageQuery, { NLQ_EXAMPLES } from './components/NaturalLanguageQuery';
 import PersonDetail from './components/PersonDetail';
 import PersonForm from './components/PersonForm';
 import PersonList from './components/PersonList';
+import ProfileQA from './components/ProfileQA';
 import RelationshipForm from './components/RelationshipForm';
 import ThemeSelector from './components/ThemeSelector';
+import { useAuth } from './hooks/useAuth';
 import { useTheme } from './hooks/useTheme';
 import { createPerson, getGraphData, listInteractionsByPerson, listPersons } from './services/db';
 import type { CreatePersonInput, GraphData, Interaction, Person } from './types';
 
-type Tab = 'home' | 'contacts' | 'graph' | 'query' | 'import' | 'agent';
- 
-const FOOTER_LINKS: { tab: Tab; label: string }[] = [
-  { tab: 'contacts', label: '联系人' },
-  { tab: 'graph', label: '图谱' },
-  { tab: 'agent', label: 'Agent 工作台' },
-  { tab: 'query', label: 'AI 查询(旧)' },
-  { tab: 'import', label: '导入' },
-];
+type Tab = 'home' | 'contacts' | 'graph' | 'import' | 'admin' | 'agent-detail' | 'profile-qa';
 
 function App() {
   const { theme, setTheme } = useTheme();
+  const { user, isAdmin, logout } = useAuth();
+
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [persons, setPersons] = useState<Person[]>([]);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
@@ -34,6 +30,7 @@ function App() {
   const [detailPersonId, setDetailPersonId] = useState<string | null>(null);
   // 从联系人详情"关系网络"进入图谱页时的初始焦点，手动切 tab 时清除
   const [graphFocusId, setGraphFocusId] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   const personsById = useMemo(
@@ -109,96 +106,72 @@ function App() {
     setActiveTab(tab);
   };
 
-  const homeFeatures = [
-    {
-      title: '统一聊天入口',
-      description: '自然语言查询联系人、生成草稿、规划路径，都在同一个消息流里完成。',
-    },
-    {
-      title: '高敏感保护',
-      description: '本地桥接默认只读摘要，写入前需要二次确认，适配浏览器/PWA 场景。',
-    },
-    {
-      title: '关系图谱与跟进',
-      description: '从聊天结果直接切到联系人详情或关系图谱，保持上下文连续。',
-    },
-  ];
+  // handleOpenAgentDetail 留给后续 ChatView 内数字人卡片点击使用
+  // const handleOpenAgentDetail = (agentId: string) => {
+  //   setSelectedAgentId(agentId);
+  //   setActiveTab('agent-detail');
+  // };
 
   return (
-    <div className="flex min-h-screen flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-      {/* 主题切换器 - 固定右上角 */}
-      <div className="fixed right-4 top-4 z-50">
-        <ThemeSelector theme={theme} setTheme={setTheme} />
-      </div>
+    <div className="flex h-screen flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
+      {/* 顶部导航栏 */}
+      <header
+        className="flex shrink-0 items-center justify-between border-b px-4 py-2"
+        style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}
+      >
+        <div className="flex items-center gap-4">
+          <h1 className="text-base font-bold whitespace-nowrap">个人关系图谱</h1>
+          <nav className="flex gap-1">
+            <TabButton active={activeTab === 'home'} onClick={() => switchTab('home')}>首页</TabButton>
+            <TabButton active={activeTab === 'contacts'} onClick={() => switchTab('contacts')}>联系人</TabButton>
+            <TabButton active={activeTab === 'graph'} onClick={() => switchTab('graph')}>图谱</TabButton>
+            <TabButton active={activeTab === 'import'} onClick={() => switchTab('import')}>导入</TabButton>
+            {isAdmin && (
+              <TabButton active={activeTab === 'admin'} onClick={() => switchTab('admin')}>管理后台</TabButton>
+            )}
+          </nav>
+        </div>
 
-      {activeTab !== 'home' && (
-        <header className="border-b px-6 py-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-          <div className="mx-auto flex max-w-7xl items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold">个人关系图谱</h1>
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>本地优先、加密存储、端侧智能辅助</p>
-            </div>
-            <nav className="flex gap-2 pr-16">
-              <TabButton active={false} onClick={() => switchTab('home')}>首页</TabButton>
-              <TabButton active={activeTab === 'contacts'} onClick={() => switchTab('contacts')}>联系人</TabButton>
-              <TabButton active={activeTab === 'graph'} onClick={() => switchTab('graph')}>图谱</TabButton>
-              <TabButton active={activeTab === 'agent'} onClick={() => switchTab('agent')}>Agent 工作台</TabButton>
-              <TabButton active={activeTab === 'query'} onClick={() => switchTab('query')}>AI 查询(旧)</TabButton>
-              <TabButton active={activeTab === 'import'} onClick={() => switchTab('import')}>导入</TabButton>
-            </nav>
-          </div>
-        </header>
-      )}
+        <div className="flex items-center gap-3">
+          {user && (
+            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              {user.displayName || user.username}
+            </span>
+          )}
+          <button
+            type="button"
+            className="text-sm transition hover:opacity-80"
+            style={{ color: 'var(--text-muted)' }}
+            onClick={logout}
+          >
+            注销
+          </button>
+          <ThemeSelector theme={theme} setTheme={setTheme} />
+        </div>
+      </header>
 
-      <main className="mx-auto w-full max-w-7xl flex-1 p-6">
-        {error && <div className="mb-4 rounded bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {/* 主体内容 */}
+      <main className="flex-1 overflow-hidden">
+        {error && (
+          <div className="mx-4 mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</div>
+        )}
 
-        {activeTab === 'home' ? (
-          <div className="flex min-h-[calc(100vh-10rem)] flex-col items-center justify-center px-4 text-center">
-            <h1 className="text-4xl font-bold tracking-tight">个人关系图谱</h1>
-            <p className="mt-3" style={{ color: 'var(--text-secondary)' }}>本地优先、加密存储，用一句话查询你的人脉网络</p>
-            <div className="mt-8 w-full max-w-3xl">
-              <MultimodalQuery onPersonClick={(personId) => {
-                setDetailPersonId(personId);
-                setActiveTab('contacts');
-              }} />
-            </div>
-            <div className="mt-6 flex flex-wrap justify-center gap-3">
-              <button type="button" className="rounded-full border px-4 py-2 text-sm" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }} onClick={() => switchTab('agent')}>
-                进入 Agent 工作台
-              </button>
-              <button type="button" className="rounded-full border px-4 py-2 text-sm" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }} onClick={() => switchTab('graph')}>
-                查看关系图谱
-              </button>
-            </div>
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              {NLQ_EXAMPLES.slice(0, 2).map((example) => (
-                <button key={example} type="button" className="rounded-full px-3 py-1 text-xs" style={{ backgroundColor: 'var(--surface-hover)', color: 'var(--text-secondary)' }} onClick={() => switchTab('agent')}>
-                  {example}
-                </button>
-              ))}
-            </div>
-            <div className="mt-8 grid w-full max-w-5xl gap-4 md:grid-cols-3">
-              {homeFeatures.map((feature) => (
-                <div key={feature.title} className="rounded-2xl border p-4 text-left shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-                  <h2 className="font-semibold">{feature.title}</h2>
-                  <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{feature.description}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : detailPersonId ? (
-          <PersonDetail
-            personId={detailPersonId}
-            personsById={personsById}
-            onBack={() => setDetailPersonId(null)}
-            onChanged={loadData}
-            onOpenPerson={handleOpenDetail}
-            onNetworkView={handleNetworkView}
-          />
-        ) : (
-          <>
-            {activeTab === 'contacts' && (
+        {activeTab === 'home' && (
+          <ChatView onPersonClick={handleOpenDetail} />
+        )}
+
+        {activeTab === 'contacts' && (
+          <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">
+            {detailPersonId ? (
+              <PersonDetail
+                personId={detailPersonId}
+                personsById={personsById}
+                onBack={() => setDetailPersonId(null)}
+                onChanged={loadData}
+                onOpenPerson={handleOpenDetail}
+                onNetworkView={handleNetworkView}
+              />
+            ) : (
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-[360px_1fr]">
                 <aside className="space-y-4">
                   <PersonForm onSubmit={handleCreatePerson} />
@@ -248,40 +221,49 @@ function App() {
                 </section>
               </div>
             )}
+          </div>
+        )}
 
-            {activeTab === 'graph' && (
-              <GraphView
-                data={graphData}
-                personsById={personsById}
-                onNodeClick={handleOpenDetail}
-                onRefresh={loadData}
-                initialFocusId={graphFocusId ?? undefined}
-              />
-            )}
-            {activeTab === 'agent' && <AgentWorkspace onPersonClick={handleOpenDetail} />}
-            {activeTab === 'query' && <NaturalLanguageQuery />}
-            {activeTab === 'import' && <ImportWizard onImported={loadData} />}
-          </>
+        {activeTab === 'graph' && (
+          <div className="mx-auto h-full max-w-7xl p-6">
+            <GraphView
+              data={graphData}
+              personsById={personsById}
+              onNodeClick={handleOpenDetail}
+              onRefresh={loadData}
+              initialFocusId={graphFocusId ?? undefined}
+            />
+          </div>
+        )}
+
+        {activeTab === 'import' && (
+          <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">
+            <ImportWizard onImported={loadData} />
+          </div>
+        )}
+
+        {activeTab === 'admin' && isAdmin && (
+          <div className="h-full overflow-y-auto">
+            <AdminPanel userId={user?.id} />
+          </div>
+        )}
+
+        {activeTab === 'agent-detail' && selectedAgentId && (
+          <div className="h-full overflow-y-auto">
+            <AgentDetailPage
+              agentId={selectedAgentId}
+              isAdmin={isAdmin}
+              onBack={() => switchTab('home')}
+            />
+          </div>
+        )}
+
+        {activeTab === 'profile-qa' && (
+          <div className="h-full overflow-y-auto">
+            <ProfileQA onComplete={() => switchTab('home')} />
+          </div>
         )}
       </main>
-
-      <footer className="px-6 py-4">
-        <div className="mx-auto flex max-w-7xl items-center justify-center text-xs" style={{ color: 'var(--text-muted)' }}>
-          {FOOTER_LINKS.map((link, index) => (
-            <span key={link.tab} className="flex items-center">
-              {index > 0 && <span className="mx-2">·</span>}
-              <button
-                type="button"
-                className="text-xs transition hover:opacity-80"
-                style={{ color: 'var(--text-muted)' }}
-                onClick={() => switchTab(link.tab)}
-              >
-                {link.label}
-              </button>
-            </span>
-          ))}
-        </div>
-      </footer>
     </div>
   );
 }
@@ -291,7 +273,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
     <button
       type="button"
       onClick={onClick}
-      className="rounded-full px-4 py-2 text-sm font-medium transition"
+      className="rounded-full px-3 py-1.5 text-sm font-medium transition"
       style={
         active
           ? { backgroundColor: 'var(--accent-color)', color: '#fff' }

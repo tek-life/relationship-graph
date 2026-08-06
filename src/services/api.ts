@@ -39,6 +39,10 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   if (response.status === 401) {
     clearToken();
     window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT));
+    // 未在登录页时自动跳转到登录页
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login';
+    }
   }
   if (!response.ok) {
     if (response.status === 401) {
