@@ -11,7 +11,7 @@ use crate::types::{
     ChatRequest, ChatResponse, CreateUserRequest,
     CreateEntityMentionRequest, CreateInteractionRequest, CreatePersonRequest,
     CreateRelationshipRequest, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
-    NlqConfirmRequest, NlqMultiRequest, NlqResponse, Person, Relationship,
+    LoginResponse, NlqConfirmRequest, NlqMultiRequest, NlqResponse, Person, Relationship,
 };
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::StatusCode;
@@ -123,6 +123,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/auth/state", get(auth_state))
         .route("/api/auth/setup", post(setup_database))
         .route("/api/auth/unlock", post(unlock_database))
+        .route("/api/auth/recover-admin", post(recover_admin))
         // 公开认证路由（不需要 auth，register 需要邀请令牌）
         .route("/api/auth/register", post(user::register))
         .route("/api/auth/login", post(user::login))
@@ -352,6 +353,77 @@ async fn unlock_database(
         started.elapsed().as_millis()
     );
     Ok(Json(TokenResponse { token }))
+}
+
+/// POST /api/auth/recover-admin — 用主密码恢复管理员账号（主密码同时作为 admin 登录密码）。
+/// 适用场景：老库升级未自动创建 admin、admin 密码遗失或与主密码不一致。
+/// 主密码本身即可解锁全库，故该端点不构成权限升级。
+async fn recover_admin(
+    State(state): State<SharedState>,
+    Json(req): Json<PasswordRequest>,
+) -> Result<Json<LoginResponse>, ApiError> {
+    // 1. 验证主密码：派生密钥必须能打开加密库
+    let salt_hex = std::fs::read_to_string(state.salt_path())
+        .map_err(|_| ApiError::bad_request("数据库尚未初始化"))?;
+    let salt = hex::decode(salt_hex.trim()).map_err(|e| ApiError::internal(e.to_string()))?;
+    let key_hex = derive_key(&req.password, &salt).map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let probe = open_encrypted_db(state.db_path(), &key_hex)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    validate_encrypted_db(&probe)
+        .map_err(|_| ApiError::bad_request("主密码不正确"))?;
+
+    // 2. 库未解锁时顺带完成解锁（复用已验证的连接）
+    let mut guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    if guard.is_none() {
+        schema::migrate(&probe)?;
+        *guard = Some(probe);
+        log::info!(target: "security", "recover_admin_unlocked_db");
+    } else {
+        drop(probe);
+    }
+
+    // 3. 定位 admin 账号：优先 role=admin，其次 username=admin，均无则创建
+    let conn = get_conn(&guard)?;
+
+    let password_hash = auth::hash_password(&req.password).map_err(ApiError::internal)?;
+    let users = user_db::list_users(&conn).map_err(|e| ApiError::internal(e.to_string()))?;
+    let mut admin = match users
+        .iter()
+        .find(|u| u.role == "admin")
+        .or_else(|| users.iter().find(|u| u.username == "admin"))
+    {
+        Some(existing) => existing.clone(),
+        None => user_db::create_user(&conn, CreateUserRequest {
+            username: "admin".to_string(),
+            password_hash: password_hash.clone(),
+            display_name: Some("管理员".to_string()),
+            role: Some("admin".to_string()),
+            profile_doc: None,
+        })
+        .map_err(|e| ApiError::internal(e.to_string()))?,
+    };
+
+    // 4. 重置密码为主密码，并确保角色为 admin
+    user_db::update_user_password(&conn, &admin.id, &password_hash)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if admin.role != "admin" {
+        user_db::update_user_role(&conn, &admin.id, "admin")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        admin.role = "admin".to_string();
+    }
+    drop(guard);
+
+    let token = state
+        .tokens
+        .lock()
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .issue_with_user(Some(admin.id.clone()), Some(admin.role.clone()));
+
+    log::info!(target: "security", "recover_admin_success username={}", admin.username);
+    // 响应中不携带密码哈希
+    admin.password_hash = String::new();
+    Ok(Json(LoginResponse { token, user: admin }))
 }
 
 async fn lock_database(State(state): State<SharedState>) -> Result<Json<serde_json::Value>, ApiError> {

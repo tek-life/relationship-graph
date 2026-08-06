@@ -14,7 +14,8 @@ export async function register(
 ): Promise<AuthResponse> {
   const res = await api<AuthResponse>('/api/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ username, password, invite_token: inviteToken }),
+    // 后端 RegisterRequest 使用 camelCase 序列化（inviteToken）
+    body: JSON.stringify({ username, password, inviteToken }),
   });
   setToken(res.token);
   return res;

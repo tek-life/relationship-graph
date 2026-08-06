@@ -57,6 +57,16 @@ pub fn update_user_role(conn: &Connection, id: &str, role: &str) -> Result<(), r
     Ok(())
 }
 
+pub fn update_user_password(conn: &Connection, id: &str, password_hash: &str) -> Result<(), rusqlite::Error> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE users SET password_hash = ?1, updated_at = ?2 WHERE id = ?3",
+        params![password_hash, now, id],
+    )?;
+    log::info!(target: "db", "update_user_password id={}", id);
+    Ok(())
+}
+
 pub fn update_user_profile(conn: &Connection, id: &str, profile_doc: &str) -> Result<(), rusqlite::Error> {
     let now = Utc::now().to_rfc3339();
     conn.execute(
