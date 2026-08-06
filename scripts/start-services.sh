@@ -6,7 +6,6 @@ set -euo pipefail
 # 运行环境：WSL2 + Ubuntu 24.04
 # 说明：
 #   - Ollama：AI 模型推理服务
-#   - PostgreSQL：Docker 容器运行的数据库（当前服务端实际使用 SQLite，保留备用）
 #   - Axum 服务端：HTTP API（默认端口 8790）
 #   - Vite 前端：开发服务器（默认端口 1420）
 # =============================================================================
@@ -37,18 +36,6 @@ fi
 
 echo "==> 检查 Ollama 模型"
 ollama list
-
-echo "==> 检查 PostgreSQL 容器"
-if docker ps --format '{{.Names}}' | grep -q "^relationship-graph-pg$"; then
-  echo "PostgreSQL 容器正在运行"
-else
-  echo "PostgreSQL 容器未运行，尝试启动..."
-  if docker ps -a --format '{{.Names}}' | grep -q "^relationship-graph-pg$"; then
-    docker start relationship-graph-pg
-  else
-    echo "容器不存在，请执行 ./scripts/setup-postgres-docker.sh"
-  fi
-fi
 
 echo "==> 启动 Axum 服务端（后台，端口 8790）"
 if ! lsof -i :8790 >/dev/null 2>&1; then
@@ -115,13 +102,6 @@ if pgrep -x "ollama" >/dev/null; then
   echo "  Ollama     - http://localhost:11434  - [运行中]"
 else
   echo "  Ollama     - http://localhost:11434  - [未运行]"
-fi
-
-# PostgreSQL
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^relationship-graph-pg$"; then
-  echo "  PostgreSQL - localhost:5432          - [运行中]"
-else
-  echo "  PostgreSQL - localhost:5432          - [未运行]"
 fi
 
 # Axum
