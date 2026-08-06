@@ -5,6 +5,9 @@ use std::time::Instant;
 pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     let started = Instant::now();
     log::info!(target: "db", "schema_migrate_start");
+    // 老库升级必须在 CREATE INDEX 之前完成：
+    // 老 users 表缺少 role 列会导致 idx_users_role 创建失败，整个迁移中止
+    ensure_user_columns(conn)?;
     let result = conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS persons (
@@ -189,6 +192,40 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     ensure_relationship_columns(conn)?;
     ensure_person_columns(conn)?;
     agent_config::seed_defaults(conn)
+}
+
+/// 老库升级：为 users 表补充角色/画像列（v1.3 多用户与画像功能）
+/// 老库中 users 表已存在但缺少这些列，CREATE TABLE IF NOT EXISTS 不会补齐，
+/// 必须先 ALTER 再建索引，否则 idx_users_role 创建失败导致解锁报错。
+fn ensure_user_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // 全新库尚无 users 表，由后续 CREATE TABLE 建出完整结构，跳过
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(());
+    }
+
+    let mut stmt = conn.prepare("PRAGMA table_info(users)")?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<_, _>>()?;
+
+    let columns = [
+        ("display_name", "TEXT"),
+        ("role", "TEXT NOT NULL DEFAULT 'user'"),
+        ("profile_doc", "TEXT"),
+        ("profile_completed", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    for (name, ddl) in columns {
+        if !existing.iter().any(|col| col == name) {
+            conn.execute(&format!("ALTER TABLE users ADD COLUMN {} {}", name, ddl), [])?;
+            log::info!(target: "db", "schema_migrate_add_column table=users column={}", name);
+        }
+    }
+    Ok(())
 }
 
 /// 老库升级：为 persons 表补充学校/项目列（v1.4 推断规则扩展）
