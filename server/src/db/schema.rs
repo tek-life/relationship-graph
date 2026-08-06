@@ -81,6 +81,99 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_relationships_to ON relationships(to_person_id);
         CREATE INDEX IF NOT EXISTS idx_interactions_person ON interactions(person_id);
         CREATE INDEX IF NOT EXISTS idx_interactions_timestamp ON interactions(timestamp);
+
+        -- 用户与邀请
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            display_name TEXT,
+            role TEXT NOT NULL DEFAULT 'user',
+            profile_doc TEXT,
+            profile_completed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS invite_tokens (
+            id TEXT PRIMARY KEY,
+            token TEXT UNIQUE NOT NULL,
+            created_by TEXT NOT NULL,
+            used_by TEXT,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (created_by) REFERENCES users(id)
+        );
+
+        -- 会话与消息
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+
+        -- 数字人配置
+        CREATE TABLE IF NOT EXISTS digital_agents (
+            id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            mention TEXT UNIQUE NOT NULL,
+            aliases TEXT NOT NULL DEFAULT '[]',
+            route_mode TEXT NOT NULL DEFAULT 'chat',
+            avatar_url TEXT,
+            description TEXT,
+            skill_description TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_skills (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            skill_name TEXT NOT NULL,
+            skill_config_json TEXT NOT NULL,
+            trigger_scenario TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (agent_id) REFERENCES digital_agents(id) ON DELETE CASCADE
+        );
+
+        -- Profile QA 指令配置
+        CREATE TABLE IF NOT EXISTS qa_instruction_modules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            system_prompt TEXT NOT NULL,
+            guidance_text TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            trigger_scenario TEXT NOT NULL DEFAULT 'new_user',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+        CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+        CREATE INDEX IF NOT EXISTS idx_invite_tokens_token ON invite_tokens(token);
+        CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
+        CREATE INDEX IF NOT EXISTS idx_digital_agents_active ON digital_agents(is_active);
+        CREATE INDEX IF NOT EXISTS idx_agent_skills_agent ON agent_skills(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_qa_modules_active ON qa_instruction_modules(is_active);
         "
     );
     match &result {

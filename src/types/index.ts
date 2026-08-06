@@ -265,3 +265,20 @@ export interface PathEdge {
   strength?: string;
   confirmationStatus: string;
 }
+
+// === 聊天路由响应 ===
+
+export interface ChatRouterResponse {
+  /** 响应类型：nlq=联系人相关查询，chat=通用聊天 */
+  type: 'nlq' | 'chat';
+  /** NLQ 响应（联系人相关查询时填充） */
+  nlqResponse?: NlqResponse;
+  /** 通用聊天响应（通用聊天时填充） */
+  chatResponse?: ChatResponse;
+  /** 原始文本回复，用于界面显示 */
+  reply: string;
+  /** 右侧面板展示的文件内容（如长文档/代码块） */
+  fileContent?: string;
+  /** 文件标题 */
+  fileTitle?: string;
+}
