@@ -276,7 +276,7 @@ export function useChat(): UseChatReturn {
 
         setMessages((prev) => [...prev, assistantMsg]);
 
-        // 持久化助手消息到后端（session.ts 已正确使用 metadata_json 字段名）
+        // 持久化助手消息到后端
         const metadata = assistantMsg.resultType
           ? JSON.stringify({
               resultType: assistantMsg.resultType,

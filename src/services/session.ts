@@ -39,9 +39,10 @@ export async function addMessage(
   metadataJson?: string,
 ): Promise<ChatMessage> {
   return apiPost<ChatMessage>(`/api/sessions/${sessionId}/messages`, {
+    sessionId,
     role,
     content,
-    metadata_json: metadataJson,
+    metadataJson,
   });
 }
 
