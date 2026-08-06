@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use log::{info, warn};
 
-use crate::types::{PersonDraft, FieldChange, InteractionDraft};
+use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage};
 
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 45;
 const DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS: u64 = 120;
@@ -85,6 +85,36 @@ pub async fn general_chat(query: &str) -> Result<String, String> {
 当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。\
 \n\n用户问题：{}",
         query
+    );
+
+    call_ollama(
+        &prompt,
+        None,
+        ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
+    )
+    .await
+}
+
+/// 画像构建 QA 流程：根据系统提示词和对话历史生成下一个引导问题
+pub async fn profile_qa_chat(system_prompt: &str, user_message: &str) -> Result<String, String> {
+    let prompt = format!(
+        "{}\n\n{}",
+        system_prompt, user_message
+    );
+
+    call_ollama(
+        &prompt,
+        None,
+        ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
+    )
+    .await
+}
+
+/// 画像构建最终步骤：根据完整对话历史生成个人画像文档
+pub async fn generate_profile_document(system_prompt: &str, conversation: &str) -> Result<String, String> {
+    let prompt = format!(
+        "{}\n\n以下是完整的对话记录：\n{}\n\n请根据以上所有对话内容，保留我的原始语言表达方式和个性化表述，生成一份完整的个人画像文档（Markdown 格式），包括：价值观、思维方式、人生目标、优势与挑战、长期规划等部分。",
+        system_prompt, conversation
     );
 
     call_ollama(
@@ -288,4 +318,38 @@ fn empty_interaction_draft() -> InteractionDraft {
         action_items: vec![],
         confidence: 0,
     }
+}
+
+/// 将多条消息压缩为一段摘要文本
+pub async fn compress_context(
+    messages: &[ChatMessage],
+    max_tokens: usize,
+) -> Result<String, String> {
+    let system_prompt = "你是一个对话摘要助手。请将以下对话历史压缩为简洁的摘要，保留关键信息、决策和上下文。用中文输出。";
+
+    let conversation_text: String = messages
+        .iter()
+        .map(|m| {
+            format!(
+                "{}: {}",
+                if m.role == "user" { "用户" } else { "助手" },
+                m.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "{}\n\n请将以下对话压缩为不超过 {} token 的摘要：\n\n{}",
+        system_prompt, max_tokens, conversation_text
+    );
+
+    info!(target: "llm", "compress_context message_count={} total_chars={}", messages.len(), conversation_text.len());
+
+    call_ollama(
+        &prompt,
+        None,
+        ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
+    )
+    .await
 }
