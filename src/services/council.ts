@@ -1,3 +1,10 @@
+import {
+  fetchDigitalAgents,
+  getCachedDigitalAgents,
+  type DigitalAgent,
+} from './digitalAgents';
+
+// CouncilMember 保持接口兼容，供 langgraph.ts、AgentWorkspace.tsx 等使用
 export interface CouncilMember {
   id: string;
   name: string;
@@ -6,35 +13,38 @@ export interface CouncilMember {
   description: string;
 }
 
-export const DEFAULT_COUNCIL: CouncilMember[] = [
-  {
-    id: 'coordinator',
-    name: '推进官',
-    role: '项目推进',
-    skill: '把关系上下文总结为下一步行动列表',
-    description: '适用于项目推进、会议纪要和待办生成。',
-  },
-  {
-    id: 'writer',
-    name: '文案助手',
-    role: '写作与邮件',
-    skill: '根据现有关系上下文起草邮件或消息',
-    description: '适用于跟进消息、邮件草稿和简短说明。',
-  },
-  {
-    id: 'analyzer',
-    name: '分析师',
-    role: '关系与机会分析',
-    skill: '根据关系图谱和最近互动给出推荐路径',
-    description: '适用于机会分析、关系优先级和路径推荐。',
-  },
-];
+// 将数字人转换为 CouncilMember 格式：技能描述优先作为 role/skill
+function agentToCouncilMember(agent: DigitalAgent): CouncilMember {
+  const role = agent.skillDescription || agent.description || '';
+  return {
+    id: agent.id,
+    name: agent.displayName,
+    role,
+    skill: agent.skillDescription || '',
+    description: agent.description || '',
+  };
+}
 
+/**
+ * 异步获取 Council（= 所有激活的数字人转换而来的成员列表）。
+ * Council 概念现已合并为数字人列表：每个激活的数字人即对应一个 Council 成员。
+ */
+export async function fetchCouncil(): Promise<CouncilMember[]> {
+  const agents = await fetchDigitalAgents();
+  return agents.filter((a) => a.isActive).map(agentToCouncilMember);
+}
+
+/**
+ * 同步获取 Council 成员列表。基于数字人缓存（需先调用 fetchDigitalAgents 预热）；
+ * 缓存未预热时使用内置默认数字人，保证向后兼容。
+ */
 export function getCouncilMembers(): CouncilMember[] {
-  return DEFAULT_COUNCIL;
+  return getCachedDigitalAgents()
+    .filter((a) => a.isActive)
+    .map(agentToCouncilMember);
 }
 
 export function getCouncilMember(id: string | null | undefined): CouncilMember | null {
   if (!id) return null;
-  return DEFAULT_COUNCIL.find((member) => member.id === id) ?? null;
+  return getCouncilMembers().find((m) => m.id === id) ?? null;
 }
