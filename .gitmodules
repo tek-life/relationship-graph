@@ -1,0 +1,6 @@
+[submodule "vendor/langgraph"]
+	path = vendor/langgraph
+	url = /home/hfli/langgraph
+[submodule "vendor/agent-chat-ui"]
+	path = vendor/agent-chat-ui
+	url = /home/hfli/agent-chat-ui
