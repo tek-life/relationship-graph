@@ -201,14 +201,8 @@ export function useChat(): UseChatReturn {
       agentId?: string | null,
       activeAgentIds?: string[],
     ): Promise<ChatRouterResponse | null> => {
-      // 确保有活跃会话
+      // 确保有活跃会话；createSession 失败时需要走统一的错误提示，不能静默抛出
       let sessionId = currentSessionRef.current;
-      if (!sessionId) {
-        const session = await sessionApi.createSession();
-        setSessions((prev) => [session, ...prev]);
-        sessionId = session.id;
-        setCurrentSessionId(sessionId);
-      }
 
       // 添加用户消息到 UI
       const userMsg: ChatDisplayMessage = {
@@ -216,11 +210,17 @@ export function useChat(): UseChatReturn {
         role: 'user',
         content: text,
       };
-      setMessages((prev) => [...prev, userMsg]);
       setLoading(true);
       setError('');
 
       try {
+        if (!sessionId) {
+          const session = await sessionApi.createSession();
+          setSessions((prev) => [session, ...prev]);
+          sessionId = session.id;
+          setCurrentSessionId(sessionId);
+        }
+        setMessages((prev) => [...prev, userMsg]);
         // 持久化用户消息到后端
         await sessionApi.addMessage(sessionId!, 'user', text);
 
