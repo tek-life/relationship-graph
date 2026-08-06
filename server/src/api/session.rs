@@ -2,6 +2,7 @@
 //! 日志遵循脱敏原则：不记录消息原文。
 
 use crate::db::{get_conn, session as db_session};
+use crate::llm;
 use crate::state::SharedState;
 use crate::types::{
     ChatMessage, CreateChatMessageRequest, CreateSessionBody, CreateSessionRequest,
@@ -87,36 +88,90 @@ pub async fn list_messages(
 
 /// POST /api/sessions/:id/messages — 追加消息
 /// 自动命名：如果是第一条用户消息且会话尚无标题，以前 20 字为默认标题。
+/// 上下文压缩：消息数超过阈值时自动调用 LLM 压缩旧消息为摘要。
+const COMPRESSION_THRESHOLD: usize = 50;
+const KEEP_RECENT: usize = 10;
+const MAX_SUMMARY_TOKENS: usize = 1000;
+
 pub async fn add_message(
     State(state): State<SharedState>,
     Path(session_id): Path<String>,
     Json(req): Json<CreateChatMessageRequest>,
 ) -> Result<Json<ChatMessage>, ApiError> {
-    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
-    let conn = get_conn(&guard)?;
+    // 第一阶段：创建消息、自动命名、检查是否需要压缩
+    let old_messages = {
+        let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+        let conn = get_conn(&guard)?;
 
-    let message = db_session::create_message(
-        conn,
-        CreateChatMessageRequest {
-            session_id: session_id.clone(),
-            role: req.role.clone(),
-            content: req.content.clone(),
-            metadata_json: req.metadata_json.clone(),
-        },
-    )?;
+        let message = db_session::create_message(
+            conn,
+            CreateChatMessageRequest {
+                session_id: session_id.clone(),
+                role: req.role.clone(),
+                content: req.content.clone(),
+                metadata_json: req.metadata_json.clone(),
+            },
+        )?;
 
-    // 自动命名：第一条用户消息且 session 没有标题时，取前 20 字
-    if req.role == "user" {
-        let count = db_session::count_messages_by_session(conn, &session_id)?;
-        if count <= 1 {
-            let title: String = req.content.chars().take(20).collect();
-            db_session::update_session_title(conn, &session_id, &title)?;
-            log::info!(target: "session", "auto_title_set session_id={} title_len={}", session_id, title.chars().count());
+        // 自动命名：第一条用户消息且 session 没有标题时，取前 20 字
+        if req.role == "user" {
+            let count = db_session::count_messages_by_session(conn, &session_id)?;
+            if count <= 1 {
+                let title: String = req.content.chars().take(20).collect();
+                db_session::update_session_title(conn, &session_id, &title)?;
+                log::info!(target: "session", "auto_title_set session_id={} title_len={}", session_id, title.chars().count());
+            }
         }
+
+        log::info!(target: "session", "add_message_success session_id={} role={}", session_id, req.role);
+
+        // 检查是否需要压缩
+        let count = db_session::count_messages_by_session(conn, &session_id)?;
+        if count > COMPRESSION_THRESHOLD {
+            let fetch_limit = (count - KEEP_RECENT) as i64;
+            let old = db_session::list_messages_by_session(conn, &session_id, fetch_limit, 0)?;
+            if old.is_empty() {
+                None
+            } else {
+                Some((message, old))
+            }
+        } else {
+            return Ok(Json(message));
+        }
+    }; // guard 在此处释放，避免跨 .await 持有锁
+
+    // 第二阶段：异步调用 LLM 压缩（不持有 DB 锁）
+    if let Some((message, old_msgs)) = old_messages {
+        match llm::compress_context(&old_msgs, MAX_SUMMARY_TOKENS).await {
+            Ok(summary) => {
+                // 第三阶段：重新获取锁，删除旧消息并插入摘要
+                let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+                let conn = get_conn(&guard)?;
+
+                if let Err(e) = db_session::delete_old_messages(conn, &session_id, KEEP_RECENT as i64) {
+                    log::warn!(target: "session", "delete_old_messages_failed session={} error={}", session_id, e);
+                } else {
+                    let summary_req = CreateChatMessageRequest {
+                        session_id: session_id.clone(),
+                        role: "system".to_string(),
+                        content: format!("[对话摘要] {}", summary),
+                        metadata_json: Some(r#"{"type":"context_summary"}"#.to_string()),
+                    };
+                    if let Err(e) = db_session::create_message(conn, summary_req) {
+                        log::warn!(target: "session", "insert_summary_failed session={} error={}", session_id, e);
+                    } else {
+                        log::info!(target: "session", "context_compressed session={} old_messages={}", session_id, old_msgs.len());
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!(target: "session", "context_compression_failed session={} error={}", session_id, e);
+            }
+        }
+        return Ok(Json(message));
     }
 
-    log::info!(target: "session", "add_message_success session_id={} role={}", session_id, req.role);
-    Ok(Json(message))
+    unreachable!()
 }
 
 /// PUT /api/sessions/:id — 更新会话标题
