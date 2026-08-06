@@ -1,0 +1,36 @@
+import { api, setToken } from './api';
+import type { User } from '../types';
+
+interface AuthResponse {
+  token: string;
+  user: User;
+}
+
+/** 通过邀请码注册新用户 */
+export async function register(
+  username: string,
+  password: string,
+  inviteToken: string,
+): Promise<AuthResponse> {
+  const res = await api<AuthResponse>('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password, invite_token: inviteToken }),
+  });
+  setToken(res.token);
+  return res;
+}
+
+/** 用户名 + 密码登录 */
+export async function login(username: string, password: string): Promise<AuthResponse> {
+  const res = await api<AuthResponse>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+  setToken(res.token);
+  return res;
+}
+
+/** 获取当前登录用户信息 */
+export async function getCurrentUser(): Promise<User> {
+  return api<User>('/api/auth/me');
+}
