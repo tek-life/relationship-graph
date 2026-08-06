@@ -1,4 +1,4 @@
-const SW_VERSION = 'v1';
+const SW_VERSION = 'v2';
 const CACHE_NAME = `relationship-graph-${SW_VERSION}`;
 
 // 静态资源预缓存列表（核心资源）
@@ -42,6 +42,14 @@ self.addEventListener('fetch', (event) => {
           status: 503,
         })
       )
+    );
+    return;
+  }
+
+  // 导航请求（页面跳转/刷新）：network-first，失败回退缓存的 /index.html
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request).catch(() => caches.match('/index.html'))
     );
     return;
   }

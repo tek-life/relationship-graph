@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AdminPanel from './components/AdminPanel';
 import ChatView from './components/ChatView';
 import GraphView from './components/GraphView';
@@ -15,29 +16,25 @@ import { useTheme } from './hooks/useTheme';
 import { createPerson, getGraphData, listInteractionsByPerson, listPersons } from './services/db';
 import type { CreatePersonInput, GraphData, Interaction, Person } from './types';
 
-type Tab = 'home' | 'contacts' | 'graph' | 'import' | 'admin' | 'agent-detail' | 'profile-qa';
-
 function App() {
   const { theme, setTheme } = useTheme();
   const { user, isAdmin, logout, refreshUser } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
 
-  const [activeTab, setActiveTab] = useState<Tab>('home');
   // 新用户首次进入时自动引导到画像问卷；完成/跳过后本轮不再强制
   const [profilePrompted, setProfilePrompted] = useState(false);
 
   useEffect(() => {
     if (user && !user.profileCompleted && !profilePrompted) {
       setProfilePrompted(true);
-      setActiveTab('profile-qa');
+      navigate('/profile-qa', { replace: true });
     }
-  }, [user, profilePrompted]);
+  }, [user, profilePrompted, navigate]);
   const [persons, setPersons] = useState<Person[]>([]);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [interactionsByPerson, setInteractionsByPerson] = useState<Record<string, Interaction[]>>({});
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
-  const [detailPersonId, setDetailPersonId] = useState<string | null>(null);
-  // 从联系人详情"关系网络"进入图谱页时的初始焦点，手动切 tab 时清除
-  const [graphFocusId, setGraphFocusId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   const personsById = useMemo(
@@ -90,13 +87,11 @@ function App() {
   };
 
   const handleOpenDetail = (id: string) => {
-    setDetailPersonId(id);
+    navigate(`/contacts/${id}`);
   };
 
   const handleNetworkView = (id: string) => {
-    setDetailPersonId(null);
-    setGraphFocusId(id);
-    setActiveTab('graph');
+    navigate(`/graph?focus=${id}`);
   };
 
   const refreshAfterInteraction = async () => {
@@ -107,11 +102,9 @@ function App() {
     }
   };
 
-  const switchTab = (tab: Tab) => {
-    setDetailPersonId(null);
-    setGraphFocusId(null);
-    setActiveTab(tab);
-  };
+  // 导航栏 active 判断：路径匹配
+  const isHomeActive = location.pathname === '/';
+  const isPathActive = (path: string) => location.pathname.startsWith(path);
 
   return (
     <div className="flex h-screen flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
@@ -123,12 +116,12 @@ function App() {
         <div className="flex items-center gap-4">
           <h1 className="text-base font-bold whitespace-nowrap">Personal AI Platform</h1>
           <nav className="flex gap-1">
-            <TabButton active={activeTab === 'home'} onClick={() => switchTab('home')}>首页</TabButton>
-            <TabButton active={activeTab === 'contacts'} onClick={() => switchTab('contacts')}>联系人</TabButton>
-            <TabButton active={activeTab === 'graph'} onClick={() => switchTab('graph')}>图谱</TabButton>
-            <TabButton active={activeTab === 'import'} onClick={() => switchTab('import')}>导入</TabButton>
+            <TabButton active={isHomeActive} onClick={() => navigate('/')}>首页</TabButton>
+            <TabButton active={isPathActive('/contacts')} onClick={() => navigate('/contacts')}>联系人</TabButton>
+            <TabButton active={isPathActive('/graph')} onClick={() => navigate('/graph')}>图谱</TabButton>
+            <TabButton active={isPathActive('/import')} onClick={() => navigate('/import')}>导入</TabButton>
             {isAdmin && (
-              <TabButton active={activeTab === 'admin'} onClick={() => switchTab('admin')}>管理后台</TabButton>
+              <TabButton active={isPathActive('/admin')} onClick={() => navigate('/admin')}>管理后台</TabButton>
             )}
           </nav>
         </div>
@@ -157,22 +150,11 @@ function App() {
           <div className="mx-4 mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</div>
         )}
 
-        {activeTab === 'home' && (
-          <ChatView onPersonClick={handleOpenDetail} />
-        )}
+        <Routes>
+          <Route path="/" element={<ChatView onPersonClick={handleOpenDetail} />} />
 
-        {activeTab === 'contacts' && (
-          <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">
-            {detailPersonId ? (
-              <PersonDetail
-                personId={detailPersonId}
-                personsById={personsById}
-                onBack={() => setDetailPersonId(null)}
-                onChanged={loadData}
-                onOpenPerson={handleOpenDetail}
-                onNetworkView={handleNetworkView}
-              />
-            ) : (
+          <Route path="/contacts" element={
+            <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-[360px_1fr]">
                 <aside className="space-y-4">
                   <PersonForm onSubmit={handleCreatePerson} />
@@ -221,64 +203,103 @@ function App() {
                   )}
                 </section>
               </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'graph' && (
-          <div className="mx-auto h-full max-w-7xl p-6">
-            <GraphView
-              data={graphData}
-              personsById={personsById}
-              onNodeClick={handleOpenDetail}
-              onRefresh={loadData}
-              initialFocusId={graphFocusId ?? undefined}
-            />
-          </div>
-        )}
-
-        {activeTab === 'import' && (
-          <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">
-            <ImportWizard onImported={loadData} />
-          </div>
-        )}
-
-        {activeTab === 'admin' && isAdmin && (
-          <div className="h-full overflow-y-auto">
-            <AdminPanel userId={user?.id} />
-          </div>
-        )}
-
-        {activeTab === 'agent-detail' && (
-          <div className="flex h-full items-center justify-center p-8">
-            <div className="text-center">
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                请从首页点击数字人头像进入详情
-              </p>
-              <button
-                type="button"
-                className="mt-3 text-sm transition hover:underline"
-                style={{ color: 'var(--accent-color)' }}
-                onClick={() => switchTab('home')}
-              >
-                返回首页
-              </button>
             </div>
-          </div>
-        )}
+          } />
 
-        {activeTab === 'profile-qa' && (
-          <div className="h-full overflow-y-auto">
-            <ProfileQA
-              onComplete={() => {
-                // 完成后刷新用户信息，使 profileCompleted 状态生效
-                void refreshUser();
-                switchTab('home');
-              }}
+          <Route path="/contacts/:personId" element={
+            <ContactDetailPage
+              personsById={personsById}
+              loadData={loadData}
+              handleOpenDetail={handleOpenDetail}
+              handleNetworkView={handleNetworkView}
             />
-          </div>
-        )}
+          } />
+
+          <Route path="/graph" element={
+            <GraphPage
+              graphData={graphData}
+              personsById={personsById}
+              handleOpenDetail={handleOpenDetail}
+              loadData={loadData}
+            />
+          } />
+
+          <Route path="/import" element={
+            <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">
+              <ImportWizard onImported={loadData} />
+            </div>
+          } />
+
+          <Route path="/admin" element={
+            isAdmin ? (
+              <div className="h-full overflow-y-auto">
+                <AdminPanel userId={user?.id} />
+              </div>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          } />
+
+          <Route path="/profile-qa" element={
+            <div className="h-full overflow-y-auto">
+              <ProfileQA
+                onComplete={() => {
+                  // 完成后刷新用户信息，使 profileCompleted 状态生效
+                  void refreshUser();
+                  navigate('/', { replace: true });
+                }}
+              />
+            </div>
+          } />
+
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </main>
+    </div>
+  );
+}
+
+// 联系人详情包装组件（读取 URL 参数）
+function ContactDetailPage({ personsById, loadData, handleOpenDetail, handleNetworkView }: {
+  personsById: Record<string, Person>;
+  loadData: () => Promise<void>;
+  handleOpenDetail: (id: string) => void;
+  handleNetworkView: (id: string) => void;
+}) {
+  const { personId } = useParams();
+  const navigate = useNavigate();
+  return (
+    <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">
+      <PersonDetail
+        personId={personId!}
+        personsById={personsById}
+        onBack={() => navigate('/contacts')}
+        onChanged={loadData}
+        onOpenPerson={handleOpenDetail}
+        onNetworkView={handleNetworkView}
+      />
+    </div>
+  );
+}
+
+// 图谱包装组件（读取 ?focus 查询参数）
+function GraphPage({ graphData, personsById, handleOpenDetail, loadData }: {
+  graphData: GraphData;
+  personsById: Record<string, Person>;
+  handleOpenDetail: (id: string) => void;
+  loadData: () => Promise<void>;
+}) {
+  const [searchParams] = useSearchParams();
+  const focusId = searchParams.get('focus') ?? undefined;
+  return (
+    <div className="mx-auto h-full max-w-7xl p-6">
+      <GraphView
+        data={graphData}
+        personsById={personsById}
+        onNodeClick={handleOpenDetail}
+        onRefresh={loadData}
+        initialFocusId={focusId}
+      />
     </div>
   );
 }
