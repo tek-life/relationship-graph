@@ -65,6 +65,15 @@ pub async fn update_user_role(
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
     user_db::update_user_role(conn, &id, &req.role)?;
+    drop(guard);
+
+    // 同步刷新该用户已签发 token 的角色快照，升/降权立即生效，无需重新登录
+    state
+        .tokens
+        .lock()
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .update_user_role(&id, &req.role);
+
     log::info!(target: "admin", "update_user_role id={} role={}", id, req.role);
     Ok(Json(serde_json::json!({ "updated": true })))
 }

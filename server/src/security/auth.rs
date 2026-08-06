@@ -68,6 +68,22 @@ impl TokenStore {
         self.tokens.get(token).cloned()
     }
 
+    /// 更新指定用户所有 token 的角色快照。
+    /// 角色变更（升/降权）后必须调用，否则已签发 token 仍携带旧角色，
+    /// 导致 require_admin 按旧快照误判（新管理员 403 / 被降权者仍可操作）。
+    pub fn update_user_role(&mut self, user_id: &str, role: &str) -> usize {
+        self.purge_expired();
+        let mut count = 0;
+        for info in self.tokens.values_mut() {
+            if info.user_id.as_deref() == Some(user_id) {
+                info.role = Some(role.to_string());
+                count += 1;
+            }
+        }
+        log::info!(target: "auth", "token_roles_updated user_id={} role={} tokens={}", user_id, role, count);
+        count
+    }
+
     pub fn revoke_all(&mut self) {
         let count = self.tokens.len();
         self.tokens.clear();
