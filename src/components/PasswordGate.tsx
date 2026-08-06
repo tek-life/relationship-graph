@@ -1,19 +1,52 @@
 import { useEffect, useState } from 'react';
 import { AUTH_EXPIRED_EVENT } from '../services/api';
 import { checkDbState, loadDatabaseFromKeychain, setupDatabase, unlockDatabase } from '../services/security';
+import RegisterForm from './RegisterForm';
+import LoginForm from './LoginForm';
+import type { User } from '../types';
 
 interface Props {
   children: React.ReactNode;
 }
 
+const USER_KEY = 'rg_user';
+
+/** 保存当前用户信息到 sessionStorage，供 App 层读取 */
+export function saveUser(user: User): void {
+  sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
+export function loadUser(): User | null {
+  const raw = sessionStorage.getItem(USER_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as User;
+  } catch {
+    return null;
+  }
+}
+
+type GateMode = 'setup' | 'unlock' | 'login' | 'register' | 'ready';
+
 export default function PasswordGate({ children }: Props) {
   const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState<'setup' | 'unlock' | 'ready'>('unlock');
+  const [mode, setMode] = useState<GateMode>('unlock');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [inviteToken] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('invite');
+  });
 
   useEffect(() => {
     async function bootstrap() {
+      // 如果 URL 带有邀请码，直接进入注册流程
+      if (inviteToken) {
+        setMode('register');
+        setLoading(false);
+        return;
+      }
+
       try {
         const state = await checkDbState();
         if (!state.initialized) {
@@ -37,7 +70,7 @@ export default function PasswordGate({ children }: Props) {
       }
     }
     bootstrap();
-  }, []);
+  }, [inviteToken]);
 
   useEffect(() => {
     const onAuthExpired = () => {
@@ -63,6 +96,35 @@ export default function PasswordGate({ children }: Props) {
       setError(String(err));
     }
   };
+
+  const handleAuthSuccess = (_token: string, user: User) => {
+    saveUser(user);
+    // 注册/登录成功后清除 URL 中的 invite 参数
+    if (inviteToken) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('invite');
+      window.history.replaceState({}, '', url.toString());
+    }
+    setMode('ready');
+  };
+
+  // 邀请注册流程
+  if (mode === 'register' && inviteToken) {
+    return <RegisterForm inviteToken={inviteToken} onRegistered={handleAuthSuccess} />;
+  }
+
+  // 账号密码登录流程
+  if (mode === 'login') {
+    return (
+      <LoginForm
+        onLoggedIn={handleAuthSuccess}
+        onSwitchToMasterPassword={() => {
+          setMode('unlock');
+          setError('');
+        }}
+      />
+    );
+  }
 
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-600">正在连接服务端...</div>;
@@ -93,6 +155,21 @@ export default function PasswordGate({ children }: Props) {
         <button className="btn-primary mt-6 w-full" type="submit">
           {mode === 'setup' ? '创建数据库' : '解锁'}
         </button>
+
+        {/* 仅在解锁模式下，且数据库已初始化时，显示切换到账号密码登录的入口 */}
+        {mode === 'unlock' && (
+          <button
+            type="button"
+            className="mt-4 w-full text-center text-sm"
+            style={{ color: 'var(--accent-color)' }}
+            onClick={() => {
+              setMode('login');
+              setError('');
+            }}
+          >
+            使用账号密码登录
+          </button>
+        )}
       </form>
     </div>
   );
