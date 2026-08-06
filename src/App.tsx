@@ -112,7 +112,7 @@ function App() {
         style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}
       >
         <div className="flex items-center gap-4">
-          <h1 className="text-base font-bold whitespace-nowrap">个人关系图谱</h1>
+          <h1 className="text-base font-bold whitespace-nowrap">Personal AI Platform</h1>
           <nav className="flex gap-1">
             <TabButton active={activeTab === 'home'} onClick={() => switchTab('home')}>首页</TabButton>
             <TabButton active={activeTab === 'contacts'} onClick={() => switchTab('contacts')}>联系人</TabButton>
