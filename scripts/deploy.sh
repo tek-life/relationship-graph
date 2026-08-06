@@ -50,13 +50,13 @@ mkdir -p "${APP_DATA_DIR}" "${BIN_DIR}" "${MODELS_DIR}"
 # =============================================================================
 # 1. 系统依赖
 # =============================================================================
-log_info "步骤 1/11: 安装系统依赖"
+log_info "步骤 1/10: 安装系统依赖"
 "${PROJECT_DIR}/scripts/install-system-deps.sh"
 
 # =============================================================================
 # 2. Node.js（推荐 20.x LTS）
 # =============================================================================
-log_info "步骤 2/11: 检查并安装 Node.js"
+log_info "步骤 2/10: 检查并安装 Node.js"
 if ! command -v node &>/dev/null || [[ "$(node --version | cut -d'v' -f2 | cut -d'.' -f1)" -lt 20 ]]; then
   NODE_VERSION="20.15.1"
   NODE_TARBALL="node-v${NODE_VERSION}-linux-x64.tar.xz"
@@ -79,7 +79,7 @@ fi
 # =============================================================================
 # 3. Rust
 # =============================================================================
-log_info "步骤 3/11: 检查并安装 Rust"
+log_info "步骤 3/10: 检查并安装 Rust"
 if ! command -v cargo &>/dev/null; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
   # shellcheck source=/dev/null
@@ -94,7 +94,7 @@ fi
 # =============================================================================
 # 4. Python venv + AI/OCR 库
 # =============================================================================
-log_info "步骤 4/11: 配置 Python 虚拟环境"
+log_info "步骤 4/10: 配置 Python 虚拟环境"
 if ! command -v python3 &>/dev/null; then
   sudo apt install -y python3 python3-venv python3-pip
 fi
@@ -119,7 +119,7 @@ log_info "Python 虚拟环境已就绪：${VENV_DIR}"
 # =============================================================================
 # 5. AI 服务：Ollama + Whisper
 # =============================================================================
-log_info "步骤 5/11: 安装 AI 服务（Ollama、Whisper）"
+log_info "步骤 5/10: 安装 AI 服务（Ollama、Whisper）"
 log_info "若网络受限，请先运行: source ./scripts/setup-proxy.sh"
 "${PROJECT_DIR}/scripts/install-ai-deps.sh"
 
@@ -130,33 +130,9 @@ fi
 ollama list
 
 # =============================================================================
-# 6. Docker + PostgreSQL
+# 6. 前端 npm 依赖
 # =============================================================================
-log_info "步骤 6/11: 启动 PostgreSQL Docker 容器"
-if ! command -v docker &>/dev/null; then
-  log_error "Docker 未安装。请先运行 install-system-deps.sh 或手动安装 Docker。"
-  log_error "安装后执行 'newgrp docker' 使当前用户加入 docker 组，再重新运行本脚本。"
-  exit 1
-fi
-if ! docker ps &>/dev/null; then
-  log_warn "Docker 已安装但当前不可用（可能权限不足或 daemon 未启动）。"
-  log_warn "请执行 'newgrp docker' 后重新登录，或运行 'sudo systemctl start docker'。"
-  log_warn "若处于受限网络，请先为 Docker daemon 配置 HTTP 代理："
-  log_warn "  sudo mkdir -p /etc/systemd/system/docker.service.d"
-  log_warn "  sudo tee /etc/systemd/system/docker.service.d/http-proxy.conf <<EOF"
-  log_warn "  [Service]"
-  log_warn "  Environment=\"HTTP_PROXY=http://<host-ip>:7891\""
-  log_warn "  Environment=\"HTTPS_PROXY=http://<host-ip>:7891\""
-  log_warn "  EOF"
-  log_warn "  sudo systemctl daemon-reload && sudo systemctl restart docker"
-  exit 1
-fi
-"${PROJECT_DIR}/scripts/setup-postgres-docker.sh"
-
-# =============================================================================
-# 7. 前端 npm 依赖
-# =============================================================================
-log_info "步骤 7/11: 安装前端 npm 依赖"
+log_info "步骤 6/10: 安装前端 npm 依赖"
 cd "${PROJECT_DIR}"
 
 # 配置 npm 使用代理（如环境变量已设置）
@@ -177,9 +153,9 @@ done
 log_info "前端依赖安装完成"
 
 # =============================================================================
-# 8. 构建 Axum 服务端
+# 7. 构建 Axum 服务端
 # =============================================================================
-log_info "步骤 8/11: 构建 Axum 服务端"
+log_info "步骤 7/10: 构建 Axum 服务端"
 cd "${PROJECT_DIR}/server"
 cargo build --release
 
@@ -190,15 +166,15 @@ fi
 log_info "服务端构建完成"
 
 # =============================================================================
-# 9. 启动服务
+# 8. 启动服务
 # =============================================================================
-log_info "步骤 9/11: 启动服务"
+log_info "步骤 8/10: 启动服务"
 "${PROJECT_DIR}/scripts/start-services.sh"
 
 # =============================================================================
-# 10. 初始化 SQLite 加密数据库
+# 9. 初始化 SQLite 加密数据库
 # =============================================================================
-log_info "步骤 10/11: 初始化 SQLite 加密数据库"
+log_info "步骤 9/10: 初始化 SQLite 加密数据库"
 
 # 等待 Axum 服务就绪
 for i in $(seq 1 60); do
@@ -250,9 +226,9 @@ else
 fi
 
 # =============================================================================
-# 11. 导入演示数据
+# 10. 导入演示数据
 # =============================================================================
-log_info "步骤 11/11: 导入演示数据"
+log_info "步骤 10/10: 导入演示数据"
 if RG_SEED_PASSWORD="$RG_INIT_PASSWORD" node "${PROJECT_DIR}/scripts/seed-demo-data.mjs"; then
   log_info "演示数据导入成功"
 else
@@ -286,13 +262,6 @@ if pgrep -x "ollama" >/dev/null; then
   echo "  Ollama     - http://localhost:11434  - [运行中]"
 else
   echo "  Ollama     - http://localhost:11434  - [未运行]"
-fi
-
-# PostgreSQL
-if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^relationship-graph-pg$"; then
-  echo "  PostgreSQL - localhost:5432          - [运行中]"
-else
-  echo "  PostgreSQL - localhost:5432          - [未运行]"
 fi
 
 # Axum
