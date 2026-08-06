@@ -275,12 +275,10 @@ export default function ChatView({ onPersonClick }: ChatViewProps) {
               </div>
             )}
 
-            {/* 数字人头像栏 */}
-            <CouncilBar selectedAgentIds={selectedAgentIds} onToggleAgent={toggleAgent} />
-
-            {/* 输入区域 */}
+            {/* 输入区域：幕僚团与输入框共用同一容器，保证左右边缘与垂直方向精确对齐 */}
             <div className="px-4 pb-4 pt-2 shrink-0">
               <div className={`${panelIsVisible ? '' : 'mx-auto max-w-4xl'}`}>
+                <CouncilBar selectedAgentIds={selectedAgentIds} onToggleAgent={toggleAgent} />
                 <Composer
                   ref={textareaRef}
                   query={query}

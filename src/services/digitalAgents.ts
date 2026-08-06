@@ -1,5 +1,12 @@
 import { apiGet } from './api';
-import contactManagerAvatar from '../assets/agents/contact-manager.svg';
+import contactManagerAvatar from '../assets/agents/contact-manager-cartoon.png';
+
+export const CONTACT_MANAGER_AGENT_ID = 'contact_manager';
+
+// 内置数字人的本地卡通头像（后端未配置 avatar_url 时兜底）
+const BUILTIN_AVATARS: Record<string, string> = {
+  [CONTACT_MANAGER_AGENT_ID]: contactManagerAvatar,
+};
 
 // 数字人路由模式：auto 表示由意图分类器决定，relationship/chat 为数字人声明的固定模式
 export type AgentRouteMode = 'auto' | 'relationship' | 'chat';
@@ -16,8 +23,6 @@ export interface DigitalAgent {
   isActive: boolean;
   sortOrder: number;
 }
-
-export const CONTACT_MANAGER_AGENT_ID = 'contact_manager';
 
 // 后端 /api/digital-agents 返回的原始结构（serde camelCase 序列化）
 interface DigitalAgentDto {
@@ -46,7 +51,7 @@ function mapDtoToAgent(dto: DigitalAgentDto): DigitalAgent {
     mention: dto.mention,
     aliases: dto.aliases,
     routeMode: normalizeRouteMode(dto.routeMode),
-    avatar: dto.avatarUrl || '',
+    avatar: dto.avatarUrl || BUILTIN_AVATARS[dto.id] || '',
     description: dto.description ?? undefined,
     skillDescription: dto.skillDescription ?? undefined,
     isActive: dto.isActive,

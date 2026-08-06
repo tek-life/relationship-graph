@@ -1,7 +1,8 @@
 /**
  * 数字人头像栏组件
- * 水平排列所有激活数字人的头像，支持多选（多智能体协同）
+ * 水平排列所有激活数字人的头像 + 名字标签，支持多选（多智能体协同）
  * hover 显示 tooltip（数字人名称 + 功能描述）
+ * 渲染在输入框容器内部，与输入框左右边缘对齐
  */
 import { useEffect, useState } from 'react';
 import { fetchDigitalAgents, type DigitalAgent } from '../services/digitalAgents';
@@ -23,10 +24,7 @@ export default function CouncilBar({ selectedAgentIds, onToggleAgent }: CouncilB
   if (activeAgents.length === 0) return null;
 
   return (
-    <div
-      className="flex items-center gap-3 px-4 py-2 border-t"
-      style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}
-    >
+    <div className="flex items-center gap-3 pb-2">
       <span className="text-xs shrink-0" style={{ color: 'var(--text-secondary)' }}>
         幕僚团：
       </span>
@@ -37,24 +35,36 @@ export default function CouncilBar({ selectedAgentIds, onToggleAgent }: CouncilB
             <button
               type="button"
               onClick={() => onToggleAgent(agent.id)}
-              className={`w-10 h-10 rounded-full overflow-hidden border-2 transition-all duration-200
-                ${
-                  isSelected
-                    ? 'border-indigo-500 shadow-lg shadow-indigo-500/30 scale-110'
-                    : 'border-transparent hover:border-gray-300 hover:scale-105'
-                }`}
+              aria-label={`${agent.displayName}${isSelected ? '（已选中）' : ''}`}
+              className="flex items-center gap-1.5 rounded-full transition-all duration-200"
             >
-              {agent.avatar ? (
-                <img
-                  src={agent.avatar}
-                  alt={agent.displayName}
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="w-full h-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-sm">
-                  {agent.displayName[0]}
-                </div>
-              )}
+              <span
+                className={`block w-10 h-10 rounded-full overflow-hidden border-2 transition-all duration-200
+                  ${
+                    isSelected
+                      ? 'border-indigo-500 shadow-lg shadow-indigo-500/30 scale-110'
+                      : 'border-transparent hover:border-gray-300 hover:scale-105'
+                  }`}
+              >
+                {agent.avatar ? (
+                  <img
+                    src={agent.avatar}
+                    alt={agent.displayName}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <span className="w-full h-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-sm">
+                    {agent.displayName[0]}
+                  </span>
+                )}
+              </span>
+              {/* 名字标签：小字体，选中态高亮 */}
+              <span
+                className="text-xs whitespace-nowrap"
+                style={{ color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)' }}
+              >
+                {agent.displayName}
+              </span>
             </button>
             {/* Tooltip */}
             <div
