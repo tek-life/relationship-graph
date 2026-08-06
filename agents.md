@@ -219,6 +219,36 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 13. **多用户 / 组织权限体系**。
 14. **Tauri 能力配置**：当前没有 `src-tauri/capabilities/default.json`，运行 `tauri dev` 前需确认 Tauri 2 权限配置。
 
+### 8.1 LLM 对话功能缺口清单（2026-08-07 审计）
+
+针对引入云端大模型与提升对话体验的差距审计，按优先级分组如下。
+
+**P0 — 引入云端大模型的前置条件（约 6-9 人天）**
+
+1. **Provider 抽象层**：`server/src/llm.rs` 中 9 个函数硬编码 Ollama 私有格式（`/api/generate` + `format:"json"`），无接口分层；需用 rig（Rust Agent 框架，Apache-2.0，统一 API 覆盖 20+ provider）重构传输层，实现 Ollama / OpenAI 兼容双 provider，按场景绑定不同模型。估 3-4 天。
+2. **API Key 安全存储**：`settings` 表在 schema 中存在，但服务端无任何读写函数（空壳）；需实现读写 API + SQLCipher 对称加密存储 + admin 配置页。这是接入云端模型的先决条件。估 1.5-2 天。
+3. **会话历史注入**：`/api/chat` 完全无状态（`ChatRequest` 只有 query 字段，连 sessionId 都没有），历史消息仅用于界面回显、从未喂给 LLM，模型每轮“失忆”；需为 ChatRequest 增加 session_id、由 chat_handler 组装 messages 数组（最近 N 条 + `[对话摘要]` system 消息）、Ollama 改用 `/api/chat` messages 格式。估 2-3 天。
+
+**P1 — 对话体验核心（约 7-10 人天）**
+
+4. **流式输出全链路**：当前全部 `stream:false`，reqwest 未启用 stream feature；需后端 Axum SSE 端点 + 前端 ReadableStream 增量渲染 + 停止生成按钮（AbortController）。依赖 provider 层。估 3-5 天。
+5. **上下文窗口管理**：全服务端 `num_ctx` / `max_tokens` 零命中（Ollama 默认 4096），无输入截断（`profile_qa` 的 generate_profile 把全部历史一次性拼入，有超窗隐患）；需设置 `num_ctx` 8192-16384、`max_tokens` 上限、历史注入 token 预算。估 1 天。
+6. **重试退避与失败显性提示**：无 retry / backoff；抽取失败静默降级为 confidence=0 的空草稿；需指数退避重试（超时 / 5xx 重试 1-2 次）、JSON 解析失败带错误信息纠错重试 1 次、失败时明确报错、前端错误气泡加重试按钮。估 2-3 天。
+7. **按场景模型配置与 token 计量**：当前仅环境变量全局单一模型；需模型配置表 + 按场景绑定（chat / extract / summarize）+ admin 配置 + 记录 provider / model / 耗时 / token usage 元数据（不落内容）。依赖 provider 层与 API Key 存储。估 1-2 天。
+
+**P2 — 锦上添花（约 4-6 人天）**
+
+8. **消息重新生成与编辑重发**：依赖流式输出。估 2-3 天。
+9. **Markdown 渲染升级**：自研 `MarkdownContent.tsx` 不支持表格 / 图片 / 语法高亮，而大模型高频输出表格；换 react-markdown + remark-gfm。估 0.5 天。
+10. **压缩竞态防护**：两个并发请求同时越过 50 条压缩阈值会重复压缩，需加“压缩进行中”标记。估 0.5 天。
+11. **reqwest Client 单例化**：当前每次 LLM 调用新建 TCP 连接，应将 Client 放入 AppState 复用。估 0.5 天。
+
+**已达标项（无需整改）**
+
+- 隐私日志合规：只记录元数据，不落对话内容。
+- 并发锁模式基本正确：LLM 调用前已释放 DB 锁。
+- 50 条上下文压缩机制已实现。
+
 ---
 
 ## 9. 如何运行
@@ -287,4 +317,4 @@ NLQ / 互动记录 AI 提取需要：
 - 每完成一个小功能后，立即执行一次 Git commit。
 - 该 commit 流程默认自动进行，不需要再次向用户请示确认。
 
-*最后更新：2026-08-04*
+*最后更新：2026-08-07*
