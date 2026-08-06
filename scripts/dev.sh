@@ -2,9 +2,18 @@
 set -e
 
 # =============================================================================
-# 个人关系图谱 - 轻量开发启动脚本
+# 个人关系图谱 - 轻量开发启动脚本（仅用于开发模式）
+#
 # 用途：快速启动开发环境（Ollama + Axum 后端 + Vite 前端）
 # 用法：./scripts/dev.sh
+#
+# 注意：本脚本仅用于开发模式，不启动 Caddy 反向代理。
+#       生产部署请使用 ./scripts/deploy.sh + ./scripts/start-services.sh
+#
+# 启动的服务：
+#   1. Ollama（如果未运行）
+#   2. Axum 后端（cargo run，非 release 模式，编译更快）
+#   3. Vite 前端开发服务器（npm run dev，端口 1420）
 # =============================================================================
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +31,7 @@ log_step() { echo -e "${BLUE}[→]${NC} $*"; }
 echo ""
 echo "=========================================="
 echo "  个人关系图谱 - 开发环境启动"
+echo "  （仅开发模式，不启动 Caddy 反向代理）"
 echo "=========================================="
 echo ""
 
@@ -44,21 +54,21 @@ else
   if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
     log_info "Ollama 服务已启动"
   else
-    log_warn "Ollama 启动中，请稍后检查"
+    log_warn "Ollama 启动中，请稍后检查（日志：/tmp/ollama.log）"
   fi
 fi
 
 # =============================================================================
-# 2. 启动 Axum 后端
+# 2. 启动 Axum 后端（开发模式：cargo run，非 release）
 # =============================================================================
 log_step "检查 Axum 后端服务..."
 if lsof -i :8790 >/dev/null 2>&1; then
   log_info "Axum 后端已在运行（端口 8790）"
 else
-  log_info "启动 Axum 后端..."
+  log_info "启动 Axum 后端（cargo run，开发模式）..."
   cd "${PROJECT_DIR}/server"
   source "${HOME}/.cargo/env" 2>/dev/null || true
-  nohup cargo run --release >/tmp/relationship-graph-server.log 2>&1 &
+  nohup cargo run >/tmp/relationship-graph-server.log 2>&1 &
   # 等待就绪
   for i in {1..30}; do
     if curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
@@ -69,12 +79,12 @@ else
   if curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
     log_info "Axum 后端已启动"
   else
-    log_warn "Axum 后端启动中，日志：/tmp/relationship-graph-server.log"
+    log_warn "Axum 后端启动中（日志：/tmp/relationship-graph-server.log）"
   fi
 fi
 
 # =============================================================================
-# 3. 启动 Vite 前端
+# 3. 启动 Vite 前端开发服务器（不启动 Caddy）
 # =============================================================================
 log_step "检查 Vite 前端服务..."
 if lsof -i :1420 >/dev/null 2>&1; then
@@ -98,16 +108,18 @@ else
   if curl -s http://localhost:1420 >/dev/null 2>&1; then
     log_info "Vite 前端已启动"
   else
-    log_warn "Vite 前端启动中，日志：/tmp/relationship-graph-frontend.log"
+    log_warn "Vite 前端启动中（日志：/tmp/relationship-graph-frontend.log）"
   fi
 fi
+
+log_info "开发模式不启动 Caddy 反向代理（生产部署请使用 ./scripts/deploy.sh）"
 
 # =============================================================================
 # 状态汇总
 # =============================================================================
 echo ""
 echo "=========================================="
-echo "  服务状态"
+echo "  服务状态（开发模式）"
 echo "=========================================="
 
 if pgrep -x "ollama" >/dev/null; then
@@ -128,9 +140,11 @@ else
   echo "  Vite 前端   http://localhost:1420    [启动中]"
 fi
 
+echo "  Caddy       （开发模式不启动）"
 echo "=========================================="
 echo ""
 echo "开发环境启动完成！"
 echo "  前端访问：http://localhost:1420"
 echo "  API 地址：http://localhost:8790"
+echo "  健康检查：curl http://localhost:8790/api/health"
 echo ""
