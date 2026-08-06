@@ -237,12 +237,26 @@ fn ensure_user_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
         ("role", "TEXT NOT NULL DEFAULT 'user'"),
         ("profile_doc", "TEXT"),
         ("profile_completed", "INTEGER NOT NULL DEFAULT 0"),
+        // 更早期版本的 users 表连时间戳列都没有，登录查询会报 no such column: updated_at
+        ("created_at", "TEXT NOT NULL DEFAULT ''"),
+        ("updated_at", "TEXT NOT NULL DEFAULT ''"),
     ];
     for (name, ddl) in columns {
         if !existing.iter().any(|col| col == name) {
             conn.execute(&format!("ALTER TABLE users ADD COLUMN {} {}", name, ddl), [])?;
             log::info!(target: "db", "schema_migrate_add_column table=users column={}", name);
         }
+    }
+
+    // 回填空时间戳（新增列的存量行为空字符串，老列可能为 NULL）
+    let now = chrono::Utc::now().to_rfc3339();
+    let backfilled = conn.execute(
+        "UPDATE users SET created_at = ?1, updated_at = ?1
+         WHERE COALESCE(created_at, '') = '' OR COALESCE(updated_at, '') = ''",
+        [&now],
+    )?;
+    if backfilled > 0 {
+        log::info!(target: "db", "schema_migrate_backfill_user_timestamps count={}", backfilled);
     }
     Ok(())
 }

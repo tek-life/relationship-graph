@@ -81,6 +81,36 @@ mod tests {
         assert!(index_exists);
     }
 
+    /// 更早期的老库：users 表连 created_at/updated_at 都没有，
+    /// 登录查询 SELECT ... updated_at FROM users 会报 no such column，
+    /// migrate 后必须能按完整结构查询且时间戳非空
+    #[test]
+    fn migrates_ancient_users_table_without_timestamp_columns() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL
+            );
+            INSERT INTO users (id, username, password_hash) VALUES ('u1', 'admin', 'hash');",
+        )
+        .expect("ancient users table");
+
+        schema::migrate(&conn).expect("schema migration on ancient db");
+
+        // 与 db/user.rs 登录查询相同的列集合
+        let (created_at, updated_at): (String, String) = conn
+            .query_row(
+                "SELECT created_at, updated_at FROM users WHERE username = 'admin'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("full users select");
+        assert!(!created_at.is_empty());
+        assert!(!updated_at.is_empty());
+    }
+
     /// 数据完整性修复：早期占位 user_id（'default'）创建的孤儿会话，
     /// 再次 migrate 时应归属到首个真实用户，而不是报错或丢数据
     #[test]
