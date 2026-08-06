@@ -1,0 +1,65 @@
+# =============================================================================
+# 个人关系图谱 - Caddy 反向代理配置
+# 
+# 功能：
+#   - 提供前端静态文件服务（dist/ 目录）
+#   - 反向代理 /api/* 请求到 Axum 后端（localhost:8790）
+#   - SPA fallback：未匹配路径返回 index.html
+#   - PWA Service Worker 禁止缓存（确保更新即时生效）
+#   - 静态资源长缓存（assets/ 目录 immutable）
+#   - JSON 格式访问日志
+#
+# 使用方法：
+#   caddy run --config /home/hfli/personal_ai_workspace/scripts/Caddyfile
+#
+# 或使用 adapt 子命令检查配置：
+#   caddy adapt --config /home/hfli/personal_ai_workspace/scripts/Caddyfile
+#
+# 注意：
+#   - 端口 8080 可通过环境变量覆盖：caddy run --config Caddyfile --listen :9090
+#   - 日志目录需提前创建：sudo mkdir -p /var/log/relationship-graph
+# =============================================================================
+
+:8080 {
+    # 前端静态文件根目录
+    root * /home/hfli/personal_ai_workspace/dist
+
+    # API 反向代理到 Axum 后端
+    reverse_proxy /api/* localhost:8790
+
+    # 静态文件服务
+    file_server
+
+    # SPA fallback（所有未匹配的路径返回 index.html，支持前端路由）
+    try_files {path} /index.html
+
+    # PWA Service Worker 不缓存（开发阶段确保 SW 更新即时生效）
+    @sw path /sw.js
+    header @sw Cache-Control "no-cache"
+
+    # 静态资源长缓存（Vite 构建的 assets/ 带文件哈希，可安全长缓存）
+    @assets path /assets/*
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+
+    # manifest.json 禁止缓存（确保 PWA 配置更新即时生效）
+    @manifest path /manifest.json
+    header @manifest Cache-Control "no-cache"
+
+    # 安全响应头
+    header {
+        # 防止 MIME 类型嗅探
+        X-Content-Type-Options "nosniff"
+        # 防止点击劫持
+        X-Frame-Options "DENY"
+        # XSS 保护
+        X-XSS-Protection "1; mode=block"
+        # 参考 Referrer 策略
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # 日志
+    log {
+        output file /var/log/relationship-graph/access.log
+        format json
+    }
+}
