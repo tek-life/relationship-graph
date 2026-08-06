@@ -477,3 +477,25 @@ pub struct UpdateProfileRequest {
 pub struct UpdateRoleRequest {
     pub role: String,
 }
+
+// === 会话 API 辅助类型 ===
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSessionRequest {
+    pub title: String,
+}
+
+/// 创建会话的 HTTP 请求体（user_id 从 token 中提取）
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionBody {
+    pub title: Option<String>,
+}

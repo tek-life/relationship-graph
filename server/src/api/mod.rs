@@ -24,6 +24,7 @@ use std::time::Instant;
 
 mod admin;
 mod import;
+mod session;
 mod user;
 mod voice;
 
@@ -44,7 +45,8 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/interactions", post(create_interaction))
         .route("/api/entity-mentions", post(create_entity_mention))
         .route("/api/graph", get(get_graph_data))
-        .route("/api/digital-agents", get(list_digital_agents))
+        // 前端获取已激活的数字人列表（需要登录，不需要 admin）
+        .route("/api/digital-agents", get(admin::list_active_digital_agents))
         .route("/api/nlq", post(natural_language_query))
         .route("/api/nlq/multi", post(nlq_multi_handler))
         .route("/api/chat", post(chat_handler))
@@ -60,6 +62,19 @@ pub fn router(state: SharedState) -> Router {
         // 用户认证相关受保护路由
         .route("/api/auth/me", get(user::get_current_user))
         .route("/api/users/profile", put(user::update_profile))
+        // 会话管理相关受保护路由
+        .route(
+            "/api/sessions",
+            get(session::list_sessions).post(session::create_session),
+        )
+        .route(
+            "/api/sessions/:id",
+            put(session::update_session).delete(session::delete_session),
+        )
+        .route(
+            "/api/sessions/:id/messages",
+            get(session::list_messages).post(session::add_message),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     // Admin 路由（需要 admin 角色）
@@ -68,6 +83,33 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/admin/users/:id/role", put(admin::update_user_role))
         .route("/api/admin/invite", post(admin::create_invite))
         .route("/api/admin/invites", get(admin::list_invites))
+        // 数字人管理
+        .route(
+            "/api/admin/digital-agents",
+            get(admin::list_digital_agents).post(admin::create_digital_agent),
+        )
+        .route(
+            "/api/admin/digital-agents/:id",
+            put(admin::update_digital_agent).delete(admin::delete_digital_agent),
+        )
+        // 技能管理
+        .route(
+            "/api/admin/digital-agents/:id/skills",
+            get(admin::list_agent_skills).post(admin::create_agent_skill),
+        )
+        .route(
+            "/api/admin/agent-skills/:id",
+            put(admin::update_agent_skill).delete(admin::delete_agent_skill),
+        )
+        // QA 指令模块管理
+        .route(
+            "/api/admin/qa-modules",
+            get(admin::list_qa_modules).post(admin::create_qa_module),
+        )
+        .route(
+            "/api/admin/qa-modules/:id",
+            put(admin::update_qa_module).delete(admin::delete_qa_module),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
     Router::new()
