@@ -1,14 +1,15 @@
 // 演示数据种子脚本：通过后端 HTTP API 只新增（不改不删）演示联系人/互动/关系，
 // 使首页三条示例 NLQ 查询均有结果。可重复运行（同名演示联系人已存在则跳过）。
 //
-// 运行：RG_SEED_PASSWORD=<主密码> node scripts/seed-demo-data.mjs [baseUrl]
-// 默认打到 http://localhost:8790（正式库）。密码仅用于解锁换取 token，不落盘不打印。
+// 运行：RG_SEED_PASSWORD=<管理员密码> node scripts/seed-demo-data.mjs [baseUrl]
+// 默认打到 http://localhost:8790（正式库）。密码仅用于登录换取 token，不落盘不打印。
 
 const BASE = process.argv[2] ?? process.env.RG_BASE ?? 'http://localhost:8790';
+const USERNAME = process.env.RG_SEED_USERNAME ?? 'admin';
 const PASSWORD = process.env.RG_SEED_PASSWORD;
 
 if (!PASSWORD) {
-  console.error('缺少主密码：请以 RG_SEED_PASSWORD=<主密码> 环境变量运行');
+  console.error('缺少管理员密码：请以 RG_SEED_PASSWORD=<管理员密码> 环境变量运行');
   process.exit(1);
 }
 
@@ -156,8 +157,8 @@ if (!state.initialized) {
   console.error('数据库尚未初始化，为避免误建库，本脚本不会调用 setup，请先在前端完成初始化。');
   process.exit(1);
 }
-const { token } = await req('POST', '/api/auth/unlock', { password: PASSWORD });
-console.log('已解锁数据库');
+const { token } = await req('POST', '/api/auth/login', { username: USERNAME, password: PASSWORD });
+console.log(`已登录（${USERNAME}）`);
 
 // 幂等：已有同名联系人则整体跳过（含其互动/关系）
 const existing = await req('GET', '/api/persons', undefined, token);

@@ -100,7 +100,7 @@ relationship-graph/
 |---|---|---|
 | 项目初始化 / Tauri 启动 | 已完成 | `src-tauri/src/main.rs`、`tauri.conf.json` |
 | 数据库加密（SQLCipher） | 已完成 | `src-tauri/src/db/crypto.rs`、`commands/security.rs` |
-| 主密码 / 密钥链解锁 | 已完成 | `src/components/PasswordGate.tsx`、`services/security.ts`、`security/keychain.rs` |
+| 账号登录 / 密钥文件自动解锁 | 已完成 | `src/components/PasswordGate.tsx`、`services/auth.ts`、`server/src/api/mod.rs` |
 | 联系人 CRUD | 已完成 | `src-tauri/src/db/person.rs`、`commands/person.rs`、`components/PersonForm.tsx` |
 | 关系链路 CRUD | 已完成 | `src-tauri/src/db/relationship.rs`、`commands/relationship.rs`、`components/RelationshipForm.tsx` |
 | 互动记录 CRUD | 已完成 | `src-tauri/src/db/interaction.rs`、`commands/interaction.rs`、`components/InteractionForm.tsx` |
@@ -114,11 +114,11 @@ relationship-graph/
 
 ### 5.1 安全与加密
 
-- 首次启动要求设置主密码，使用 Argon2id 派生 32 字节密钥。
-- Salt 保存到应用数据目录的 `salt.hex`。
-- 派生后的数据库密钥存储到系统密钥链（keyring）。
+- WSL 服务端（当前形态）已去掉主密码：SQLCipher 密钥为随机 32 字节，存于数据目录 `db.key`（0600 权限），服务端启动即自动解锁，无人工解锁步骤。
+- 全新部署 `POST /api/auth/setup` 生成密钥文件、建库并创建 admin 账号；老库用一次性 `POST /api/auth/migrate`（旧主密码）rekey 迁移。
+- 用户体系：邀请制注册、用户名密码登录（Argon2id 哈希），内存 Token（12 小时 TTL）。
 - 数据库使用 SQLCipher 加密，路径：`~/.local/share/relationship-graph/app.db`（Linux）。
-- 启动时优先尝试从密钥链自动解锁，否则要求输入主密码。
+- 历史 Tauri 原型使用主密码 + Argon2id 派生密钥 + 系统密钥链（keyring），已被上述机制取代。
 
 ### 5.2 敏感级别访问控制
 

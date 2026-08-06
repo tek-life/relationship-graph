@@ -48,7 +48,11 @@ fn extract_admin_user_id(
 pub async fn list_users(State(state): State<SharedState>) -> Result<Json<Vec<User>>, ApiError> {
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
-    let users = user_db::list_users(conn)?;
+    let mut users = user_db::list_users(conn)?;
+    // 响应中不携带密码哈希
+    for u in users.iter_mut() {
+        u.password_hash = String::new();
+    }
     log::info!(target: "admin", "list_users count={}", users.len());
     Ok(Json(users))
 }

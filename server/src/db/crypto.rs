@@ -38,6 +38,28 @@ pub fn generate_salt() -> [u8; 16] {
     salt
 }
 
+/// 生成随机数据库密钥（32 字节 hex），存密钥文件用。
+/// 不再由主密码派生：服务端启动时读密钥文件自动解锁。
+pub fn generate_db_key() -> String {
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    log::info!(target: "crypto", "generate_db_key_success");
+    hex::encode(key)
+}
+
+/// 用新密钥重新加密已打开的数据库（SQLCipher PRAGMA rekey）。
+/// 调用前 conn 必须已通过旧密钥验证可读写。
+pub fn rekey_db(conn: &Connection, new_key_hex: &str) -> Result<()> {
+    let started = Instant::now();
+    conn.pragma_update(None, "rekey", new_key_hex)?;
+    log::info!(
+        target: "crypto",
+        "rekey_db_success elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    Ok(())
+}
+
 pub fn open_encrypted_db<P: AsRef<Path>>(path: P, key_hex: &str) -> Result<Connection> {
     let started = Instant::now();
     let path_ref = path.as_ref();

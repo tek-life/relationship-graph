@@ -30,6 +30,40 @@ async fn main() {
 
     let state = Arc::new(AppState::new(data_dir));
 
+    // 启动自动解锁：存在密钥文件即用其打开加密库，无需任何人工解锁步骤。
+    // 密钥文件缺失但库存在（老库）时保持锁定，等待 /api/auth/migrate 一次性迁移。
+    match std::fs::read_to_string(state.key_file_path()) {
+        Ok(key_hex) => {
+            match db::crypto::open_encrypted_db(state.db_path(), key_hex.trim())
+                .and_then(|conn| db::crypto::validate_encrypted_db(&conn).map(|_| conn))
+            {
+                Ok(conn) => {
+                    if let Err(e) = db::schema::migrate(&conn) {
+                        log::error!(target: "server", "startup_migrate_failed error={}", e);
+                    } else {
+                        let mut guard = state.db.lock().expect("db mutex poisoned");
+                        *guard = Some(conn);
+                        log::info!(target: "server", "startup_auto_unlock success");
+                    }
+                }
+                Err(e) => {
+                    log::error!(
+                        target: "server",
+                        "startup_auto_unlock_failed error={}（密钥文件与数据库不匹配，请检查数据目录）",
+                        e
+                    );
+                }
+            }
+        }
+        Err(_) => {
+            log::info!(
+                target: "server",
+                "startup_no_key_file db_exists={}（老库需迁移或全新部署）",
+                state.db_path().exists()
+            );
+        }
+    }
+
     // MVP 阶段面向局域网开放 CORS；对公网暴露前必须收紧为可信域名白名单并启用 HTTPS
     let app = api::router(state)
         .layer(CorsLayer::very_permissive())

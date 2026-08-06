@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { AUTH_EXPIRED_EVENT } from '../services/api';
-import { checkDbState, loadDatabaseFromKeychain, setupDatabase, unlockDatabase } from '../services/security';
+import { migrateLegacy } from '../services/auth';
+import { checkDbState } from '../services/security';
+import AdminSetupForm from './AdminSetupForm';
 import RegisterForm from './RegisterForm';
 import LoginForm from './LoginForm';
 import type { User } from '../types';
@@ -26,13 +28,13 @@ export function loadUser(): User | null {
   }
 }
 
-type GateMode = 'setup' | 'unlock' | 'login' | 'register' | 'ready';
+type GateMode = 'setup-admin' | 'migrate' | 'login' | 'register' | 'ready';
 
 export default function PasswordGate({ children }: Props) {
   const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState<GateMode>('unlock');
-  const [password, setPassword] = useState('');
+  const [mode, setMode] = useState<GateMode>('login');
   const [error, setError] = useState('');
+  const [migratePassword, setMigratePassword] = useState('');
   const [inviteToken] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('invite');
@@ -49,20 +51,13 @@ export default function PasswordGate({ children }: Props) {
 
       try {
         const state = await checkDbState();
-        if (!state.initialized) {
-          setMode('setup');
-          return;
+        if (state.needsMigration) {
+          setMode('migrate');
+        } else if (!state.initialized) {
+          setMode('setup-admin');
+        } else {
+          setMode('login');
         }
-        if (state.unlocked) {
-          setMode('ready');
-          return;
-        }
-        if (state.hasStoredKey) {
-          await loadDatabaseFromKeychain();
-          setMode('ready');
-          return;
-        }
-        setMode('unlock');
       } catch (err) {
         setError(String(err));
       } finally {
@@ -74,28 +69,12 @@ export default function PasswordGate({ children }: Props) {
 
   useEffect(() => {
     const onAuthExpired = () => {
-      setMode('unlock');
-      setPassword('');
-      setError('登录会话已过期，请重新输入主密码解锁。');
+      setMode('login');
+      setError('登录会话已过期，请重新登录。');
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
   }, []);
-
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setError('');
-    try {
-      if (mode === 'setup') {
-        await setupDatabase(password);
-      } else {
-        await unlockDatabase(password);
-      }
-      setMode('ready');
-    } catch (err) {
-      setError(String(err));
-    }
-  };
 
   const handleAuthSuccess = (_token: string, user: User) => {
     saveUser(user);
@@ -108,24 +87,6 @@ export default function PasswordGate({ children }: Props) {
     setMode('ready');
   };
 
-  // 邀请注册流程
-  if (mode === 'register' && inviteToken) {
-    return <RegisterForm inviteToken={inviteToken} onRegistered={handleAuthSuccess} />;
-  }
-
-  // 账号密码登录流程
-  if (mode === 'login') {
-    return (
-      <LoginForm
-        onLoggedIn={handleAuthSuccess}
-        onSwitchToMasterPassword={() => {
-          setMode('unlock');
-          setError('');
-        }}
-      />
-    );
-  }
-
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-600">正在连接服务端...</div>;
   }
@@ -134,43 +95,76 @@ export default function PasswordGate({ children }: Props) {
     return <>{children}</>;
   }
 
+  // 邀请注册流程
+  if (mode === 'register' && inviteToken) {
+    return <RegisterForm inviteToken={inviteToken} onRegistered={handleAuthSuccess} />;
+  }
+
+  // 全新部署：创建管理员账号
+  if (mode === 'setup-admin') {
+    return <AdminSetupForm onCreated={handleAuthSuccess} />;
+  }
+
+  // 老库一次性迁移
+  if (mode === 'migrate') {
+    const handleMigrate = async (event: React.FormEvent) => {
+      event.preventDefault();
+      setError('');
+      try {
+        const res = await migrateLegacy(migratePassword);
+        handleAuthSuccess(res.token, res.user);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    };
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6" style={{ background: 'var(--bg-primary)' }}>
+        <form
+          onSubmit={handleMigrate}
+          className="w-full max-w-md rounded-2xl p-8 shadow-lg"
+          style={{ background: 'var(--bg-card)', boxShadow: '0 4px 24px var(--shadow-color)' }}
+        >
+          <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>系统升级（一次性）</h1>
+          <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
+            检测到旧版本数据库。请输入原主密码完成升级：数据库将改用服务端密钥保管，
+            之后统一使用账号密码登录，主密码同时成为管理员（admin）账号的登录密码。
+          </p>
+          <input
+            className="input mt-6"
+            type="password"
+            placeholder="原主密码"
+            value={migratePassword}
+            onChange={(event) => setMigratePassword(event.target.value)}
+            autoFocus
+          />
+          {error && <p className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+          <button className="btn-primary mt-6 w-full" type="submit">
+            完成升级并登录
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  // 账号密码登录流程
+  if (mode === 'login') {
+    return <LoginForm onLoggedIn={handleAuthSuccess} />;
+  }
+
+  // 兜底：网络错误等
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
-      <form onSubmit={handleSubmit} className="w-full max-w-md rounded-2xl bg-white p-8 shadow-lg">
-        <h1 className="text-2xl font-bold text-slate-900">{mode === 'setup' ? '初始化加密数据库' : '解锁数据库'}</h1>
-        <p className="mt-2 text-sm text-slate-500">
-          {mode === 'setup'
-            ? '请设置主密码。数据将在服务端使用 SQLCipher 加密存储，密码不会明文保存。'
-            : '请输入主密码解锁数据库。'}
-        </p>
-        <input
-          className="input mt-6"
-          type="password"
-          placeholder="主密码"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          autoFocus
-        />
-        {error && <p className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-        <button className="btn-primary mt-6 w-full" type="submit">
-          {mode === 'setup' ? '创建数据库' : '解锁'}
+      <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-lg">
+        <h1 className="text-2xl font-bold text-slate-900">无法连接服务端</h1>
+        <p className="mt-2 text-sm text-red-600">{error}</p>
+        <button
+          className="btn-primary mt-6 w-full"
+          type="button"
+          onClick={() => window.location.reload()}
+        >
+          重试
         </button>
-
-        {/* 仅在解锁模式下，且数据库已初始化时，显示切换到账号密码登录的入口 */}
-        {mode === 'unlock' && (
-          <button
-            type="button"
-            className="mt-4 w-full text-center text-sm"
-            style={{ color: 'var(--accent-color)' }}
-            onClick={() => {
-              setMode('login');
-              setError('');
-            }}
-          >
-            使用账号密码登录
-          </button>
-        )}
-      </form>
+      </div>
     </div>
   );
 }

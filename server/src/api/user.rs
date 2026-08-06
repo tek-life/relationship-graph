@@ -83,7 +83,7 @@ pub async fn register(
     let password_hash =
         auth::hash_password(&req.password).map_err(ApiError::internal)?;
 
-    let user = user_db::create_user(
+    let mut user = user_db::create_user(
         conn,
         CreateUserRequest {
             username: username.to_string(),
@@ -111,6 +111,8 @@ pub async fn register(
         user.role
     );
 
+    // 响应中不携带密码哈希
+    user.password_hash = String::new();
     Ok(Json(RegisterResponse { token, user }))
 }
 
@@ -128,7 +130,7 @@ pub async fn login(
     let conn = get_conn(&guard)?;
 
     // 1. 按用户名查找用户
-    let user = user_db::get_user_by_username(conn, username)?.ok_or_else(|| ApiError {
+    let mut user = user_db::get_user_by_username(conn, username)?.ok_or_else(|| ApiError {
         status: StatusCode::UNAUTHORIZED,
         message: "用户名或密码错误".to_string(),
     })?;
@@ -160,6 +162,8 @@ pub async fn login(
         user.role
     );
 
+    // 响应中不携带密码哈希
+    user.password_hash = String::new();
     Ok(Json(LoginResponse { token, user }))
 }
 
@@ -173,11 +177,13 @@ pub async fn get_current_user(
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
 
-    let user = user_db::get_user_by_id(conn, &user_id)?.ok_or_else(|| ApiError {
+    let mut user = user_db::get_user_by_id(conn, &user_id)?.ok_or_else(|| ApiError {
         status: StatusCode::NOT_FOUND,
         message: "用户不存在".to_string(),
     })?;
 
+    // 响应中不携带密码哈希
+    user.password_hash = String::new();
     Ok(Json(user))
 }
 

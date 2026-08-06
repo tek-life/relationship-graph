@@ -192,9 +192,9 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 
 <h3>1. 认证与安全 <span class="badge ok">✅ 已完成</span></h3>
 <ul>
-  <li>首次使用设置主密码，初始化 SQLCipher 加密数据库</li>
-  <li>主密码解锁 / 锁定数据库，Token 会话（12 小时有效期，内存存储）</li>
-  <li>Argon2id 密钥派生，数据库整库加密</li>
+  <li>首次使用通过 setup 创建 admin 账号并初始化 SQLCipher 加密数据库（密钥文件机制，服务端启动自动解锁，无人工解锁步骤）</li>
+  <li>用户名密码登录，Token 会话（12 小时有效期，内存存储）；老库可一次性迁移（<code>/api/auth/migrate</code>）</li>
+  <li>Argon2id 密码哈希，数据库整库加密（随机密钥存于 0600 权限的 <code>db.key</code>）</li>
   <li>结构化日志遵循脱敏原则：不记录密码、Token、姓名、电话、内容原文</li>
 </ul>
 
@@ -339,7 +339,7 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 <h3>14. 服务端 API 一览</h3>
 <table>
   <tr><th>分类</th><th>端点</th></tr>
-  <tr><td>公开</td><td><code>GET /api/health</code>、<code>GET /api/auth/state</code>、<code>POST /api/auth/setup</code>、<code>POST /api/auth/unlock</code></td></tr>
+  <tr><td>公开</td><td><code>GET /api/health</code>、<code>GET /api/auth/state</code>、<code>POST /api/auth/setup</code>、<code>POST /api/auth/migrate</code>（一次性）、<code>POST /api/auth/register</code>、<code>POST /api/auth/login</code></td></tr>
   <tr><td>联系人</td><td><code>GET/POST /api/persons</code>、<code>GET/PUT/DELETE /api/persons/:id</code>、<code>GET /api/persons-search</code></td></tr>
   <tr><td>关系</td><td><code>GET/POST /api/relationships</code>、<code>GET /api/persons/:id/relationships</code></td></tr>
   <tr><td>关系推断 🆕</td><td><code>POST /api/relationships/infer</code>、<code>GET /api/relationships/pending</code>、<code>POST /api/relationships/:id/confirmation</code></td></tr>
@@ -347,7 +347,7 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
   <tr><td>图谱/查询</td><td><code>GET /api/graph</code>、<code>POST /api/nlq</code></td></tr>
   <tr><td>语音 🆕</td><td><code>POST /api/voice/transcribe</code></td></tr>
   <tr><td>导入</td><td><code>POST /api/import/preview</code>、<code>POST /api/import/persons</code></td></tr>
-  <tr><td>会话</td><td><code>POST /api/auth/lock</code></td></tr>
+  <tr><td>当前用户</td><td><code>GET /api/auth/me</code></td></tr>
 </table>
 
 <hr>
@@ -360,7 +360,7 @@ npm run dev        # Vite 开发服务器，监听 0.0.0.0:1420</code></pre>
 
 <h3>推荐演示动线</h3>
 <ol>
-  <li><strong>解锁</strong>：后端已重启（Token 仅内存存储，重启后旧会话失效），演示前先用主密码解锁一次</li>
+  <li><strong>登录</strong>：后端重启即自动解锁数据库（Token 仅内存存储，重启后旧会话失效），演示前用账号密码登录一次</li>
   <li><strong>首页多模态查询</strong>：依次演示文字 / 语音 / 粘贴截图 OCR 三种输入，三个首页示例查询均有结果：</li>
 </ol>
 <table>

@@ -31,6 +31,26 @@ export async function login(username: string, password: string): Promise<AuthRes
   return res;
 }
 
+/** 全新部署初始化：创建管理员账号（服务端同时生成密钥文件与加密库） */
+export async function setupAdmin(username: string, password: string): Promise<AuthResponse> {
+  const res = await api<AuthResponse>('/api/auth/setup', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+  setToken(res.token);
+  return res;
+}
+
+/** 老库一次性迁移：用旧主密码 rekey 为服务端密钥文件，admin 密码对齐为主密码 */
+export async function migrateLegacy(password: string): Promise<AuthResponse> {
+  const res = await api<AuthResponse>('/api/auth/migrate', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
+  setToken(res.token);
+  return res;
+}
+
 /** 获取当前登录用户信息 */
 export async function getCurrentUser(): Promise<User> {
   return api<User>('/api/auth/me');

@@ -53,13 +53,13 @@ const records = XLSX.utils.sheet_to_json(sheet, { raw: false, defval: '' });
 const rows = records.map(normalize);
 console.log(`解析行数: ${rows.length}`);
 
-// 2. 解锁测试库
+// 2. 获取测试库 token（未初始化则 setup 建 admin，否则直接登录）
 const state = await fetch(`${BASE}/api/auth/state`).then((r) => r.json());
 const password = 'import-test-123';
 const { token } = state.initialized
-  ? await post('/api/auth/unlock', { password })
-  : await post('/api/auth/setup', { password });
-console.log('已解锁测试库');
+  ? await post('/api/auth/login', { username: 'admin', password })
+  : await post('/api/auth/setup', { username: 'admin', password });
+console.log('测试库就绪（admin 已登录）');
 
 // 3. 预检
 let t0 = Date.now();

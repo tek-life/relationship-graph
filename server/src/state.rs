@@ -27,4 +27,10 @@ impl AppState {
     pub fn salt_path(&self) -> PathBuf {
         self.data_dir.join("salt.hex")
     }
+
+    /// SQLCipher 密钥文件（hex 编码）。存在即表示可启动时自动解锁；
+    /// 老库（仅 salt.hex）需先走 /api/auth/migrate 一次性迁移生成。
+    pub fn key_file_path(&self) -> PathBuf {
+        self.data_dir.join("db.key")
+    }
 }

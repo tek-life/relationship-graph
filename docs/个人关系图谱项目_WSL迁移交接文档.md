@@ -166,6 +166,14 @@ bundle targets: nsis
 - 敏感级别：低 / 中 / 高。
 - 高敏感数据默认脱敏，高敏感详情查看需要二次确认。
 
+当前 WSL 服务端实现（已替代上述历史设计）：
+
+- 不再有"主密码"概念：服务端生成随机 32 字节 SQLCipher 密钥，存于数据目录的 `db.key`（0600 权限），启动即自动解锁。
+- 全新部署走 `POST /api/auth/setup`：生成密钥文件、建库并创建 admin 账号。
+- 老库（主密码派生密钥）走一次性 `POST /api/auth/migrate`：验证旧主密码后 rekey 为密钥文件，同时把 admin 密码对齐为该主密码。
+- 用户体系：邀请制注册（`/api/auth/register` + invite token）、用户名密码登录（`/api/auth/login`）、内存 Token（12 小时）。
+- 密码使用 Argon2id 哈希；所有认证响应不携带 password_hash。
+
 ## 5. 已实现或设计过的数据模型
 
 ### 5.1 Person 联系人

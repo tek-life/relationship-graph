@@ -252,36 +252,36 @@ fi
 # =============================================================================
 log_info "步骤 11/12: 初始化 SQLite 加密数据库"
 
-# 获取主密码
+# 获取管理员密码（setup 时主密码即 admin 账号密码；迁移后统一账号登录）
 if [ -z "${RG_INIT_PASSWORD:-}" ]; then
-  read -rsp "请输入主密码（至少8位）: " RG_INIT_PASSWORD
+  read -rsp "请输入管理员密码（至少8位）: " RG_INIT_PASSWORD
   echo ""
 fi
 
 if [ "${#RG_INIT_PASSWORD}" -lt 8 ]; then
-  log_error "主密码至少需要 8 个字符"
+  log_error "密码至少需要 8 个字符"
   exit 1
 fi
 
-# 尝试 setup；若已初始化则改用 unlock
+# 尝试 setup（全新部署会生成密钥文件并创建 admin）；若已初始化则改用 admin 登录
 SETUP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8790/api/auth/setup \
   -H "Content-Type: application/json" \
-  -d "{\"password\":\"${RG_INIT_PASSWORD}\"}")
+  -d "{\"username\":\"admin\",\"password\":\"${RG_INIT_PASSWORD}\"}")
 SETUP_HTTP_CODE=$(echo "$SETUP_RESPONSE" | tail -1)
 SETUP_BODY=$(echo "$SETUP_RESPONSE" | sed '$d')
 
 if [ "$SETUP_HTTP_CODE" = "200" ]; then
-  log_info "数据库初始化成功"
+  log_info "数据库初始化成功（已创建 admin 账号）"
 elif [ "$SETUP_HTTP_CODE" = "400" ] || [ "$SETUP_HTTP_CODE" = "409" ]; then
-  log_info "数据库已初始化，尝试解锁..."
-  UNLOCK_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8790/api/auth/unlock \
+  log_info "数据库已初始化，尝试 admin 登录..."
+  LOGIN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8790/api/auth/login \
     -H "Content-Type: application/json" \
-    -d "{\"password\":\"${RG_INIT_PASSWORD}\"}")
-  UNLOCK_HTTP_CODE=$(echo "$UNLOCK_RESPONSE" | tail -1)
-  if [ "$UNLOCK_HTTP_CODE" = "200" ]; then
-    log_info "数据库解锁成功"
+    -d "{\"username\":\"admin\",\"password\":\"${RG_INIT_PASSWORD}\"}")
+  LOGIN_HTTP_CODE=$(echo "$LOGIN_RESPONSE" | tail -1)
+  if [ "$LOGIN_HTTP_CODE" = "200" ]; then
+    log_info "admin 登录成功"
   else
-    log_error "数据库解锁失败（HTTP ${UNLOCK_HTTP_CODE}）"
+    log_error "admin 登录失败（HTTP ${LOGIN_HTTP_CODE}）"
     exit 1
   fi
 else
