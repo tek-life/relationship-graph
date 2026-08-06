@@ -192,7 +192,6 @@ export default function AgentManager() {
   };
 
   if (loading) return <LoadingSpinner text="正在加载数字人列表…" />;
-  if (error && editingId === null) <ErrorBanner message={error} />;
 
   return (
     <div className="space-y-4">
