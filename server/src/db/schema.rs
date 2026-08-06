@@ -1,3 +1,4 @@
+use crate::db::agent_config;
 use rusqlite::Connection;
 use std::time::Instant;
 
@@ -186,7 +187,8 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     }
     result?;
     ensure_relationship_columns(conn)?;
-    ensure_person_columns(conn)
+    ensure_person_columns(conn)?;
+    agent_config::seed_defaults(conn)
 }
 
 /// 老库升级：为 persons 表补充学校/项目列（v1.4 推断规则扩展）

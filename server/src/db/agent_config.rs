@@ -228,3 +228,53 @@ fn map_qa(row: &Row) -> Result<QaInstructionModule, rusqlite::Error> {
         updated_at: row.get(9)?,
     })
 }
+
+// === 默认数据初始化 ===
+
+/// 当 digital_agents 表为空时，自动插入默认数字人和 QA 指令模块。
+/// 在 schema::migrate 完成后调用。
+pub fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // 检查 digital_agents 表是否已有数据
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM digital_agents",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if count > 0 {
+        log::info!(target: "db", "seed_defaults_skip reason=already_populated count={}", count);
+        return Ok(());
+    }
+
+    log::info!(target: "db", "seed_defaults_start");
+
+    // 默认数字人：联系人管家
+    conn.execute(
+        "INSERT OR IGNORE INTO digital_agents (id, display_name, mention, aliases, route_mode, description, skill_description, is_active, sort_order, created_at, updated_at)
+         VALUES ('contact_manager', '联系人管家', '@联系人管家', '[\"@数字管家\",\"@contact-manager\"]', 'relationship', '管理联系人的增删改查，维护关系网络', '联系人查询、新增、更新、路径规划', 1, 0, datetime('now'), datetime('now'))",
+        [],
+    )?;
+    log::info!(target: "db", "seed_defaults contact_manager inserted");
+
+    // 默认 QA 指令模块
+    conn.execute(
+        "INSERT OR IGNORE INTO qa_instruction_modules (id, name, description, system_prompt, guidance_text, sort_order, trigger_scenario, is_active, created_at, updated_at)
+         VALUES ('hero_journey', '英雄之旅复盘', '深入的人生复盘引导', '你是专业的人生教练，请带领我完成一次深入的英雄之旅复盘。请一步一步来，每次只进行一个步骤的引导，等我详细回答或反馈完成后，再像专业教练一样引导我进入下一步。', '英雄之旅复盘引导', 0, 'new_user', 1, datetime('now'), datetime('now'))",
+        [],
+    )?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO qa_instruction_modules (id, name, description, system_prompt, guidance_text, sort_order, trigger_scenario, is_active, created_at, updated_at)
+         VALUES ('munger_thinking', '芒格多元思维', '运用查理·芒格的多元思维模式进行批判性人生梳理', '接下来请你运用查理·芒格的多元思维模式，对我进行批判性的人生梳理：首先运用逆向思维分析到底是什么在毁掉我、消耗我的精力；然后从第一性原理出发帮我打破应该的束缚找到真正的想要；接着运用概率思维和复利思维帮我接受不确定性并找到值得长期投入的方向；最后运用系统思维来设计我的人生系统启动个人成长的飞轮效应。请继续采用一对一的对话模式一个问题一个问题地询问根据我的回答深入思考后再提出下一个问题。', '芒格多元思维模式梳理', 1, 'new_user', 1, datetime('now'), datetime('now'))",
+        [],
+    )?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO qa_instruction_modules (id, name, description, system_prompt, guidance_text, sort_order, trigger_scenario, is_active, created_at, updated_at)
+         VALUES ('profile_generate', '个人画像生成', '根据对话生成完整的个人画像文档', '根据以上所有对话内容，保留我的原始语言表达方式和个性化表述，生成一份完整的个人画像文档，确保能够准确反映我的价值观、思维方式和人生目标。', '个人画像文档生成', 2, 'new_user', 1, datetime('now'), datetime('now'))",
+        [],
+    )?;
+
+    log::info!(target: "db", "seed_defaults_complete qa_modules=3");
+    Ok(())
+}

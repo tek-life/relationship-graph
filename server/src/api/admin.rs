@@ -1,11 +1,15 @@
-//! Admin 管理 API：用户列表、角色变更、邀请令牌管理。
-//! 所有路由需要 admin 角色（由 require_admin 中间件保护）。
+//! Admin 管理 API：用户列表、角色变更、邀请令牌管理、数字人/技能/QA 模块 CRUD。
+//! Admin 路由由 require_admin 中间件保护；list_active_digital_agents 为公开接口。
 
-use crate::db::{get_conn, user as user_db};
+use crate::db::{agent_config, get_conn, user as user_db};
 use crate::state::SharedState;
-use crate::types::{CreateInviteTokenRequest, InviteToken, UpdateRoleRequest, User};
+use crate::types::{
+    AgentSkill, CreateAgentSkillRequest, CreateDigitalAgentRequest,
+    CreateInviteTokenRequest, CreateQaInstructionModuleRequest, DigitalAgent,
+    InviteToken, QaInstructionModule, UpdateRoleRequest, User,
+};
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use chrono::Utc;
 use rand::RngCore;
@@ -105,4 +109,180 @@ pub async fn list_invites(
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
     Ok(Json(user_db::list_invites(conn)?))
+}
+
+// ============================================================
+// 数字人管理 (Admin CRUD)
+// ============================================================
+
+/// GET /api/admin/digital-agents — 列出所有数字人（含已禁用）
+pub async fn list_digital_agents(
+    State(state): State<SharedState>,
+) -> Result<Json<Vec<DigitalAgent>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let agents = agent_config::list_digital_agents(conn)?;
+    log::info!(target: "admin", "list_digital_agents count={}", agents.len());
+    Ok(Json(agents))
+}
+
+/// POST /api/admin/digital-agents — 创建数字人
+pub async fn create_digital_agent(
+    State(state): State<SharedState>,
+    Json(req): Json<CreateDigitalAgentRequest>,
+) -> Result<Json<DigitalAgent>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let agent = agent_config::create_digital_agent(conn, req)?;
+    log::info!(target: "admin", "create_digital_agent id={}", agent.id);
+    Ok(Json(agent))
+}
+
+/// PUT /api/admin/digital-agents/:id — 更新数字人
+pub async fn update_digital_agent(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateDigitalAgentRequest>,
+) -> Result<Json<()>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    agent_config::update_digital_agent(conn, &id, req)?;
+    log::info!(target: "admin", "update_digital_agent id={}", id);
+    Ok(Json(()))
+}
+
+/// DELETE /api/admin/digital-agents/:id — 删除数字人
+pub async fn delete_digital_agent(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    agent_config::delete_digital_agent(conn, &id)?;
+    log::info!(target: "admin", "delete_digital_agent id={}", id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================
+// 技能管理 (Admin CRUD)
+// ============================================================
+
+/// GET /api/admin/digital-agents/:id/skills — 列出指定数字人的技能
+pub async fn list_agent_skills(
+    State(state): State<SharedState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Vec<AgentSkill>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let skills = agent_config::list_agent_skills(conn, &agent_id)?;
+    log::info!(target: "admin", "list_agent_skills agent_id={} count={}", agent_id, skills.len());
+    Ok(Json(skills))
+}
+
+/// POST /api/admin/digital-agents/:id/skills — 为数字人创建技能
+pub async fn create_agent_skill(
+    State(state): State<SharedState>,
+    Path(agent_id): Path<String>,
+    Json(mut req): Json<CreateAgentSkillRequest>,
+) -> Result<Json<AgentSkill>, ApiError> {
+    // 强制使用路径中的 agent_id，覆盖请求体中的值
+    req.agent_id = agent_id;
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let skill = agent_config::create_agent_skill(conn, req)?;
+    log::info!(target: "admin", "create_agent_skill id={}", skill.id);
+    Ok(Json(skill))
+}
+
+/// PUT /api/admin/agent-skills/:id — 更新技能
+pub async fn update_agent_skill(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateAgentSkillRequest>,
+) -> Result<Json<()>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    agent_config::update_agent_skill(conn, &id, req)?;
+    log::info!(target: "admin", "update_agent_skill id={}", id);
+    Ok(Json(()))
+}
+
+/// DELETE /api/admin/agent-skills/:id — 删除技能
+pub async fn delete_agent_skill(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    agent_config::delete_agent_skill(conn, &id)?;
+    log::info!(target: "admin", "delete_agent_skill id={}", id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================
+// QA 指令模块管理 (Admin CRUD)
+// ============================================================
+
+/// GET /api/admin/qa-modules — 列出所有 QA 模块
+pub async fn list_qa_modules(
+    State(state): State<SharedState>,
+) -> Result<Json<Vec<QaInstructionModule>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let modules = agent_config::list_qa_modules(conn)?;
+    log::info!(target: "admin", "list_qa_modules count={}", modules.len());
+    Ok(Json(modules))
+}
+
+/// POST /api/admin/qa-modules — 创建 QA 模块
+pub async fn create_qa_module(
+    State(state): State<SharedState>,
+    Json(req): Json<CreateQaInstructionModuleRequest>,
+) -> Result<Json<QaInstructionModule>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let module = agent_config::create_qa_module(conn, req)?;
+    log::info!(target: "admin", "create_qa_module id={}", module.id);
+    Ok(Json(module))
+}
+
+/// PUT /api/admin/qa-modules/:id — 更新 QA 模块
+pub async fn update_qa_module(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateQaInstructionModuleRequest>,
+) -> Result<Json<()>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    agent_config::update_qa_module(conn, &id, req)?;
+    log::info!(target: "admin", "update_qa_module id={}", id);
+    Ok(Json(()))
+}
+
+/// DELETE /api/admin/qa-modules/:id — 删除 QA 模块
+pub async fn delete_qa_module(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    agent_config::delete_qa_module(conn, &id)?;
+    log::info!(target: "admin", "delete_qa_module id={}", id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================
+// 公开接口：前端获取已激活的数字人列表（需要登录，但不需要 admin）
+// ============================================================
+
+/// GET /api/digital-agents — 仅返回 is_active=true 的数字人
+pub async fn list_active_digital_agents(
+    State(state): State<SharedState>,
+) -> Result<Json<Vec<DigitalAgent>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let agents = agent_config::list_digital_agents(conn)?;
+    let active: Vec<_> = agents.into_iter().filter(|a| a.is_active).collect();
+    log::info!(target: "agent_config", "list_active_digital_agents count={}", active.len());
+    Ok(Json(active))
 }

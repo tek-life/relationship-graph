@@ -1,8 +1,8 @@
 //! HTTP API 层：对应原 Tauri Commands，统一 JSON 错误响应与鉴权。
 //! 日志遵循脱敏原则：不记录密码、token、姓名、电话及内容原文。
 
-use crate::db::crypto::{derive_key, generate_salt, open_encrypted_db, validate_encrypted_db};
-use crate::db::{agent_config, get_conn, interaction, person, relationship, schema, user as user_db};
+use crate::db::{crypto::{derive_key, generate_salt, open_encrypted_db, validate_encrypted_db},
+    get_conn, interaction, person, relationship, schema, user as user_db};
 use crate::nlq::{self, NlqRequest, NlqResult};
 use crate::security::auth;
 use crate::security::sensitivity;
@@ -10,7 +10,7 @@ use crate::state::SharedState;
 use crate::types::{
     ChatRequest, ChatResponse, CreateUserRequest,
     CreateEntityMentionRequest, CreateInteractionRequest, CreatePersonRequest,
-    CreateRelationshipRequest, DigitalAgent, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
+    CreateRelationshipRequest, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
     NlqConfirmRequest, NlqMultiRequest, NlqResponse, Person, Relationship,
 };
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
@@ -590,16 +590,6 @@ async fn get_graph_data(State(state): State<SharedState>) -> Result<Json<GraphDa
         started.elapsed().as_millis()
     );
     Ok(Json(GraphData { nodes, edges }))
-}
-
-// ---------- Digital Agents ----------
-
-async fn list_digital_agents(State(state): State<SharedState>) -> Result<Json<Vec<DigitalAgent>>, ApiError> {
-    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
-    let conn = get_conn(&guard)?;
-    let agents = agent_config::list_digital_agents(conn)?;
-    log::info!(target: "agent_config", "list_digital_agents_success count={}", agents.len());
-    Ok(Json(agents))
 }
 
 // ---------- NLQ ----------
