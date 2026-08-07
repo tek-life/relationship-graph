@@ -1,0 +1,51 @@
+# =============================================================================
+# relationship-graph.service —— Axum 后端（端口 8790）systemd 用户级 unit 模板
+#
+# 与 scripts/server-init.sh 中生成的 ECS unit 保持同名同语义（本机路径不同）。
+#
+# 安装路径（用户级，勿放 /etc/systemd/system）：
+#   ~/.config/systemd/user/relationship-graph.service
+#
+# 本机（WSL）安装示例：
+#   mkdir -p ~/.config/systemd/user
+#   # 先把下方 __PROJECT_DIR__ 替换为实际项目路径再复制：
+#   sed "s|__PROJECT_DIR__|/home/hfli/personal_ai_workspace|g" \
+#     scripts/systemd/relationship-graph.service.example \
+#     > ~/.config/systemd/user/relationship-graph.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now relationship-graph
+#   loginctl enable-linger $USER        # 注销后仍保持服务（需 sudo 或管理员）
+#
+# 常用命令：
+#   systemctl --user status  relationship-graph
+#   systemctl --user restart relationship-graph
+#   journalctl --user -u relationship-graph -f
+#
+# 说明：
+#   - Restart=always + RestartSec=3：任何退出（含 kill -9/OOM）3 秒后自动拉起；
+#     systemd 255 默认 StartLimitBurst=5/StartLimitIntervalSec=10s，短时间内
+#     连续失败 5 次会进入 failed 停止重试（防雪崩），无需额外配置。
+#   - 日志沿用追加写 server/server.log（append: 前缀需 systemd >= 240，
+#     本机 255 / ECS Ubuntu 24.04 均满足）；备份轮转请自行 logrotate/cron。
+#   - 云端 API Key 不写在本文件：服务端缺省自动读取
+#     ~/.config/rg-cloud-api-key；如需覆盖可在下方追加
+#     Environment=RG_CLOUD_BASE_URL=... 等（严禁把 Key 写进 unit 或提交仓库）。
+# =============================================================================
+
+[Unit]
+Description=Relationship Graph Axum Server (port 8790)
+After=network-online.target
+
+[Service]
+ExecStart=__PROJECT_DIR__/server/target/release/relationship-graph-server
+WorkingDirectory=__PROJECT_DIR__/server
+Environment=RG_PORT=8790
+Environment=RG_LLM_BACKEND=cloud
+Environment=RG_SKILL_BUDGET_CHARS=8000
+Restart=always
+RestartSec=3
+StandardOutput=append:__PROJECT_DIR__/server/server.log
+StandardError=append:__PROJECT_DIR__/server/server.log
+
+[Install]
+WantedBy=default.target
