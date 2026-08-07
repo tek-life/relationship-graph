@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { routeQuery } from '../services/chatRouter';
 import { nlqConfirm } from '../services/db';
+import { getDigitalAgentById } from '../services/digitalAgents';
 import { resolveTextDisplay } from '../services/contentPolicy';
 import { streamChat, type StreamStep } from '../services/stream';
 import * as sessionApi from '../services/session';
@@ -123,6 +124,45 @@ function writeLastSessionId(userId: string | null | undefined, sessionId: string
   }
 }
 
+/** localStorage key 前缀：记录每个会话最近一次被 @ 的数字人（粘性 agentId） */
+const LAST_AGENT_KEY_PREFIX = 'relationship-graph:last-agent';
+
+function lastAgentKey(sessionId: string): string {
+  return `${LAST_AGENT_KEY_PREFIX}:${sessionId}`;
+}
+
+function readLastAgentId(sessionId: string | null): string | null {
+  if (!sessionId) return null;
+  try {
+    return localStorage.getItem(lastAgentKey(sessionId));
+  } catch {
+    return null;
+  }
+}
+
+/** agentId 为 null 时清除记录（如删除会话时）；localStorage 不可用时静默降级 */
+function writeLastAgentId(sessionId: string | null | undefined, agentId: string | null): void {
+  if (!sessionId) return;
+  try {
+    if (agentId) {
+      localStorage.setItem(lastAgentKey(sessionId), agentId);
+    } else {
+      localStorage.removeItem(lastAgentKey(sessionId));
+    }
+  } catch {
+    // 静默降级，不影响聊天主流程
+  }
+}
+
+/**
+ * 判断数字人是否可参与粘性延续。
+ * relationship 路由模式（如联系人管家）无 SKILL，仅用于路由到 NLQ 链路，
+ * 不是对话型数字人，不参与粘性记录；其后续无 mention 消息应走普通自动路由。
+ */
+function isStickyEligible(agentId: string): boolean {
+  return getDigitalAgentById(agentId)?.routeMode !== 'relationship';
+}
+
 /** 将后端 ChatMessage 转换为前端显示消息 */
 function toDisplayMessage(msg: ChatMessage): ChatDisplayMessage {
   let metadata: Record<string, unknown> | null = null;
@@ -157,6 +197,8 @@ export function useChat(userId?: string | null): UseChatReturn {
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
+  /** 当前会话的粘性 agentId（最近一次被 @ 的数字人，未显式 mention 时沿用） */
+  const [stickyAgentId, setStickyAgentId] = useState<string | null>(null);
   const currentSessionRef = useRef<string | null>(null);
   /** 当前流式请求的中止控制器 */
   const abortRef = useRef<AbortController | null>(null);
@@ -170,6 +212,11 @@ export function useChat(userId?: string | null): UseChatReturn {
   // 保持 ref 同步
   useEffect(() => {
     currentSessionRef.current = currentSessionId;
+  }, [currentSessionId]);
+
+  // 切换/恢复会话时同步恢复该会话的粘性 agentId
+  useEffect(() => {
+    setStickyAgentId(readLastAgentId(currentSessionId));
   }, [currentSessionId]);
 
   // 持久化当前会话 ID 到 localStorage（null 时清除），供下次进入聊天页恢复
@@ -252,6 +299,8 @@ export function useChat(userId?: string | null): UseChatReturn {
   const deleteSession = useCallback(
     async (sessionId: string) => {
       await sessionApi.deleteSession(sessionId);
+      // 清理该会话的粘性 agentId 记录
+      writeLastAgentId(sessionId, null);
       const remaining = sessions.filter((s) => s.id !== sessionId);
       setSessions(remaining);
 
@@ -543,6 +592,14 @@ export function useChat(userId?: string | null): UseChatReturn {
       agentId?: string | null,
       activeAgentIds?: string[],
     ): Promise<ChatRouterResponse | null> => {
+      // 粘性 agentId：未显式 @ 时沿用该会话最近一次被 @ 的对话型数字人
+      // （校验其仍存在；relationship 模式如联系人管家不参与粘性）
+      const sticky =
+        !agentId && stickyAgentId && isStickyEligible(stickyAgentId)
+          ? getDigitalAgentById(stickyAgentId)
+          : undefined;
+      const effectiveAgentId = agentId ?? sticky?.id;
+
       // 确保有活跃会话；createSession 失败时需要走统一的错误提示，不能静默抛出
       let sessionId = currentSessionRef.current;
 
@@ -554,7 +611,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       };
       setLoading(true);
       setError('');
-      lastRequestRef.current = { text, agentId, activeAgentIds };
+      lastRequestRef.current = { text, agentId: effectiveAgentId, activeAgentIds };
 
       try {
         if (!sessionId) {
@@ -567,11 +624,27 @@ export function useChat(userId?: string | null): UseChatReturn {
         // 持久化用户消息到后端
         await sessionApi.addMessage(sessionId!, 'user', text);
 
-        // 联系人管家：NLQ 同步分支；其余走 SSE 流式
-        if (agentId === 'contact_manager') {
-          return await runNlqRequest(sessionId!, text, agentId, activeAgentIds);
+        // 更新该会话的粘性记录：
+        // - 显式 @ 对话型数字人：写入新粘性；
+        // - 显式 @ relationship 模式（如联系人管家）：不记录且清空旧粘性，
+        //   下条无 mention 消息回归普通自动路由
+        if (agentId) {
+          if (isStickyEligible(agentId)) {
+            if (agentId !== stickyAgentId) {
+              writeLastAgentId(sessionId, agentId);
+              setStickyAgentId(agentId);
+            }
+          } else if (stickyAgentId) {
+            writeLastAgentId(sessionId, null);
+            setStickyAgentId(null);
+          }
         }
-        await runStreamRequest(sessionId!, text, agentId, activeAgentIds);
+
+        // 联系人管家：NLQ 同步分支；其余走 SSE 流式
+        if (effectiveAgentId === 'contact_manager') {
+          return await runNlqRequest(sessionId!, text, effectiveAgentId, activeAgentIds);
+        }
+        await runStreamRequest(sessionId!, text, effectiveAgentId, activeAgentIds);
         return null;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -588,7 +661,7 @@ export function useChat(userId?: string | null): UseChatReturn {
         setLoading(false);
       }
     },
-    [runNlqRequest, runStreamRequest],
+    [runNlqRequest, runStreamRequest, stickyAgentId],
   );
 
   // 停止流式生成（中止后保留已生成内容并按普通消息落库）
