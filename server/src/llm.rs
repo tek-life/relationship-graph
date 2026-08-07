@@ -301,7 +301,13 @@ pub async fn general_chat_stream(
     // 客户端断开时 Abortable 包装使流取消。
     let rig_stream = match tokio::time::timeout(timeout, model.stream(request)).await {
         Ok(Ok(stream)) => stream,
-        Ok(Err(e)) => return Err(format!("Ollama request failed: {}", e)),
+        Ok(Err(e)) => {
+            return Err(format!(
+                "Ollama 请求失败（请确认 Ollama 服务正在运行且地址 {} 可达）：{}",
+                ollama_url(),
+                e
+            ))
+        }
         Err(_) => return Err(format!(
             "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
             model_name,
