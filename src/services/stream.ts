@@ -7,7 +7,7 @@
  * - step：{"stage":"routing|llm_call","detail":"..."}
  * - thinking_delta：{"text":"..."}（模型推理增量）
  * - text_delta：{"text":"..."}（回答增量）
- * - done：{"usage":{"input":N,"output":N}|null,"backend":"rig"|"legacy"}
+  * - done：{"usage":{"input":N,"output":N}|null,"backend":"rig"|"cloud"|"legacy"}
  * - error：{"message":"..."}
  *
  * 实现方式：fetch + ReadableStream 手工解析 SSE（按 \n\n 分帧，
@@ -24,7 +24,7 @@ export interface StreamStep {
 
 export interface StreamDone {
   usage: { input: number; output: number } | null;
-  backend: 'rig' | 'legacy';
+  backend: 'rig' | 'cloud' | 'legacy';
 }
 
 export interface StreamChatCallbacks {

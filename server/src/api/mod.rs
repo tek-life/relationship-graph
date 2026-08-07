@@ -812,10 +812,12 @@ enum ChatStreamPhase {
     End,
 }
 
-/// 从 rig 事件流取下一条 SSE 事件；流耗尽时补发 done（usage=null）。
+/// 从 rig/cloud 事件流取下一条 SSE 事件；流耗尽时补发 done（usage=null）。
+/// done 的 backend 字段随流传入（"rig" / "cloud"），不再硬编码。
 /// 顺带累加事件计数（仅元数据，不落内容）。
 async fn poll_rig_event(
     mut stream: RigEventStream,
+    backend: &str,
     thinking_count: &AtomicUsize,
     text_count: &AtomicUsize,
 ) -> Option<(Result<Event, Infallible>, ChatStreamPhase)> {
@@ -836,10 +838,10 @@ async fn poll_rig_event(
             ))
         }
         Some(Ok(crate::llm::ChatStreamEvent::Done(usage))) => {
-            Some((Ok(sse_done(usage, "rig")), ChatStreamPhase::End))
+            Some((Ok(sse_done(usage, backend)), ChatStreamPhase::End))
         }
         Some(Err(e)) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
-        None => Some((Ok(sse_done(None, "rig")), ChatStreamPhase::End)),
+        None => Some((Ok(sse_done(None, backend)), ChatStreamPhase::End)),
     }
 }
 
@@ -897,7 +899,7 @@ async fn chat_stream_handler(
                     if backend == "rig" || backend == "cloud" {
                         match crate::llm::general_chat_stream(&query, &skills).await {
                             Ok(stream) => {
-                                poll_rig_event(stream, &thinking_count, &text_count).await
+                                poll_rig_event(stream, backend, &thinking_count, &text_count).await
                             }
                             Err(e) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
                         }
@@ -912,8 +914,9 @@ async fn chat_stream_handler(
                     }
                 }
                 ChatStreamPhase::Rig(stream) => {
-                    poll_rig_event(stream, &thinking_count, &text_count).await
+                    poll_rig_event(stream, backend, &thinking_count, &text_count).await
                 }
+                // 仅 legacy 非流式降级路径可达，done 固定报 "legacy"
                 ChatStreamPhase::LegacyDone => {
                     Some((Ok(sse_done(None, "legacy")), ChatStreamPhase::End))
                 }
