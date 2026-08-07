@@ -95,6 +95,34 @@ export interface UseChatReturn {
 /** 附件模式下的默认标题 */
 const ATTACHMENT_TITLE = '详细回复.md';
 
+/** localStorage key 前缀：记录当前用户最后打开的会话，用于聊天页恢复 */
+const LAST_SESSION_KEY_PREFIX = 'relationship-graph:last-session';
+
+function lastSessionKey(userId?: string | null): string {
+  return `${LAST_SESSION_KEY_PREFIX}:${userId || 'default'}`;
+}
+
+function readLastSessionId(userId?: string | null): string | null {
+  try {
+    return localStorage.getItem(lastSessionKey(userId));
+  } catch {
+    return null;
+  }
+}
+
+/** id 为 null 时清除记录（如删除当前会话后） */
+function writeLastSessionId(userId: string | null | undefined, sessionId: string | null): void {
+  try {
+    if (sessionId) {
+      localStorage.setItem(lastSessionKey(userId), sessionId);
+    } else {
+      localStorage.removeItem(lastSessionKey(userId));
+    }
+  } catch {
+    // localStorage 不可用时静默降级（不影响聊天主流程）
+  }
+}
+
 /** 将后端 ChatMessage 转换为前端显示消息 */
 function toDisplayMessage(msg: ChatMessage): ChatDisplayMessage {
   let metadata: Record<string, unknown> | null = null;
@@ -119,7 +147,10 @@ function toDisplayMessage(msg: ChatMessage): ChatDisplayMessage {
 
 // === Hook 实现 ===
 
-export function useChat(): UseChatReturn {
+/**
+ * @param userId 当前登录用户 ID，用于 localStorage 按用户区分会话恢复记录
+ */
+export function useChat(userId?: string | null): UseChatReturn {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatDisplayMessage[]>([]);
@@ -141,6 +172,11 @@ export function useChat(): UseChatReturn {
     currentSessionRef.current = currentSessionId;
   }, [currentSessionId]);
 
+  // 持久化当前会话 ID 到 localStorage（null 时清除），供下次进入聊天页恢复
+  useEffect(() => {
+    writeLastSessionId(userId, currentSessionId);
+  }, [userId, currentSessionId]);
+
   // 加载会话列表（复用 session.ts）
   const loadSessions = useCallback(async () => {
     try {
@@ -151,10 +187,43 @@ export function useChat(): UseChatReturn {
     }
   }, []);
 
-  // 初始加载
+  // 初始加载 + 会话恢复：
+  // 1. 优先恢复 localStorage 中记录的会话（校验其仍存在）
+  // 2. 已保存会话失效时降级为最近更新的会话
+  // 3. 无任何会话时保持空态（首次发消息时惰性创建）
   useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+    let cancelled = false;
+    (async () => {
+      let list: Session[] = [];
+      try {
+        list = await sessionApi.listSessions();
+      } catch {
+        list = [];
+      }
+      if (cancelled) return;
+      setSessions(list);
+
+      const savedId = readLastSessionId(userId);
+      const restored =
+        savedId && list.some((s) => s.id === savedId) ? savedId : list[0]?.id ?? null;
+      if (!restored) return;
+
+      setCurrentSessionId(restored);
+      currentSessionRef.current = restored;
+      let serverMessages: ChatMessage[] = [];
+      try {
+        serverMessages = await sessionApi.getSessionMessages(restored);
+      } catch {
+        serverMessages = [];
+      }
+      if (!cancelled && currentSessionRef.current === restored) {
+        setMessages(serverMessages.map(toDisplayMessage));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   // 创建新会话
   const createSession = useCallback(async (): Promise<string> => {
@@ -165,9 +234,11 @@ export function useChat(): UseChatReturn {
     return session.id;
   }, []);
 
-  // 切换会话
+  // 切换会话（若正在流式生成则先中止，避免旧流污染新会话的消息列表）
   const switchSession = useCallback(async (sessionId: string) => {
+    abortRef.current?.abort();
     setCurrentSessionId(sessionId);
+    currentSessionRef.current = sessionId;
     try {
       const serverMessages = await sessionApi.getSessionMessages(sessionId);
       setMessages(serverMessages.map(toDisplayMessage));
@@ -176,17 +247,29 @@ export function useChat(): UseChatReturn {
     }
   }, []);
 
-  // 删除会话
+  // 删除会话；若删除的是当前会话，自动切换到剩余最近更新的会话，
+  // 无剩余会话则回到空态（localStorage 由持久化 effect 自动清除）
   const deleteSession = useCallback(
     async (sessionId: string) => {
       await sessionApi.deleteSession(sessionId);
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      const remaining = sessions.filter((s) => s.id !== sessionId);
+      setSessions(remaining);
+
       if (currentSessionId === sessionId) {
-        setCurrentSessionId(null);
-        setMessages([]);
+        abortRef.current?.abort();
+        const next = [...remaining].sort(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        )[0];
+        if (next) {
+          await switchSession(next.id);
+        } else {
+          setCurrentSessionId(null);
+          currentSessionRef.current = null;
+          setMessages([]);
+        }
       }
     },
-    [currentSessionId],
+    [sessions, currentSessionId, switchSession],
   );
 
   // 更新会话标题
