@@ -4,7 +4,7 @@ use std::time::Duration;
 use log::{info, warn};
 
 use rig_core::client::{CompletionClient, Nothing};
-use rig_core::completion::{AssistantContent, CompletionModel as RigCompletionModel};
+use rig_core::completion::{AssistantContent, CompletionModel as _};
 use rig_core::providers::ollama;
 
 use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage};
@@ -43,7 +43,13 @@ struct OllamaResponse {
     response: Option<String>,
 }
 
-async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, String> {
+async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str) -> Result<String, String> {
+    // 双轨分发（Step 3）：RG_LLM_BACKEND=rig 且命中白名单时走 rig 通道，
+    // 否则走原 reqwest legacy 实现（默认行为与改造前完全一致）。
+    if use_rig(fn_name) {
+        return call_rig(prompt, timeout).await;
+    }
+
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
@@ -187,6 +193,7 @@ pub async fn general_chat(query: &str) -> Result<String, String> {
         &prompt,
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
+        "general_chat",
     )
     .await
 }
@@ -202,6 +209,7 @@ pub async fn profile_qa_chat(system_prompt: &str, user_message: &str) -> Result<
         &prompt,
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
+        "profile_qa_chat",
     )
     .await
 }
@@ -217,6 +225,7 @@ pub async fn generate_profile_document(system_prompt: &str, conversation: &str) 
         &prompt,
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
+        "generate_profile_document",
     )
     .await
 }
@@ -243,6 +252,7 @@ pub async fn extract_person_fields(query: &str) -> PersonDraft {
         &prompt,
         Some("json"),
         ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+        "extract_person_fields",
     ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -288,6 +298,7 @@ pub async fn extract_update_fields(query: &str) -> (String, Vec<FieldChange>) {
         &prompt,
         Some("json"),
         ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+        "extract_update_fields",
     ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -338,6 +349,7 @@ pub async fn extract_interaction_data(query: &str) -> InteractionDraft {
         &prompt,
         Some("json"),
         ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+        "extract_interaction_data",
     ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -377,6 +389,7 @@ pub async fn extract_path_target(query: &str) -> String {
         &prompt,
         Some("json"),
         ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+        "extract_path_target",
     ).await {
         Ok(json_str) => {
             serde_json::from_str::<serde_json::Value>(&json_str)
@@ -446,6 +459,7 @@ pub async fn compress_context(
         &prompt,
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
+        "compress_context",
     )
     .await
 }
