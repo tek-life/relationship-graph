@@ -22,6 +22,7 @@ import NlqResultCard from './NlqResultCard';
 import PathResultDisplay from './PathResultDisplay';
 import MarkdownContent from './MarkdownContent';
 import ImageOcrButton, { type ImageOcrHandle } from './ImageOcrButton';
+import DocumentAttachButton, { type DocumentAttachment } from './DocumentAttachButton';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
 import { DIGITAL_AGENTS, CONTACT_MANAGER_AGENT_ID, type DigitalAgent } from '../services/digitalAgents';
@@ -36,6 +37,12 @@ const NLQ_EXAMPLES = [
   '最近3个月没联系但标记了待跟进的人有哪些？',
   '这个懂车帝的投标，谁能帮上忙？',
 ];
+
+/** 文档上传 feature flag：VITE_DOC_UPLOAD='0' 时隐藏文档按钮（默认启用） */
+const DOC_UPLOAD_ENABLED = import.meta.env.VITE_DOC_UPLOAD !== '0';
+
+/** 多附件总量软限（字符数），超限拒绝添加 */
+const MAX_TOTAL_DOC_CHARS = 40000;
 
 // === Props ===
 
@@ -70,6 +77,45 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /** 联网搜索开关（默认关，仅影响本轮请求） */
   const [webSearchOn, setWebSearchOn] = useState(false);
+  /** 待发送的文档附件（不注入 textarea，随请求以 documents 字段提交） */
+  const [attachments, setAttachments] = useState<DocumentAttachment[]>([]);
+  /** 附件操作提示（超限拒绝等，自动消失） */
+  const [attachNotice, setAttachNotice] = useState('');
+  const attachNoticeTimerRef = useRef<number | null>(null);
+
+  const showAttachNotice = useCallback((message: string) => {
+    setAttachNotice(message);
+    if (attachNoticeTimerRef.current) window.clearTimeout(attachNoticeTimerRef.current);
+    attachNoticeTimerRef.current = window.setTimeout(() => setAttachNotice(''), 4000);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (attachNoticeTimerRef.current) window.clearTimeout(attachNoticeTimerRef.current);
+    },
+    [],
+  );
+
+  // 文档抽取完成：校验总量软限后加入附件列表
+  const handleAddDocument = useCallback(
+    (doc: DocumentAttachment) => {
+      if (attachments.some((d) => d.fileName === doc.fileName)) {
+        showAttachNotice(`已存在同名附件「${doc.fileName}」，请先删除后再添加`);
+        return;
+      }
+      const totalChars = attachments.reduce((sum, d) => sum + d.content.length, 0);
+      if (totalChars + doc.content.length > MAX_TOTAL_DOC_CHARS) {
+        showAttachNotice('附件总量超过 4 万字符上限，请删除部分附件后再添加');
+        return;
+      }
+      setAttachments([...attachments, doc]);
+    },
+    [attachments, showAttachNotice],
+  );
+
+  const handleRemoveAttachment = useCallback((fileName: string) => {
+    setAttachments((prev) => prev.filter((d) => d.fileName !== fileName));
+  }, []);
 
   // 右侧面板状态
   const [panelContent, setPanelContent] = useState<string | null>(null);
@@ -151,12 +197,20 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
     // 构建 active agent IDs
     const activeIds = selectedAgentIds.length > 0 ? selectedAgentIds : undefined;
 
+    // 附件标记仅用于气泡展示与持久化（不注入后端 query）；文档正文以 documents 字段提交
+    const docs = attachments.length > 0 ? [...attachments] : undefined;
+    const displayText = docs
+      ? `${text}\n${docs.map((d) => `📎 ${d.fileName}`).join('\n')}`
+      : text;
+
     setQuery('');
+    setAttachments([]);
     // 后端只收剥离后的正文（agents.md §11.2）；气泡展示与持久化用含 @mention 的原文
-    await sendMessage(cleanedQuery, agentId, activeIds, text, {
+    await sendMessage(cleanedQuery, agentId, activeIds, displayText, {
       webSearch: webSearchOn || undefined,
+      documents: docs,
     });
-  }, [query, loading, voice, selectedAgentIds, sendMessage, webSearchOn]);
+  }, [query, loading, voice, selectedAgentIds, sendMessage, webSearchOn, attachments]);
 
   // Enter 发送，Shift+Enter 换行
   const handleKeyDown = useCallback(
@@ -336,6 +390,11 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
                   ocrRef={ocrRef}
                   webSearchOn={webSearchOn}
                   onToggleWebSearch={() => setWebSearchOn((prev) => !prev)}
+                  docUploadEnabled={DOC_UPLOAD_ENABLED}
+                  onAddDocument={handleAddDocument}
+                  attachments={attachments}
+                  onRemoveAttachment={handleRemoveAttachment}
+                  attachNotice={attachNotice}
                 />
               </div>
             </div>
@@ -799,6 +858,11 @@ interface ComposerProps {
   ocrRef: RefObject<ImageOcrHandle | null>;
   webSearchOn: boolean;
   onToggleWebSearch: () => void;
+  docUploadEnabled: boolean;
+  onAddDocument: (doc: DocumentAttachment) => void;
+  attachments: DocumentAttachment[];
+  onRemoveAttachment: (fileName: string) => void;
+  attachNotice: string;
 }
 
 const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Composer(
@@ -819,6 +883,11 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
     ocrRef,
     webSearchOn,
     onToggleWebSearch,
+    docUploadEnabled,
+    onAddDocument,
+    attachments,
+    onRemoveAttachment,
+    attachNotice,
   },
   ref,
 ) {
@@ -833,6 +902,35 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
         className="rounded-3xl border shadow-sm transition focus-within:ring-2"
         style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}
       >
+        {/* 文档附件 chips（发送时随请求提交，不注入输入框） */}
+        {(attachments.length > 0 || attachNotice) && (
+          <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+            {attachments.map((doc) => (
+              <span
+                key={doc.fileName}
+                className="flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs"
+                style={{
+                  borderColor: 'var(--border-color)',
+                  backgroundColor: 'var(--surface-hover, #f8fafc)',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                <span aria-hidden="true">📎</span>
+                <span className="max-w-[12rem] truncate">{doc.fileName}</span>
+                <span className="shrink-0 text-slate-400">{doc.content.length} 字</span>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-full px-0.5 text-slate-400 transition hover:text-red-500"
+                  title="移除附件"
+                  onClick={() => onRemoveAttachment(doc.fileName)}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            {attachNotice && <span className="text-xs text-amber-600">{attachNotice}</span>}
+          </div>
+        )}
         <textarea
           ref={ref}
           rows={2}
@@ -877,6 +975,10 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
             )}
             {/* OCR 图片识别 */}
             <ImageOcrButton ref={ocrRef} onText={onOcrText} disabled={busy} />
+            {/* 文档上传（feature flag：VITE_DOC_UPLOAD !== '0'） */}
+            {docUploadEnabled && (
+              <DocumentAttachButton onDocument={onAddDocument} disabled={busy} />
+            )}
             {/* 联网搜索开关 */}
             <button
               type="button"
