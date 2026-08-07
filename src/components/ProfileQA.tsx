@@ -325,7 +325,8 @@ export default function ProfileQA({ onComplete }: ProfileQAProps) {
                     color: 'var(--text-primary, #1e293b)',
                   }}
                 >
-                  <div className="whitespace-pre-wrap">{exchange.question}</div>
+                  {/* 教练问题来自后端 QA 指令模块，可能含 Markdown */}
+                  <MarkdownContent content={exchange.question} className="qa-question-md" />
                 </div>
               </div>
               {/* 用户回答（右侧） */}
@@ -365,7 +366,8 @@ export default function ProfileQA({ onComplete }: ProfileQAProps) {
                   color: 'var(--text-primary, #1e293b)',
                 }}
               >
-                <div className="whitespace-pre-wrap">{currentQuestion}</div>
+                {/* 当前问题（含引导语/追问）可能含 Markdown */}
+                <MarkdownContent content={currentQuestion} className="qa-question-md" />
               </div>
             </div>
           )}
