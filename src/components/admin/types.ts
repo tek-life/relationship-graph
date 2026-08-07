@@ -36,6 +36,8 @@ export interface AgentSkill {
   agentId: string;
   skillName: string;
   skillConfigJson: string;
+  /** SKILL Markdown 文档全文（含 frontmatter）；旧 JSON 形态技能为空 */
+  skillMarkdown?: string | null;
   triggerScenario?: string | null;
   isActive: boolean;
   createdAt: string;
@@ -46,7 +48,10 @@ export interface AgentSkill {
 export interface CreateAgentSkillRequest {
   agentId: string;
   skillName: string;
-  skillConfigJson: string;
+  /** Markdown 形态技能可传 "{}" 或不传 */
+  skillConfigJson?: string;
+  /** SKILL Markdown 文档全文（含 frontmatter） */
+  skillMarkdown?: string | null;
   triggerScenario?: string | null;
   isActive?: boolean;
 }
