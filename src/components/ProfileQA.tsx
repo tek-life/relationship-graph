@@ -37,9 +37,13 @@ interface QaModuleInfo {
 
 interface ProfileQAProps {
   onComplete?: () => void;
+  /** 已保存的画像文档（已完成用户进入时直接查看） */
+  initialProfileDoc?: string | null;
+  /** 当前用户是否已完成画像 */
+  initialCompleted?: boolean;
 }
 
-export default function ProfileQA({ onComplete }: ProfileQAProps) {
+export default function ProfileQA({ onComplete, initialProfileDoc, initialCompleted }: ProfileQAProps) {
   const [stages, setStages] = useState<QaModuleInfo[]>([
     { id: 'hero_journey', name: '英雄之旅复盘' },
     { id: 'munger_thinking', name: '芒格多元思维' },
@@ -55,6 +59,10 @@ export default function ProfileQA({ onComplete }: ProfileQAProps) {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [isComposing, setIsComposing] = useState(false);
+  // 已完成用户重新作答模式（默认展示已有画像，点击“重新作答”后进入问卷）
+  const hasExistingDoc = Boolean(initialCompleted && initialProfileDoc);
+  const [redoing, setRedoing] = useState(false);
+  const showExistingDoc = hasExistingDoc && !redoing && !profileDoc;
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -120,11 +128,25 @@ export default function ProfileQA({ onComplete }: ProfileQAProps) {
     [],
   );
 
-  // 初始加载第一个问题
+  // 初始加载第一个问题；已有画像的用户先展示现有画像，不自动开问
   useEffect(() => {
-    fetchNextQuestion(0, []);
+    if (!hasExistingDoc) {
+      fetchNextQuestion(0, []);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 已完成用户选择重新作答：重置状态并从第一问开始
+  const handleRestart = () => {
+    setRedoing(true);
+    setStageIndex(0);
+    setHistory([]);
+    setProfileDoc(null);
+    setSaved(false);
+    setError('');
+    setAnswer('');
+    void fetchNextQuestion(0, []);
+  };
 
   // 生成画像文档
   const generateProfile = async (hist: QaExchange[]) => {
@@ -248,8 +270,61 @@ export default function ProfileQA({ onComplete }: ProfileQAProps) {
         </div>
       )}
 
-      {/* 对话流区域 / 画像预览 */}
-      {profileDoc ? (
+      {/* 已有画像查看 / 对话流区域 / 画像预览 */}
+      {showExistingDoc ? (
+        <div className="flex-1 overflow-y-auto px-6 py-6">
+          <div className="mx-auto max-w-3xl">
+            <div
+              className="mb-6 rounded-xl p-6"
+              style={{
+                backgroundColor: 'var(--bg-secondary, #f8fafc)',
+                border: '1px solid var(--border-color, #e2e8f0)',
+              }}
+            >
+              <h2
+                className="mb-1 text-lg font-semibold"
+                style={{ color: 'var(--text-primary, #1e293b)' }}
+              >
+                我的画像
+              </h2>
+              <p
+                className="mb-4 text-xs"
+                style={{ color: 'var(--text-muted, #94a3b8)' }}
+              >
+                如需更新画像，可重新回答问卷生成新版本并覆盖保存。
+              </p>
+              <MarkdownContent
+                content={initialProfileDoc ?? ''}
+                className="prose-sm space-y-3"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                className="rounded-full px-6 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
+                style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
+                onClick={handleRestart}
+              >
+                重新作答更新画像
+              </button>
+              {onComplete && (
+                <button
+                  type="button"
+                  className="rounded-full px-6 py-2.5 text-sm transition"
+                  style={{
+                    color: 'var(--text-secondary, #64748b)',
+                    border: '1px solid var(--border-color, #e2e8f0)',
+                  }}
+                  onClick={onComplete}
+                >
+                  返回首页
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : profileDoc ? (
         <div className="flex-1 overflow-y-auto px-6 py-6">
           <div className="mx-auto max-w-3xl">
             <div
@@ -444,7 +519,7 @@ export default function ProfileQA({ onComplete }: ProfileQAProps) {
       )}
 
       {/* 跳过按钮 */}
-      {onComplete && !profileDoc && (
+      {onComplete && !profileDoc && !showExistingDoc && (
         <div className="shrink-0 px-6 pb-3 text-center">
           <button
             type="button"
@@ -452,7 +527,7 @@ export default function ProfileQA({ onComplete }: ProfileQAProps) {
             style={{ color: 'var(--text-secondary, #64748b)' }}
             onClick={onComplete}
           >
-            跳过画像构建，返回首页
+            {hasExistingDoc ? '返回首页' : '跳过画像构建，返回首页'}
           </button>
         </div>
       )}
