@@ -128,6 +128,15 @@ pub async fn list_invites(
 // 数字人管理 (Admin CRUD)
 // ============================================================
 
+/// 校验 mention 必须以 @ 开头：前端 @ 提及解析（正则 `^@`）与 SKILL 注入均依赖该约定，
+/// 漏填 @ 会导致头像点击插入缺前缀、发送解析失败、技能不注入。
+fn validate_mention(mention: &str) -> Result<(), ApiError> {
+    if !mention.trim_start().starts_with('@') {
+        return Err(ApiError::bad_request("mention 必须以 @ 开头，例如 @xxx"));
+    }
+    Ok(())
+}
+
 /// GET /api/admin/digital-agents — 列出所有数字人（含已禁用）
 pub async fn list_digital_agents(
     State(state): State<SharedState>,
@@ -144,6 +153,7 @@ pub async fn create_digital_agent(
     State(state): State<SharedState>,
     Json(req): Json<CreateDigitalAgentRequest>,
 ) -> Result<Json<DigitalAgent>, ApiError> {
+    validate_mention(&req.mention)?;
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
     let agent = agent_config::create_digital_agent(conn, req)?;
@@ -157,6 +167,7 @@ pub async fn update_digital_agent(
     Path(id): Path<String>,
     Json(req): Json<CreateDigitalAgentRequest>,
 ) -> Result<Json<()>, ApiError> {
+    validate_mention(&req.mention)?;
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
     agent_config::update_digital_agent(conn, &id, req)?;
