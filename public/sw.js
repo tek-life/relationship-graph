@@ -1,6 +1,15 @@
 const SW_VERSION = 'v2';
 const CACHE_NAME = `relationship-graph-${SW_VERSION}`;
 
+// 缓存策略说明：
+// - 本 SW 仅在"生产构建"下注册（见 src/main.tsx：import.meta.env.PROD 判断）。
+//   Vite 生产资源文件名均带内容 hash（如 index-D-wlx8Lh.js），cache-first
+//   不会造成更新不生效；hash 变化后旧缓存自然失效并被 activate 阶段清理。
+// - 开发环境（vite dev，/src/* 模块无 hash）SW 会被主动注销并清空缓存，
+//   因此下方"静态资源 cache-first"不会拦截开发资源，联调可即时看到更新。
+// - 若后续调整为开发环境也注册 SW，必须先对无 hash 路径（如 /src/*）
+//   改用 network-first，否则代码修改将长期被旧缓存覆盖。
+
 // 静态资源预缓存列表（核心资源）
 const PRECACHE_URLS = [
   '/',

@@ -2,11 +2,15 @@
  * 聊天会话管理 hook
  * 提供会话 CRUD、消息发送/接收、会话切换等核心聊天功能
  * 整合 chatRouter 路由分发与 session.ts API 客户端
+ *
+ * 通用聊天（默认与多智能体）走 SSE 流式接口（streamChat），
+ * 联系人管家（contact_manager）保持 NLQ 同步接口不变。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { routeQuery } from '../services/chatRouter';
 import { nlqConfirm } from '../services/db';
 import { resolveTextDisplay } from '../services/contentPolicy';
+import { streamChat, type StreamStep } from '../services/stream';
 import * as sessionApi from '../services/session';
 import type {
   Session,
@@ -17,6 +21,12 @@ import type {
 } from '../types';
 
 // === 前端聊天消息（含 UI 渲染所需的富类型） ===
+
+/** 模型思考过程：阶段步骤条 + 推理文本 */
+export interface ChatThinking {
+  steps: StreamStep[];
+  reasoning: string;
+}
 
 export interface ChatDisplayMessage {
   id: string;
@@ -35,6 +45,12 @@ export interface ChatDisplayMessage {
   response?: NlqResponse;
   /** 路由响应 */
   routerResponse?: ChatRouterResponse;
+  /** 模型思考过程（流式累积，历史消息从 metadata 还原） */
+  thinking?: ChatThinking;
+  /** 流式生成中 */
+  streaming?: boolean;
+  /** 错误消息（带"重试"按钮） */
+  retryable?: boolean;
 }
 
 export interface UseChatReturn {
@@ -46,6 +62,8 @@ export interface UseChatReturn {
   messages: ChatDisplayMessage[];
   /** 是否正在发送消息 */
   loading: boolean;
+  /** 是否正在流式生成 */
+  streaming: boolean;
   /** 错误信息 */
   error: string;
   /** 加载会话列表 */
@@ -64,11 +82,18 @@ export interface UseChatReturn {
     agentId?: string | null,
     activeAgentIds?: string[],
   ) => Promise<ChatRouterResponse | null>;
+  /** 停止流式生成（保留已生成内容） */
+  stopGeneration: () => void;
+  /** 重试上一条失败的消息 */
+  retryLast: () => Promise<void>;
   /** 确认草稿 */
   confirmDraft: (intentType: string, data: Record<string, unknown>) => Promise<void>;
 }
 
 // === 工具函数 ===
+
+/** 附件模式下的默认标题 */
+const ATTACHMENT_TITLE = '详细回复.md';
 
 /** 将后端 ChatMessage 转换为前端显示消息 */
 function toDisplayMessage(msg: ChatMessage): ChatDisplayMessage {
@@ -88,11 +113,9 @@ function toDisplayMessage(msg: ChatMessage): ChatDisplayMessage {
     resultType: metadata?.resultType as ChatDisplayMessage['resultType'],
     results: metadata?.results as NlqResult[] | undefined,
     response: metadata?.response as NlqResponse | undefined,
+    thinking: metadata?.thinking as ChatThinking | undefined,
   };
 }
-
-/** 附件模式下的默认标题 */
-const ATTACHMENT_TITLE = '详细回复.md';
 
 // === Hook 实现 ===
 
@@ -101,8 +124,17 @@ export function useChat(): UseChatReturn {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatDisplayMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
   const currentSessionRef = useRef<string | null>(null);
+  /** 当前流式请求的中止控制器 */
+  const abortRef = useRef<AbortController | null>(null);
+  /** 最近一次请求参数（用于错误重试） */
+  const lastRequestRef = useRef<{
+    text: string;
+    agentId?: string | null;
+    activeAgentIds?: string[];
+  } | null>(null);
 
   // 保持 ref 同步
   useEffect(() => {
@@ -169,6 +201,252 @@ export function useChat(): UseChatReturn {
     [],
   );
 
+  // === NLQ 同步分支（联系人管家） ===
+  const runNlqRequest = useCallback(
+    async (
+      sessionId: string,
+      text: string,
+      agentId: string | null | undefined,
+      activeAgentIds: string[] | undefined,
+    ): Promise<ChatRouterResponse> => {
+      const response = await routeQuery(text, agentId, activeAgentIds);
+
+      // 构建助手回复消息
+      const assistantMsg: ChatDisplayMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: response.reply,
+        routerResponse: response,
+      };
+
+      // 处理 NLQ 响应
+      if (response.type === 'nlq' && response.nlqResponse) {
+        const nlq = response.nlqResponse;
+        switch (nlq.intentType) {
+          case 'searchPeople':
+            assistantMsg.resultType = 'search';
+            assistantMsg.results = nlq.results;
+            assistantMsg.response = nlq;
+            break;
+          case 'findPath':
+            assistantMsg.resultType = 'path';
+            assistantMsg.response = nlq;
+            break;
+          case 'createPersonDraft':
+          case 'updatePersonDraft':
+          case 'addInteractionDraft':
+            assistantMsg.resultType = 'draft';
+            assistantMsg.response = nlq;
+            break;
+        }
+      }
+
+      // 长内容统一走 contentPolicy（结构化结果维持原渲染不变）
+      if (response.fileContent) {
+        assistantMsg.attachment = {
+          title: response.fileTitle || ATTACHMENT_TITLE,
+          content: response.fileContent,
+        };
+      } else if (!assistantMsg.resultType && response.type === 'chat') {
+        const decision = resolveTextDisplay(response.reply);
+        if (decision.mode === 'attachment') {
+          assistantMsg.content = decision.summary ?? response.reply;
+          assistantMsg.attachment = {
+            title: ATTACHMENT_TITLE,
+            content: response.reply,
+          };
+        }
+        // collapsible / inline 模式由 ChatBubble 按 contentPolicy 渲染
+      }
+
+      setMessages((prev) => [...prev, assistantMsg]);
+
+      // 持久化助手消息到后端
+      const metadata = assistantMsg.resultType
+        ? JSON.stringify({
+            resultType: assistantMsg.resultType,
+            results: assistantMsg.results,
+            response: assistantMsg.response,
+          })
+        : undefined;
+      await sessionApi.addMessage(sessionId, 'assistant', response.reply, metadata);
+
+      // 刷新会话列表（更新排序和标题）
+      await loadSessions();
+
+      return response;
+    },
+    [loadSessions],
+  );
+
+  // === 流式聊天分支（默认与多智能体） ===
+  const runStreamRequest = useCallback(
+    async (sessionId: string, text: string, activeAgentIds?: string[]) => {
+      // 多智能体协同模式：在消息中附带多 agent 上下文
+      const query =
+        activeAgentIds && activeAgentIds.length > 1
+          ? `[Multi-Agent: ${activeAgentIds.join(', ')}] ${text}`
+          : text;
+
+      const assistantId = `assistant-${Date.now()}`;
+      const steps: StreamStep[] = [];
+      let reasoningBuf = '';
+      let textBuf = '';
+      let streamError = '';
+      let aborted = false;
+      let flushPending = false;
+
+      const placeholder: ChatDisplayMessage = {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        streaming: true,
+        thinking: { steps: [], reasoning: '' },
+      };
+      setMessages((prev) => [...prev, placeholder]);
+      setStreaming(true);
+
+      // requestAnimationFrame 合并增量 setState，避免高频渲染
+      const flush = () => {
+        flushPending = false;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  content: textBuf,
+                  thinking: { steps: [...steps], reasoning: reasoningBuf },
+                }
+              : m,
+          ),
+        );
+      };
+      const scheduleFlush = () => {
+        if (flushPending) return;
+        flushPending = true;
+        requestAnimationFrame(flush);
+      };
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      let networkError = '';
+      try {
+        await streamChat(
+          query,
+          {
+            onStep: (step) => {
+              steps.push(step);
+              scheduleFlush();
+            },
+            onThinking: (delta) => {
+              reasoningBuf += delta;
+              scheduleFlush();
+            },
+            onText: (delta) => {
+              textBuf += delta;
+              scheduleFlush();
+            },
+            onDone: () => {
+              // 结束后由主流程统一落库
+            },
+            onError: (message) => {
+              streamError = message;
+            },
+          },
+          controller.signal,
+        );
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          aborted = true;
+        } else {
+          networkError = err instanceof Error ? err.message : String(err);
+        }
+      } finally {
+        abortRef.current = null;
+        setStreaming(false);
+      }
+
+      // 最终同步一次 UI（rAF 可能尚未触发）
+      flush();
+
+      const failureMsg = networkError || streamError;
+      const hasThinking = steps.length > 0 || reasoningBuf.length > 0;
+      const thinking: ChatThinking | undefined = hasThinking
+        ? { steps: [...steps], reasoning: reasoningBuf }
+        : undefined;
+
+      // 失败处理：错误气泡带"重试"按钮
+      if (failureMsg) {
+        setError(failureMsg);
+        if (!textBuf.trim()) {
+          // 无已生成内容：占位消息直接转为错误气泡
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: `抱歉，处理失败：${failureMsg}`,
+                    streaming: false,
+                    retryable: true,
+                    thinking,
+                  }
+                : m,
+            ),
+          );
+        } else {
+          // 已生成部分内容：保留内容并落库，另附错误气泡
+          setMessages((prev) => [
+            ...prev.map((m) =>
+              m.id === assistantId ? { ...m, streaming: false, thinking } : m,
+            ),
+            {
+              id: `assistant-error-${Date.now()}`,
+              role: 'assistant' as const,
+              content: `抱歉，处理失败：${failureMsg}`,
+              retryable: true,
+            },
+          ]);
+          const metadata = thinking ? JSON.stringify({ thinking }) : undefined;
+          await sessionApi.addMessage(sessionId, 'assistant', textBuf, metadata);
+          await loadSessions();
+        }
+        return;
+      }
+
+      // 用户中止且无任何内容：移除占位消息，不落库
+      if (aborted && !textBuf.trim() && !hasThinking) {
+        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        return;
+      }
+
+      // 长内容策略：≥1500 字转为摘要 + FilePanel 附件
+      let bubbleContent = textBuf;
+      let attachment: { title: string; content: string } | undefined;
+      if (textBuf.trim()) {
+        const decision = resolveTextDisplay(textBuf);
+        if (decision.mode === 'attachment') {
+          bubbleContent = decision.summary ?? textBuf;
+          attachment = { title: ATTACHMENT_TITLE, content: textBuf };
+        }
+      }
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? { ...m, content: bubbleContent, attachment, streaming: false, thinking }
+            : m,
+        ),
+      );
+
+      // 落库：完整回复 + thinking 序列化进 metadataJson（中止时同样保留已生成内容）
+      const metadata = thinking ? JSON.stringify({ thinking }) : undefined;
+      await sessionApi.addMessage(sessionId, 'assistant', textBuf, metadata);
+      await loadSessions();
+    },
+    [loadSessions],
+  );
+
   // 发送消息
   const sendMessage = useCallback(
     async (
@@ -187,6 +465,7 @@ export function useChat(): UseChatReturn {
       };
       setLoading(true);
       setError('');
+      lastRequestRef.current = { text, agentId, activeAgentIds };
 
       try {
         if (!sessionId) {
@@ -199,73 +478,12 @@ export function useChat(): UseChatReturn {
         // 持久化用户消息到后端
         await sessionApi.addMessage(sessionId!, 'user', text);
 
-        // 通过路由分发查询
-        const response = await routeQuery(text, agentId, activeAgentIds);
-
-        // 构建助手回复消息
-        const assistantMsg: ChatDisplayMessage = {
-          id: `assistant-${Date.now()}`,
-          role: 'assistant',
-          content: response.reply,
-          routerResponse: response,
-        };
-
-        // 处理 NLQ 响应
-        if (response.type === 'nlq' && response.nlqResponse) {
-          const nlq = response.nlqResponse;
-          switch (nlq.intentType) {
-            case 'searchPeople':
-              assistantMsg.resultType = 'search';
-              assistantMsg.results = nlq.results;
-              assistantMsg.response = nlq;
-              break;
-            case 'findPath':
-              assistantMsg.resultType = 'path';
-              assistantMsg.response = nlq;
-              break;
-            case 'createPersonDraft':
-            case 'updatePersonDraft':
-            case 'addInteractionDraft':
-              assistantMsg.resultType = 'draft';
-              assistantMsg.response = nlq;
-              break;
-          }
+        // 联系人管家：NLQ 同步分支；其余走 SSE 流式
+        if (agentId === 'contact_manager') {
+          return await runNlqRequest(sessionId!, text, agentId, activeAgentIds);
         }
-
-        // 长内容统一走 contentPolicy（结构化结果维持原渲染不变）
-        if (response.fileContent) {
-          assistantMsg.attachment = {
-            title: response.fileTitle || ATTACHMENT_TITLE,
-            content: response.fileContent,
-          };
-        } else if (!assistantMsg.resultType && response.type === 'chat') {
-          const decision = resolveTextDisplay(response.reply);
-          if (decision.mode === 'attachment') {
-            assistantMsg.content = decision.summary ?? response.reply;
-            assistantMsg.attachment = {
-              title: ATTACHMENT_TITLE,
-              content: response.reply,
-            };
-          }
-          // collapsible / inline 模式由 ChatBubble 按 contentPolicy 渲染
-        }
-
-        setMessages((prev) => [...prev, assistantMsg]);
-
-        // 持久化助手消息到后端
-        const metadata = assistantMsg.resultType
-          ? JSON.stringify({
-              resultType: assistantMsg.resultType,
-              results: assistantMsg.results,
-              response: assistantMsg.response,
-            })
-          : undefined;
-        await sessionApi.addMessage(sessionId!, 'assistant', response.reply, metadata);
-
-        // 刷新会话列表（更新排序和标题）
-        await loadSessions();
-
-        return response;
+        await runStreamRequest(sessionId!, text, activeAgentIds);
+        return null;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         setError(errMsg);
@@ -273,6 +491,7 @@ export function useChat(): UseChatReturn {
           id: `assistant-error-${Date.now()}`,
           role: 'assistant',
           content: `抱歉，处理失败：${errMsg}`,
+          retryable: true,
         };
         setMessages((prev) => [...prev, errorMsg]);
         return null;
@@ -280,8 +499,47 @@ export function useChat(): UseChatReturn {
         setLoading(false);
       }
     },
-    [loadSessions],
+    [runNlqRequest, runStreamRequest],
   );
+
+  // 停止流式生成（中止后保留已生成内容并按普通消息落库）
+  const stopGeneration = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  // 重试上一条失败的消息（复用最近一次请求参数，不重复发送用户消息）
+  const retryLast = useCallback(async () => {
+    const last = lastRequestRef.current;
+    const sessionId = currentSessionRef.current;
+    if (!last || !sessionId || loading) return;
+
+    setLoading(true);
+    setError('');
+    // 移除错误气泡
+    setMessages((prev) => prev.filter((m) => !m.retryable));
+
+    try {
+      if (last.agentId === 'contact_manager') {
+        await runNlqRequest(sessionId, last.text, last.agentId, last.activeAgentIds);
+      } else {
+        await runStreamRequest(sessionId, last.text, last.activeAgentIds);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setError(errMsg);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `assistant-error-${Date.now()}`,
+          role: 'assistant',
+          content: `抱歉，处理失败：${errMsg}`,
+          retryable: true,
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }, [loading, runNlqRequest, runStreamRequest]);
 
   // 确认草稿
   const confirmDraft = useCallback(
@@ -306,6 +564,7 @@ export function useChat(): UseChatReturn {
     currentSessionId,
     messages,
     loading,
+    streaming,
     error,
     loadSessions,
     createSession,
@@ -313,6 +572,8 @@ export function useChat(): UseChatReturn {
     deleteSession,
     updateSessionTitle,
     sendMessage,
+    stopGeneration,
+    retryLast,
     confirmDraft,
   };
 }

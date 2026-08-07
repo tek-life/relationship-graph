@@ -14,7 +14,7 @@ import {
   type KeyboardEvent,
   type RefObject,
 } from 'react';
-import { useChat, type ChatDisplayMessage } from '../hooks/useChat';
+import { useChat, type ChatDisplayMessage, type ChatThinking } from '../hooks/useChat';
 import CouncilBar from './CouncilBar';
 import SessionSidebar from './SessionSidebar';
 import DraftConfirmation from './DraftConfirmation';
@@ -51,11 +51,14 @@ export default function ChatView({ onPersonClick }: ChatViewProps) {
     currentSessionId,
     messages,
     loading,
+    streaming,
     error,
     createSession,
     switchSession,
     deleteSession,
     sendMessage,
+    stopGeneration,
+    retryLast,
     confirmDraft,
   } = useChat();
 
@@ -256,6 +259,7 @@ export default function ChatView({ onPersonClick }: ChatViewProps) {
                         onShowPanel={showPanel}
                         onClosePanel={closePanel}
                         onConfirm={handleConfirm}
+                        onRetry={retryLast}
                       />
                     ))}
                     <div ref={messagesEndRef} />
@@ -285,6 +289,7 @@ export default function ChatView({ onPersonClick }: ChatViewProps) {
                   query={query}
                   busy={busy}
                   loading={loading}
+                  streaming={streaming}
                   voice={voice}
                   onChange={setQuery}
                   onKeyDown={handleKeyDown}
@@ -292,6 +297,7 @@ export default function ChatView({ onPersonClick }: ChatViewProps) {
                   onSubmit={handleSend}
                   onToggleVoice={() => voice.toggle()}
                   onStopVoice={voice.stop}
+                  onStopGeneration={stopGeneration}
                   onOcrText={appendText}
                   ocrRef={ocrRef}
                 />
@@ -392,9 +398,10 @@ interface ChatBubbleProps {
   onShowPanel: (content: string, title: string) => void;
   onClosePanel: () => void;
   onConfirm: (intentType: string, data: Record<string, unknown>) => Promise<void>;
+  onRetry: () => Promise<void>;
 }
 
-function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfirm }: ChatBubbleProps) {
+function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfirm, onRetry }: ChatBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
@@ -413,8 +420,8 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
     ? { borderColor: 'rgba(148,163,184,0.35)', backgroundColor: 'rgba(255,255,255,0.92)' }
     : { borderColor: 'transparent', backgroundColor: 'transparent' };
 
-  // 助手纯文本消息（无结构化结果）：应用长内容策略与工具条
-  const isAssistantText = !isUser && !message.resultType;
+  // 助手纯文本消息（无结构化结果、非错误气泡）：应用长内容策略与工具条
+  const isAssistantText = !isUser && !message.resultType && !message.retryable;
   const fullContent = message.attachment?.content ?? message.content;
   const decision = isAssistantText ? resolveTextDisplay(fullContent) : null;
   const isCollapsible = decision?.mode === 'collapsible' && !message.attachment;
@@ -451,13 +458,36 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
               }`}
               style={bubbleStyle}
             >
+              {/* 思考过程（流式中默认展开，结束后折叠） */}
+              {!isUser && message.thinking && (
+                <ThinkingBlock thinking={message.thinking} streaming={Boolean(message.streaming)} />
+              )}
+
               {isCollapsible ? (
                 <CollapsibleMarkdown content={message.content} />
               ) : (
-                <MarkdownContent
-                  content={message.content}
-                  className={`text-[15px] leading-7 ${isUser ? 'text-right' : 'text-left'}`}
-                />
+                message.content && (
+                  <MarkdownContent
+                    content={message.content}
+                    className={`text-[15px] leading-7 ${isUser ? 'text-right' : 'text-left'}`}
+                  />
+                )
+              )}
+
+              {/* 流式生成中且暂无内容时的占位提示 */}
+              {!isUser && message.streaming && !message.content && (
+                <p className="animate-pulse text-sm text-slate-400">正在生成…</p>
+              )}
+
+              {/* 错误消息的重试按钮 */}
+              {message.retryable && (
+                <button
+                  type="button"
+                  className="mt-2 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-medium text-red-600 transition hover:bg-red-100"
+                  onClick={() => void onRetry()}
+                >
+                  重试
+                </button>
               )}
 
               {/* 附件按钮 */}
@@ -531,6 +561,88 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// === 思考过程区块（步骤条 + 推理文本） ===
+
+interface ThinkingBlockProps {
+  thinking: ChatThinking;
+  streaming: boolean;
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  routing: '意图路由',
+  llm_call: '模型调用',
+};
+
+function ThinkingBlock({ thinking, streaming }: ThinkingBlockProps) {
+  // 流式中默认展开；流结束后自动折叠
+  const [expanded, setExpanded] = useState(streaming);
+  useEffect(() => {
+    if (!streaming) setExpanded(false);
+  }, [streaming]);
+
+  const stepCount = thinking.steps.length;
+  const hasContent = stepCount > 0 || thinking.reasoning.length > 0;
+  if (!streaming && !hasContent) return null;
+
+  const label = streaming ? '思考中…' : `已思考 · ${stepCount} 个步骤`;
+
+  return (
+    <div className="mb-2 rounded-2xl bg-slate-500/5 px-3 py-2">
+      <button
+        type="button"
+        className="flex w-full items-center gap-1.5 text-xs italic text-slate-500"
+        onClick={() => setExpanded((prev) => !prev)}
+      >
+        {/* 图标 */}
+        <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1" />
+          <circle cx="12" cy="12" r="4" />
+        </svg>
+        <span>{label}</span>
+        {streaming && (
+          <span className="flex gap-0.5 pl-1" aria-hidden="true">
+            <span className="h-1 w-1 animate-bounce rounded-full bg-slate-400" style={{ animationDelay: '0ms' }} />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-slate-400" style={{ animationDelay: '150ms' }} />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-slate-400" style={{ animationDelay: '300ms' }} />
+          </span>
+        )}
+        <span className={`ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true">▾</span>
+      </button>
+
+      {expanded && hasContent && (
+        <div className="mt-2 space-y-2 border-l-2 border-slate-200 pl-3">
+          {/* 步骤条：✓ 已完成 → ● 进行中 */}
+          {stepCount > 0 && (
+            <ul className="space-y-1">
+              {thinking.steps.map((step, index) => {
+                const isCurrent = streaming && index === stepCount - 1;
+                return (
+                  <li key={index} className="flex items-center gap-1.5 text-xs text-slate-500">
+                    <span className={isCurrent ? 'animate-pulse text-blue-500' : 'text-emerald-500'}>
+                      {isCurrent ? '●' : '✓'}
+                    </span>
+                    <span className="shrink-0">{STAGE_LABELS[step.stage] ?? step.stage}</span>
+                    {step.detail && (
+                      <span className="truncate text-slate-400">{step.detail}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {/* 推理文本（增量追加形成打字机效果，流式中显示光标） */}
+          {thinking.reasoning && (
+            <p className="whitespace-pre-wrap text-xs italic leading-5 text-slate-500">
+              {thinking.reasoning}
+              {streaming && <span className="animate-pulse not-italic">▍</span>}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -632,6 +744,7 @@ interface ComposerProps {
   query: string;
   busy: boolean;
   loading: boolean;
+  streaming: boolean;
   voice: VoiceState;
   onChange: (value: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -639,6 +752,7 @@ interface ComposerProps {
   onSubmit: () => void;
   onToggleVoice: () => void;
   onStopVoice: () => void;
+  onStopGeneration: () => void;
   onOcrText: (text: string) => void;
   ocrRef: RefObject<ImageOcrHandle | null>;
 }
@@ -648,6 +762,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
     query,
     busy,
     loading,
+    streaming,
     voice,
     onChange,
     onKeyDown,
@@ -655,6 +770,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
     onSubmit,
     onToggleVoice,
     onStopVoice,
+    onStopGeneration,
     onOcrText,
     ocrRef,
   },
@@ -716,12 +832,23 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
             {/* OCR 图片识别 */}
             <ImageOcrButton ref={ocrRef} onText={onOcrText} disabled={busy} />
           </div>
-          {/* 发送按钮 */}
-          <button
-            type="submit"
-            className="btn-primary flex items-center justify-center rounded-full p-2"
-            disabled={busy || !query.trim()}
-          >
+          {/* 停止生成 + 发送按钮 */}
+          <div className="flex items-center gap-2">
+            {loading && streaming && (
+              <button
+                type="button"
+                className="flex items-center gap-1.5 rounded-full bg-slate-800 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-700"
+                onClick={onStopGeneration}
+              >
+                <span className="inline-block h-2 w-2 bg-white" aria-hidden="true" />
+                停止生成
+              </button>
+            )}
+            <button
+              type="submit"
+              className="btn-primary flex items-center justify-center rounded-full p-2"
+              disabled={busy || !query.trim()}
+            >
             {loading ? (
               <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -745,7 +872,8 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
                 <polygon points="22 2 15 22 11 13 2 9 22 2" />
               </svg>
             )}
-          </button>
+            </button>
+          </div>
         </div>
       </div>
     </form>

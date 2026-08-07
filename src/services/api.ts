@@ -3,10 +3,28 @@
 //
 // 认证模型（密钥文件机制）：数据库密钥由服务端密钥文件保管，启动即自动解锁，
 // 前端不再有任何"解锁数据库"步骤，用户统一走账号密码登录/邀请注册。
+//
+// API_BASE 覆盖优先级（便于联调）：
+// 1. localStorage 'rg_api_base'（控制台执行 localStorage.setItem('rg_api_base', 'http://host:port') 即可切换）
+// 2. import.meta.env.VITE_API_BASE
+// 3. 默认 http://{当前页面 host}:8790
 
-export const API_BASE: string =
-  (import.meta.env.VITE_API_BASE as string | undefined) ??
-  `http://${window.location.hostname}:8790`;
+function resolveApiBase(): string {
+  try {
+    const override = window.localStorage.getItem('rg_api_base');
+    if (override) {
+      return override.trim().replace(/\/+$/, '');
+    }
+  } catch {
+    // localStorage 不可用（隐私模式等）时忽略
+  }
+  return (
+    (import.meta.env.VITE_API_BASE as string | undefined) ??
+    `http://${window.location.hostname}:8790`
+  );
+}
+
+export const API_BASE: string = resolveApiBase();
 
 const TOKEN_KEY = 'rg_token';
 const USER_KEY = 'rg_user';
