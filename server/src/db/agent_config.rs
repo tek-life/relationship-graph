@@ -74,7 +74,7 @@ pub fn delete_digital_agent(conn: &Connection, id: &str) -> Result<(), rusqlite:
 /// - frontmatter 必须包含非空值的 `name` 与 `description` 顶层键。
 /// 校验失败时 Err 携带中文原因，供 API 层转为 400 返回。
 pub fn validate_skill_markdown(markdown: &str) -> Result<(), String> {
-    let trimmed = markdown.trim_start();
+    let trimmed = markdown.trim_start().trim_start_matches('\u{FEFF}').trim_start();
     // 空白内容视为未填写，直接放行（skill_markdown 为可选字段）
     if trimmed.is_empty() {
         return Ok(());
@@ -84,7 +84,7 @@ pub fn validate_skill_markdown(markdown: &str) -> Result<(), String> {
     // frontmatter 起始行必须为 ---
     match lines.next() {
         Some(line) if line.trim() == "---" => {}
-        _ => return Err("技能 Markdown 必须以 --- 开头的 frontmatter".to_string()),
+        _ => return Err("SKILL 文档缺少 frontmatter 头部（以 --- 开始）".to_string()),
     }
 
     // 寻找闭合的 ---，收集 frontmatter 内容
@@ -101,26 +101,35 @@ pub fn validate_skill_markdown(markdown: &str) -> Result<(), String> {
         return Err("技能 Markdown 的 frontmatter 缺少闭合的 ---".to_string());
     }
 
-    // 解析顶层键（忽略缩进行与注释），要求 name/description 存在且非空
+    // 解析顶层键（与前端 parseFrontmatter 语义一致：首个出现的键生效，忽略注释行），
+    // 要求 name/description 存在且非空
     let mut name_value = String::new();
     let mut description_value = String::new();
+    let mut has_name = false;
+    let mut has_description = false;
     for line in fm_lines {
-        if line.starts_with(char::is_whitespace) || line.trim_start().starts_with('#') {
+        if line.trim_start().starts_with('#') {
             continue;
         }
         if let Some((key, value)) = line.split_once(':') {
             match key.trim() {
-                "name" => name_value = value.trim().to_string(),
-                "description" => description_value = value.trim().to_string(),
+                "name" if !has_name => {
+                    has_name = true;
+                    name_value = value.trim().to_string();
+                }
+                "description" if !has_description => {
+                    has_description = true;
+                    description_value = value.trim().to_string();
+                }
                 _ => {}
             }
         }
     }
     if name_value.is_empty() {
-        return Err("技能 Markdown 的 frontmatter 缺少非空的 name 键".to_string());
+        return Err("frontmatter 缺少必填字段 name".to_string());
     }
     if description_value.is_empty() {
-        return Err("技能 Markdown 的 frontmatter 缺少非空的 description 键".to_string());
+        return Err("frontmatter 缺少必填字段 description".to_string());
     }
     Ok(())
 }

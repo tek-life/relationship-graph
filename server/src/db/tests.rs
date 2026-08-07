@@ -245,6 +245,9 @@ mod tests {
     fn validate_skill_markdown_accepts_valid_frontmatter() {
         let md = "---\nname: 联系人管家\ndescription: 管理联系人\n---\n# 正文\n内容";
         assert!(agent_config::validate_skill_markdown(md).is_ok());
+        // BOM 头与首个键生效语义（与前端 parseFrontmatter 一致）
+        let bom_md = "\u{FEFF}---\nname: a\n  name: nested\ndescription: d\n---\n正文";
+        assert!(agent_config::validate_skill_markdown(bom_md).is_ok());
         // 空白内容视为未填写，直接放行
         assert!(agent_config::validate_skill_markdown("").is_ok());
         assert!(agent_config::validate_skill_markdown("   \n ").is_ok());
