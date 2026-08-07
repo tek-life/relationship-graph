@@ -98,6 +98,6 @@ export async function nlqConfirm(intentType: string, data: Record<string, unknow
   return apiPost('/api/nlq/confirm', { intentType, data });
 }
 
-export async function generalChat(query: string): Promise<ChatResponse> {
-  return apiPost<ChatResponse>('/api/chat', { query });
+export async function generalChat(query: string, agentId?: string): Promise<ChatResponse> {
+  return apiPost<ChatResponse>('/api/chat', agentId ? { query, agentId } : { query });
 }

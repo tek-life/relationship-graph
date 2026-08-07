@@ -364,7 +364,12 @@ export function useChat(userId?: string | null): UseChatReturn {
 
   // === 流式聊天分支（默认与多智能体） ===
   const runStreamRequest = useCallback(
-    async (sessionId: string, text: string, activeAgentIds?: string[]) => {
+    async (
+      sessionId: string,
+      text: string,
+      agentId?: string | null,
+      activeAgentIds?: string[],
+    ) => {
       // 多智能体协同模式：在消息中附带多 agent 上下文
       const query =
         activeAgentIds && activeAgentIds.length > 1
@@ -438,6 +443,7 @@ export function useChat(userId?: string | null): UseChatReturn {
             },
           },
           controller.signal,
+          agentId ?? undefined,
         );
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
@@ -565,7 +571,7 @@ export function useChat(userId?: string | null): UseChatReturn {
         if (agentId === 'contact_manager') {
           return await runNlqRequest(sessionId!, text, agentId, activeAgentIds);
         }
-        await runStreamRequest(sessionId!, text, activeAgentIds);
+        await runStreamRequest(sessionId!, text, agentId, activeAgentIds);
         return null;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -605,7 +611,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       if (last.agentId === 'contact_manager') {
         await runNlqRequest(sessionId, last.text, last.agentId, last.activeAgentIds);
       } else {
-        await runStreamRequest(sessionId, last.text, last.activeAgentIds);
+        await runStreamRequest(sessionId, last.text, last.agentId, last.activeAgentIds);
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);

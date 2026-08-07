@@ -2,7 +2,7 @@
  * 流式聊天客户端（SSE）
  *
  * 契约（与后端逐字一致）：
- * POST /api/chat/stream，Bearer 鉴权，请求体 {"query": string}，
+ * POST /api/chat/stream，Bearer 鉴权，请求体 {"query": string}（显式指定数字人时附带 {"agentId": string}），
  * 响应 text/event-stream，事件格式 `event: <name>\ndata: <json>\n\n`：
  * - step：{"stage":"routing|llm_call","detail":"..."}
  * - thinking_delta：{"text":"..."}（模型推理增量）
@@ -48,6 +48,7 @@ export async function streamChat(
   query: string,
   callbacks: StreamChatCallbacks,
   signal?: AbortSignal,
+  agentId?: string,
 ): Promise<void> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -61,7 +62,7 @@ export async function streamChat(
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(agentId ? { query, agentId } : { query }),
     signal,
   });
 

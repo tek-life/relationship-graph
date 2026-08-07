@@ -27,12 +27,12 @@ export async function routeQuery(
   // 多智能体协同模式：在消息中附带多 agent 上下文
   if (activeAgentIds && activeAgentIds.length > 1) {
     const multiAgentQuery = `[Multi-Agent: ${activeAgentIds.join(', ')}] ${query}`;
-    const result = await generalChat(multiAgentQuery);
+    const result = await generalChat(multiAgentQuery, agentId ?? undefined);
     return formatChatResponse(result);
   }
 
   // 默认通用聊天
-  const result = await generalChat(query);
+  const result = await generalChat(query, agentId ?? undefined);
   return formatChatResponse(result);
 }
 
