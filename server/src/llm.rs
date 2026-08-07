@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::Duration;
 use log::{info, warn};
 
@@ -47,7 +47,7 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
     // 双轨分发（Step 3）：RG_LLM_BACKEND=rig 且命中白名单时走 rig 通道，
     // 否则走原 reqwest legacy 实现（默认行为与改造前完全一致）。
     if use_rig(fn_name) {
-        return call_rig(prompt, timeout).await;
+        return call_rig(prompt, format, timeout).await;
     }
 
     let client = reqwest::Client::builder()
@@ -125,34 +125,50 @@ fn use_rig(fn_name: &str) -> bool {
 }
 
 /// 缓存 rig 的 Ollama client（顺带修复每次新建连接问题）。
+/// 构建失败不缓存，下次调用可重试（client Clone 廉价，构建也廉价）。
 /// 不注入自定义 http_client，超时完全由 tokio::time::timeout 控制。
-fn rig_client() -> Result<&'static ollama::Client, String> {
-    static CLIENT: OnceLock<Result<ollama::Client, String>> = OnceLock::new();
-    let cached = CLIENT.get_or_init(|| {
-        ollama::Client::builder()
-            .api_key(Nothing)
-            .base_url(ollama_url())
-            .build()
-            .map_err(|e| format!("Rig client build failed: {}", e))
-    });
-    cached.as_ref().map_err(|e| e.clone())
+fn rig_client() -> Result<ollama::Client, String> {
+    static CLIENT: Mutex<Option<ollama::Client>> = Mutex::new(None);
+    let mut guard = CLIENT
+        .lock()
+        .map_err(|e| format!("Rig client lock failed: {}", e))?;
+    if let Some(client) = guard.as_ref() {
+        return Ok(client.clone());
+    }
+    let client = ollama::Client::builder()
+        .api_key(Nothing)
+        .base_url(ollama_url())
+        .build()
+        .map_err(|e| format!("Rig client build failed: {}", e))?;
+    *guard = Some(client.clone());
+    Ok(client)
 }
 
 /// 通过 rig-core 调用 Ollama /api/chat，与 legacy 的 call_ollama 平行。
 /// 超时与错误文案与 legacy 通道保持一致。
-async fn call_rig(prompt: &str, timeout: Duration) -> Result<String, String> {
+/// format 为 Some 时设置宽松 JSON Schema 约束（Ollama provider 会将
+/// output_schema 映射为请求体的 format 字段），等价于 legacy 的 format:"json"。
+async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, String> {
     let client = rig_client()?;
     let model_name = ollama_model();
     info!(
         target: "llm",
-        "rig_request url={} model={} prompt_len={}",
+        "rig_request url={} model={} prompt_len={} format={:?}",
         ollama_url(),
         model_name,
-        prompt.len()
+        prompt.len(),
+        format
     );
 
     let model = client.completion_model(&model_name);
-    let request = model.completion_request(prompt).build();
+    let request_builder = model.completion_request(prompt);
+    let request = if format.is_some() {
+        let schema: schemars::Schema = serde_json::from_value(serde_json::json!({"type": "object"}))
+            .map_err(|e| format!("Schema build error: {}", e))?;
+        request_builder.output_schema(schema).build()
+    } else {
+        request_builder.build()
+    };
 
     match tokio::time::timeout(timeout, model.completion(request)).await {
         Ok(Ok(response)) => {
