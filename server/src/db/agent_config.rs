@@ -76,11 +76,12 @@ pub fn create_agent_skill(conn: &Connection, req: CreateAgentSkillRequest) -> Re
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let is_active: i32 = req.is_active.unwrap_or(true).into();
+    let skill_config_json = req.skill_config_json.unwrap_or_else(|| "{}".to_string());
 
     conn.execute(
-        "INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, trigger_scenario, is_active, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![id, req.agent_id, req.skill_name, req.skill_config_json, req.trigger_scenario, is_active, now, now],
+        "INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, skill_markdown, trigger_scenario, is_active, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![id, req.agent_id, req.skill_name, skill_config_json, req.skill_markdown, req.trigger_scenario, is_active, now, now],
     )?;
     log::info!(target: "db", "create_agent_skill id={} agent_id={}", id, req.agent_id);
     get_agent_skill(conn, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
@@ -89,9 +90,10 @@ pub fn create_agent_skill(conn: &Connection, req: CreateAgentSkillRequest) -> Re
 pub fn update_agent_skill(conn: &Connection, id: &str, req: CreateAgentSkillRequest) -> Result<(), rusqlite::Error> {
     let now = Utc::now().to_rfc3339();
     let is_active: i32 = req.is_active.unwrap_or(true).into();
+    let skill_config_json = req.skill_config_json.unwrap_or_else(|| "{}".to_string());
     conn.execute(
-        "UPDATE agent_skills SET agent_id=?1, skill_name=?2, skill_config_json=?3, trigger_scenario=?4, is_active=?5, updated_at=?6 WHERE id=?7",
-        params![req.agent_id, req.skill_name, req.skill_config_json, req.trigger_scenario, is_active, now, id],
+        "UPDATE agent_skills SET agent_id=?1, skill_name=?2, skill_config_json=?3, skill_markdown=?4, trigger_scenario=?5, is_active=?6, updated_at=?7 WHERE id=?8",
+        params![req.agent_id, req.skill_name, skill_config_json, req.skill_markdown, req.trigger_scenario, is_active, now, id],
     )?;
     log::info!(target: "db", "update_agent_skill id={}", id);
     Ok(())
@@ -194,19 +196,20 @@ fn map_agent(row: &Row) -> Result<DigitalAgent, rusqlite::Error> {
 }
 
 const SKILL_SELECT: &str =
-    "SELECT id, agent_id, skill_name, skill_config_json, trigger_scenario, is_active, created_at, updated_at FROM agent_skills";
+    "SELECT id, agent_id, skill_name, skill_config_json, skill_markdown, trigger_scenario, is_active, created_at, updated_at FROM agent_skills";
 
 fn map_skill(row: &Row) -> Result<AgentSkill, rusqlite::Error> {
-    let is_active_int: i32 = row.get(5)?;
+    let is_active_int: i32 = row.get(6)?;
     Ok(AgentSkill {
         id: row.get(0)?,
         agent_id: row.get(1)?,
         skill_name: row.get(2)?,
         skill_config_json: row.get(3)?,
-        trigger_scenario: row.get(4)?,
+        skill_markdown: row.get(4)?,
+        trigger_scenario: row.get(5)?,
         is_active: is_active_int != 0,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 

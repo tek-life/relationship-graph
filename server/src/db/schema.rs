@@ -147,6 +147,7 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             agent_id TEXT NOT NULL,
             skill_name TEXT NOT NULL,
             skill_config_json TEXT NOT NULL,
+            skill_markdown TEXT,
             trigger_scenario TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
@@ -191,6 +192,7 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     result?;
     ensure_relationship_columns(conn)?;
     ensure_person_columns(conn)?;
+    ensure_agent_skills_columns(conn)?;
     repair_orphan_sessions(conn)?;
     agent_config::seed_defaults(conn)
 }
@@ -276,6 +278,25 @@ fn ensure_person_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
         if !existing.iter().any(|col| col == name) {
             conn.execute(&format!("ALTER TABLE persons ADD COLUMN {} {}", name, ddl), [])?;
             log::info!(target: "db", "schema_migrate_add_column table=persons column={}", name);
+        }
+    }
+    Ok(())
+}
+
+/// 老库升级：为 agent_skills 表补充 SKILL Markdown 列（数字人 Markdown 技能管理）
+fn ensure_agent_skills_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut stmt = conn.prepare("PRAGMA table_info(agent_skills)")?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<_, _>>()?;
+
+    let columns = [
+        ("skill_markdown", "TEXT"),
+    ];
+    for (name, ddl) in columns {
+        if !existing.iter().any(|col| col == name) {
+            conn.execute(&format!("ALTER TABLE agent_skills ADD COLUMN {} {}", name, ddl), [])?;
+            log::info!(target: "db", "schema_migrate_add_column table=agent_skills column={}", name);
         }
     }
     Ok(())

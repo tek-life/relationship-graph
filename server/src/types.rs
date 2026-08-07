@@ -384,6 +384,7 @@ pub struct AgentSkill {
     pub agent_id: String,
     pub skill_name: String,
     pub skill_config_json: String,
+    pub skill_markdown: Option<String>,
     pub trigger_scenario: Option<String>,
     pub is_active: bool,
     pub created_at: String,
@@ -395,7 +396,10 @@ pub struct AgentSkill {
 pub struct CreateAgentSkillRequest {
     pub agent_id: String,
     pub skill_name: String,
-    pub skill_config_json: String,
+    #[serde(default)]
+    pub skill_config_json: Option<String>,
+    #[serde(default)]
+    pub skill_markdown: Option<String>,
     pub trigger_scenario: Option<String>,
     pub is_active: Option<bool>,
 }
