@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use std::time::Duration;
 use log::{info, warn};
+
+use rig_core::client::{CompletionClient, Nothing};
+use rig_core::completion::{AssistantContent, CompletionModel as RigCompletionModel};
+use rig_core::providers::ollama;
 
 use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage};
 
@@ -77,6 +82,97 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration) -> R
 
     let data: OllamaResponse = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
     data.response.ok_or_else(|| "Empty response from Ollama".to_string())
+}
+
+// ---------- rig 通道（双轨改造 Step 2） ----------
+
+/// 读取双轨开关：RG_LLM_BACKEND = "legacy" | "rig"，默认 legacy
+fn llm_backend() -> String {
+    std::env::var("RG_LLM_BACKEND")
+        .unwrap_or_else(|_| "legacy".to_string())
+        .to_lowercase()
+}
+
+/// 读取函数白名单：RG_LLM_RIG_FNS（逗号分隔）。
+/// 未设置返回 None；设置了但为空（或全为空白）视为全部启用。
+fn rig_fns_whitelist() -> Option<Vec<String>> {
+    std::env::var("RG_LLM_RIG_FNS").ok().map(|value| {
+        value
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
+}
+
+/// 判断指定函数是否应走 rig 通道：
+/// RG_LLM_BACKEND=rig 且（白名单未设置 / 为空 或 白名单包含 fn_name）
+fn use_rig(fn_name: &str) -> bool {
+    if llm_backend() != "rig" {
+        return false;
+    }
+    match rig_fns_whitelist() {
+        None => true,
+        Some(list) if list.is_empty() => true,
+        Some(list) => list.iter().any(|f| f == fn_name),
+    }
+}
+
+/// 缓存 rig 的 Ollama client（顺带修复每次新建连接问题）。
+/// 不注入自定义 http_client，超时完全由 tokio::time::timeout 控制。
+fn rig_client() -> Result<&'static ollama::Client, String> {
+    static CLIENT: OnceLock<Result<ollama::Client, String>> = OnceLock::new();
+    let cached = CLIENT.get_or_init(|| {
+        ollama::Client::builder()
+            .api_key(Nothing)
+            .base_url(ollama_url())
+            .build()
+            .map_err(|e| format!("Rig client build failed: {}", e))
+    });
+    cached.as_ref().map_err(|e| e.clone())
+}
+
+/// 通过 rig-core 调用 Ollama /api/chat，与 legacy 的 call_ollama 平行。
+/// 超时与错误文案与 legacy 通道保持一致。
+async fn call_rig(prompt: &str, timeout: Duration) -> Result<String, String> {
+    let client = rig_client()?;
+    let model_name = ollama_model();
+    info!(
+        target: "llm",
+        "rig_request url={} model={} prompt_len={}",
+        ollama_url(),
+        model_name,
+        prompt.len()
+    );
+
+    let model = client.completion_model(&model_name);
+    let request = model.completion_request(prompt).build();
+
+    match tokio::time::timeout(timeout, model.completion(request)).await {
+        Ok(Ok(response)) => {
+            // 取 choices 中的 Text 内容拼接
+            let text: String = response
+                .choice
+                .iter()
+                .filter_map(|item| match item {
+                    AssistantContent::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            if text.is_empty() {
+                Err("Empty response from Ollama".to_string())
+            } else {
+                Ok(text)
+            }
+        }
+        Ok(Err(e)) => Err(format!("Ollama request failed: {}", e)),
+        Err(_) => Err(format!(
+            "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
+            model_name,
+            timeout.as_secs()
+        )),
+    }
 }
 
 pub async fn general_chat(query: &str) -> Result<String, String> {
