@@ -844,7 +844,8 @@ async fn poll_rig_event(
 }
 
 /// POST /api/chat/stream — SSE 流式聊天。
-/// rig 路径：rig model.stream() 增量推送 thinking_delta / text_delta，Final 携带 usage；
+/// rig / cloud 路径：general_chat_stream 内部按通道分流（rig ollama 或百炼
+/// CompletionsClient），增量推送 thinking_delta / text_delta，Final 携带 usage；
 /// legacy 降级路径：step 事件后同步调用 general_chat，完整回复作为单条 text_delta。
 async fn chat_stream_handler(
     State(state): State<SharedState>,
@@ -856,7 +857,7 @@ async fn chat_stream_handler(
     }
 
     // 技能 prompt 在 unfold 之前同步解析（锁内取数 → drop guard），
-    // clone 进闭包后 rig / legacy 两分支共用
+    // clone 进闭包后 rig / cloud / legacy 分支共用
     let skills = resolve_skills_prompt(&state, req.agent_id.as_deref());
 
     let backend = crate::llm::general_chat_backend();
@@ -891,7 +892,9 @@ async fn chat_stream_handler(
                     ChatStreamPhase::Init,
                 )),
                 ChatStreamPhase::Init => {
-                    if backend == "rig" {
+                    // rig 与 cloud 均走流式（general_chat_stream 内部按通道分流）；
+                    // 仅 legacy 降级为非流式一次性调用
+                    if backend == "rig" || backend == "cloud" {
                         match crate::llm::general_chat_stream(&query, &skills).await {
                             Ok(stream) => {
                                 poll_rig_event(stream, &thinking_count, &text_count).await
