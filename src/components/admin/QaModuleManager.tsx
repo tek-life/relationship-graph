@@ -1,4 +1,4 @@
-// QA 指令模块管理：CRUD + 排序调整
+// 内观画像指令模块管理：CRUD + 排序调整
 
 import { useCallback, useEffect, useState } from 'react';
 import { apiDelete, apiGet, apiPost, apiPut } from '../../services/api';
@@ -165,7 +165,7 @@ export default function QaModuleManager() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  if (loading) return <LoadingSpinner text="正在加载 QA 模块…" />;
+  if (loading) return <LoadingSpinner text="正在加载内观画像指令模块…" />;
 
   return (
     <div className="space-y-4">
@@ -173,7 +173,7 @@ export default function QaModuleManager() {
 
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-          QA 指令模块（{modules.length}）
+          内观画像指令模块（{modules.length}）
         </h3>
         {editingId === null && (
           <button type="button" className="btn-primary" onClick={startCreate}>
@@ -190,7 +190,7 @@ export default function QaModuleManager() {
           style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}
         >
           <h4 className="font-medium" style={{ color: 'var(--text-primary)' }}>
-            {editingId === 'new' ? '新建 QA 模块' : '编辑 QA 模块'}
+            {editingId === 'new' ? '新建内观画像指令模块' : '编辑内观画像指令模块'}
           </h4>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -289,7 +289,7 @@ export default function QaModuleManager() {
 
       {/* 模块列表表格 */}
       {modules.length === 0 ? (
-        <EmptyState text="暂无 QA 模块，点击「新建模块」创建。" />
+        <EmptyState text="暂无内观画像指令模块，点击「新建模块」创建。" />
       ) : (
         <div className="overflow-hidden rounded-xl border" style={{ borderColor: 'var(--border-color)' }}>
           <table className="w-full text-sm">
@@ -375,7 +375,7 @@ export default function QaModuleManager() {
       {/* 删除确认 */}
       {deleteTarget && (
         <ConfirmDialog
-          title="删除 QA 模块"
+          title="删除内观画像指令模块"
           message={`确认删除「${deleteTarget.name}」？此操作不可撤销。`}
           danger
           confirmLabel="删除"

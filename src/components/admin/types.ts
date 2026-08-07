@@ -56,7 +56,7 @@ export interface CreateAgentSkillRequest {
   isActive?: boolean;
 }
 
-/** QA 指令模块 */
+/** 内观画像指令模块 */
 export interface QaInstructionModule {
   id: string;
   name: string;
@@ -70,7 +70,7 @@ export interface QaInstructionModule {
   updatedAt: string;
 }
 
-/** 创建/更新 QA 模块请求体 */
+/** 创建/更新内观画像指令模块请求体 */
 export interface CreateQaInstructionModuleRequest {
   name: string;
   description?: string | null;

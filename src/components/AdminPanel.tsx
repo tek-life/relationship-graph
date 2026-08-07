@@ -1,5 +1,5 @@
 // 管理后台主面板：Tab 式管理界面
-// 包含数字人管理、QA 指令管理、用户管理、邀请管理四个模块
+// 包含数字人管理、内观画像指令管理、用户管理、邀请管理四个模块
 
 import { useState } from 'react';
 import AgentManager from './admin/AgentManager';
@@ -36,7 +36,7 @@ export default function AdminPanel({ userId: _userId }: AdminPanelProps = {}) {
           active={activeTab === 'qa-modules'}
           onClick={() => setActiveTab('qa-modules')}
         >
-          QA 指令管理
+          内观画像指令管理
         </AdminTabButton>
         <AdminTabButton active={activeTab === 'users'} onClick={() => setActiveTab('users')}>
           用户管理

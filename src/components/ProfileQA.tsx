@@ -73,7 +73,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [history, currentQuestion]);
 
-  // 加载 QA 模块列表
+  // 加载内观画像指令模块列表
   useEffect(() => {
     apiGet<{ modules: QaModuleInfo[] }>('/api/profile-qa/modules')
       .then((res) => {
@@ -400,7 +400,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                     color: 'var(--text-primary, #1e293b)',
                   }}
                 >
-                  {/* 教练问题来自后端 QA 指令模块，可能含 Markdown */}
+                  {/* 教练问题来自后端内观画像指令模块，可能含 Markdown */}
                   <MarkdownContent content={exchange.question} className="qa-question-md" />
                 </div>
               </div>
