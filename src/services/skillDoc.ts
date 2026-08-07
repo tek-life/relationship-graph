@@ -18,7 +18,8 @@ export function parseFrontmatter(md: string): ParsedSkillDoc {
       return { meta, body: lines.slice(i + 1).join('\n').replace(/^\n+/, '') };
     }
     const idx = lines[i].indexOf(':');
-    if (idx > 0) {
+    // 仅解析非缩进行（平铺 key: value）；缩进行视为嵌套内容，跳过
+    if (idx > 0 && !/^\s/.test(lines[i])) {
       const key = lines[i].slice(0, idx).trim();
       if (key) meta[key] = lines[i].slice(idx + 1).trim().replace(/^["']|["']$/g, '');
     }
