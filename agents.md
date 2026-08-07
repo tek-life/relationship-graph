@@ -311,6 +311,11 @@ NLQ / 互动记录 AI 提取需要：
 - `@数字管家` 作为 alias 与其等价。
 - 点击头像时自动把 `@联系人管家` 写入首页输入框，行为对齐“微信 @ 某人”。
 
+### 11.5 技能（SKILL）注入范围
+
+- 数字人 SKILL 注入仅作用于 `/api/chat` 与 `/api/chat/stream` 两条链路（请求携带 `agentId` 时注入该数字人的技能文档）。
+- 联系人管家（`routeMode=relationship`）走 NLQ 规则链路，其 `extract_*` JSON 抽取不注入技能。
+
 ---
 
 ## 12. 执行约定记忆
