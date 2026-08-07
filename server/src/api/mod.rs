@@ -13,7 +13,7 @@ use crate::types::{
     CreateRelationshipRequest, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
     LoginResponse, NlqConfirmRequest, NlqMultiRequest, NlqResponse, Person, Relationship, User,
 };
-use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -178,7 +178,13 @@ impl From<rusqlite::Error> for ApiError {
     }
 }
 
-async fn require_auth(State(state): State<SharedState>, req: Request, next: Next) -> Response {
+/// 认证中间件注入的身份标记：token 关联的用户 ID。
+/// chat 端点以 Option<Extension<AuthUser>> 提取，提取不到时降级为
+/// “不注入画像”，永不阻断聊天。
+#[derive(Clone, Debug)]
+pub struct AuthUser(pub String);
+
+async fn require_auth(State(state): State<SharedState>, mut req: Request, next: Next) -> Response {
     let token = req
         .headers()
         .get("authorization")
@@ -194,7 +200,15 @@ async fn require_auth(State(state): State<SharedState>, req: Request, next: Next
         .unwrap_or(None);
 
     match token_info {
-        Some(_) => next.run(req).await,
+        Some(info) => {
+            // 纯加法：将 token 关联的用户 ID 注入 extensions，供 chat 端点
+            // 提取用于画像注入；setup/unlock 签发的未关联用户 token 不注入，
+            // 其余受保护路由不消费该扩展，行为不变
+            if let Some(user_id) = info.user_id {
+                req.extensions_mut().insert(AuthUser(user_id));
+            }
+            next.run(req).await
+        }
         None => {
             log::warn!(target: "auth", "request_rejected reason=invalid_token path={}", req.uri().path());
             (
@@ -721,6 +735,7 @@ async fn natural_language_query(
 
 async fn chat_handler(
     State(state): State<SharedState>,
+    user: Option<Extension<AuthUser>>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, ApiError> {
     let query = req.query.trim();
@@ -728,7 +743,8 @@ async fn chat_handler(
         return Err(ApiError::bad_request("问题不能为空"));
     }
 
-    let skills = resolve_skills_prompt(&state, req.agent_id.as_deref());
+    let user_id = user.map(|u| (u.0).0);
+    let skills = resolve_skills_prompt(&state, req.agent_id.as_deref(), user_id.as_deref());
     log::info!(
         target: "chat",
         "chat_handler query_len={} skills_chars={}",
@@ -743,7 +759,9 @@ async fn chat_handler(
 /// agent_id 为 None 时返回空串；DB 锁约定：锁内取数据 → 立即 drop guard →
 /// 再由调用方 await LLM；任何错误（锁失败/库未解锁/查询失败）均 log::warn
 /// 后返回空串——技能故障永不阻断聊天。日志仅记元数据，不落技能内容。
-fn resolve_skills_prompt(state: &SharedState, agent_id: Option<&str>) -> String {
+/// user_id 预留参数：下一步用于用户画像常驻技能注入。
+fn resolve_skills_prompt(state: &SharedState, agent_id: Option<&str>, user_id: Option<&str>) -> String {
+    let _ = user_id;
     let Some(agent_id) = agent_id else {
         return String::new();
     };
@@ -851,6 +869,7 @@ async fn poll_rig_event(
 /// legacy 降级路径：step 事件后同步调用 general_chat，完整回复作为单条 text_delta。
 async fn chat_stream_handler(
     State(state): State<SharedState>,
+    user: Option<Extension<AuthUser>>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let query = req.query.trim().to_string();
@@ -860,7 +879,8 @@ async fn chat_stream_handler(
 
     // 技能 prompt 在 unfold 之前同步解析（锁内取数 → drop guard），
     // clone 进闭包后 rig / cloud / legacy 分支共用
-    let skills = resolve_skills_prompt(&state, req.agent_id.as_deref());
+    let user_id = user.map(|u| (u.0).0);
+    let skills = resolve_skills_prompt(&state, req.agent_id.as_deref(), user_id.as_deref());
 
     let backend = crate::llm::general_chat_backend();
     let model_name = crate::llm::general_chat_model();
