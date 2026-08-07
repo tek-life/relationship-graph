@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::db::{agent_config, person, schema};
-    use crate::types::{CreateAgentSkillRequest, CreateDigitalAgentRequest, CreatePersonRequest};
+    use crate::db::{agent_config, person, schema, user as user_db};
+    use crate::types::{CreateAgentSkillRequest, CreateDigitalAgentRequest, CreatePersonRequest, CreateUserRequest};
     use rusqlite::Connection;
 
     fn in_memory_db() -> Connection {
@@ -374,5 +374,127 @@ mod tests {
         std::env::set_var("RG_SKILL_BUDGET_CHARS", "abc");
         assert_eq!(agent_config::skill_budget_chars(), 3000);
         std::env::remove_var("RG_SKILL_BUDGET_CHARS");
+    }
+
+    // === 用户画像常驻技能（get_profile_doc / build_profile_skill_prompt / apply_profile_budget） ===
+
+    /// get_profile_doc 降级路径：用户不存在 / 画像未完成 / 文档空白均返回 None，
+    /// 已完成且非空时返回原文（不携带 password_hash 等其他字段）
+    #[test]
+    fn get_profile_doc_gate_and_degradation() {
+        let conn = in_memory_db();
+        // 用户不存在 → None
+        assert_eq!(user_db::get_profile_doc(&conn, "no-such-user").unwrap(), None);
+
+        // 画像未完成（profile_completed=0，即使带文档）→ None
+        let user = user_db::create_user(
+            &conn,
+            CreateUserRequest {
+                username: "profile_user".to_string(),
+                password_hash: "hash".to_string(),
+                display_name: None,
+                role: None,
+                profile_doc: Some("草稿画像".to_string()),
+            },
+        )
+        .expect("create user");
+        assert_eq!(user_db::get_profile_doc(&conn, &user.id).unwrap(), None);
+
+        // 完成但文档为空白 → None
+        conn.execute(
+            "UPDATE users SET profile_doc = '   ', profile_completed = 1 WHERE id = ?1",
+            [&user.id],
+        )
+        .unwrap();
+        assert_eq!(user_db::get_profile_doc(&conn, &user.id).unwrap(), None);
+
+        // 完成且非空 → 返回原文
+        conn.execute(
+            "UPDATE users SET profile_doc = '# 画像\n重视长期主义' WHERE id = ?1",
+            [&user.id],
+        )
+        .unwrap();
+        assert_eq!(
+            user_db::get_profile_doc(&conn, &user.id).unwrap().as_deref(),
+            Some("# 画像\n重视长期主义")
+        );
+    }
+
+    /// build_profile_skill_prompt：空/空白返回空串（此时注入链路 skills 为空，
+    /// general_chat_prompt 与无画像现状逐字节一致——llm.rs 既有基准单测锁定）；
+    /// 非空包装为 `### 技能：用户画像` 段并剥离意外携带的 frontmatter
+    #[test]
+    fn build_profile_skill_prompt_wraps_and_strips() {
+        // 空/空白/仅剩 frontmatter → 空串（三种降级路径）
+        assert_eq!(agent_config::build_profile_skill_prompt(""), "");
+        assert_eq!(agent_config::build_profile_skill_prompt("   \n"), "");
+        assert_eq!(agent_config::build_profile_skill_prompt("---\nname: p\ndescription: d\n---"), "");
+
+        // 正常包装
+        let section = agent_config::build_profile_skill_prompt("# 我的画像\n重视长期主义");
+        assert_eq!(section, "### 技能：用户画像\n# 我的画像\n重视长期主义\n\n");
+
+        // 意外携带 frontmatter → 剥离后包装
+        let with_fm = "---\nname: p\ndescription: d\n---\n正文内容";
+        assert_eq!(
+            agent_config::build_profile_skill_prompt(with_fm),
+            "### 技能：用户画像\n正文内容\n\n"
+        );
+    }
+
+    /// apply_profile_budget：未超预算原文返回；超预算按字符截断并追加说明
+    #[test]
+    fn apply_profile_budget_truncates_by_chars() {
+        let section = "### 技能：用户画像\n画像正文\n\n";
+        let total = section.chars().count();
+        // 未超 / 恰好等于预算 → 原文
+        assert_eq!(agent_config::apply_profile_budget(section, total), section);
+        assert_eq!(agent_config::apply_profile_budget(section, total + 10), section);
+        // 超预算 → 截到预算字符数 + 说明行（多字节字符不被剖半）
+        let out = agent_config::apply_profile_budget(section, 6);
+        assert!(out.starts_with("### 技能"));
+        assert!(out.contains("（注：用户画像超出字符预算 6，已截断）"));
+        assert!(!out.contains("画像正文"));
+    }
+
+    /// 画像预算默认值与 env 覆盖（单测进程内设置环境变量）
+    #[test]
+    fn profile_skill_budget_env_override() {
+        std::env::remove_var("RG_PROFILE_SKILL_BUDGET_CHARS");
+        assert_eq!(agent_config::profile_skill_budget_chars(), 4000);
+        std::env::set_var("RG_PROFILE_SKILL_BUDGET_CHARS", "256");
+        assert_eq!(agent_config::profile_skill_budget_chars(), 256);
+        // 非法值回退默认
+        std::env::set_var("RG_PROFILE_SKILL_BUDGET_CHARS", "abc");
+        assert_eq!(agent_config::profile_skill_budget_chars(), 4000);
+        std::env::remove_var("RG_PROFILE_SKILL_BUDGET_CHARS");
+    }
+
+    /// 合并注入顺序与共享预算：画像段在前（最高优先级）、数字人技能段在后；
+    /// 共享预算不足时截断从尾部按段边界砍，画像段优先保留
+    #[test]
+    fn profile_and_agent_skills_merge_order_and_budget() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@测试画像");
+        let md = "---\nname: s1\ndescription: d1\n---\n技能正文";
+        agent_config::create_agent_skill(&conn, skill_request(&agent_id, "演示技能", Some(md), true)).unwrap();
+
+        let profile_section = agent_config::build_profile_skill_prompt("用户画像正文");
+        let agent_section = agent_config::build_skills_prompt(&conn, &agent_id).unwrap();
+        let merged = format!("{}{}", profile_section, agent_section);
+
+        // 画像段在最前，数字人技能段在后
+        assert!(merged.starts_with("### 技能：用户画像\n用户画像正文\n\n"));
+        assert!(merged.find("技能：用户画像").unwrap() < merged.find("技能：演示技能").unwrap());
+
+        // 预算容纳全文 → 不截断
+        assert_eq!(agent_config::apply_skill_budget(&merged, merged.chars().count()), merged);
+
+        // 预算仅容画像段 → 数字人技能段被砍，画像保留（画像在前天然优先）
+        let budget = profile_section.chars().count() + 1;
+        let out = agent_config::apply_skill_budget(&merged, budget);
+        assert!(out.starts_with(&profile_section));
+        assert!(!out.contains("技能：演示技能"));
+        assert!(out.contains("（注：技能内容超出字符预算"));
     }
 }

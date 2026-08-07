@@ -402,6 +402,26 @@ mod general_chat_prompt_tests {
         // 技能尾部空白被归一，与“用户问题：”之间恰有一个空行
         assert!(!prompt.contains("\n\n\n\n用户问题"));
     }
+
+    /// 画像常驻技能：空/空白画像经 build_profile_skill_prompt 产出空串，
+    /// 注入后 prompt 与无画像现状逐字节一致（legacy_prompt 基准同源锁定）；
+    /// 画像段作为技能段注入时位置与数字人技能一致（角色设定在前、问题殿后）
+    #[test]
+    fn profile_skill_section_injection_format() {
+        let query = "帮我分析一下关系维护情况";
+        // 空画像 → 注入串为空 → 与现状逐字节一致
+        let empty_skills = crate::db::agent_config::build_profile_skill_prompt("   ");
+        assert_eq!(empty_skills, "");
+        assert_eq!(general_chat_prompt(query, &empty_skills), legacy_prompt(query));
+
+        // 画像段注入：与 build_profile_skill_prompt 产出格式对齐
+        let skills = crate::db::agent_config::build_profile_skill_prompt("画像正文");
+        assert_eq!(skills, "### 技能：用户画像\n画像正文\n\n");
+        let prompt = general_chat_prompt(query, &skills);
+        assert!(prompt.starts_with("你是您的个人 AI 平台的通用助理。"));
+        assert!(prompt.contains("\n\n你当前具备以下技能，请在适用时遵循：\n### 技能：用户画像\n画像正文\n\n用户问题："));
+        assert!(prompt.ends_with(&format!("用户问题：{}", query)));
+    }
 }
 
 /// 缓存 rig 的 Ollama client（顺带修复每次新建连接问题）。
