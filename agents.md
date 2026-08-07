@@ -111,6 +111,8 @@ relationship-graph/
 | 端侧 LLM 信息抽取 | 已完成 | `src/services/ollama.ts` |
 | 语音转文字 | 已完成调用封装 | `src/components/VoiceRecorder.tsx`、`services/whisper.ts`、`commands/voice.rs` |
 | 单元测试 | 已完成 Rust 侧基础测试 | `src-tauri/src/db/tests.rs`、`commands/nlq.rs` 内测试 |
+| 聊天联网搜索 | 已完成（cloud 通道） | `server/src/llm.rs`（百炼 `enable_search` 透传）、`components/ChatView.tsx` |
+| 聊天文档上传注入 | 已完成（前端解析） | `server/src/document.rs`、`components/DocumentAttachButton.tsx` |
 
 ### 5.1 安全与加密
 
@@ -151,6 +153,12 @@ relationship-graph/
 - 调用本地 Ollama `qwen2:7b` 模型。
 - 输入沟通文本，输出 JSON：`persons`、`topics`、`actionItems`、`summary`。
 - 失败时有 fallback，返回空字段 + 内容前 80 字摘要。
+
+### 5.6 聊天联网搜索与文档上传（一期）
+
+- **联网搜索**：仅 cloud 通道生效（`RG_LLM_BACKEND=cloud`），通过百炼 `enable_search` 实现；`ChatRequest.webSearch`（camelCase，可选）控制单次请求开关，env `RG_WEB_SEARCH=off` 为全局总闸（默认允许）；SSE 新增 step stage `web_search`。
+- **文档上传**：前端解析 txt / md / pdf（pdfjs-dist）/ docx（mammoth），`.doc` 不支持；以 `ChatRequest.documents: [{fileName, content}]` 随请求提交，服务端 `server/src/document.rs` 按 `RG_DOC_CONTEXT_CHARS`（默认 12000 字）预算尾部截断并附 `[文档内容超长已截断]`；prompt 注入顺序为 角色 → 技能 → 文档 → 问题。
+- 二期规划见 §8 待办（MCP rmcp 搜索、后端解析端点、来源角标）。
 
 ---
 
@@ -219,6 +227,7 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 13. **多用户 / 组织权限体系**。
 14. **Tauri 能力配置**：当前没有 `src-tauri/capabilities/default.json`，运行 `tauri dev` 前需确认 Tauri 2 权限配置。
 15. **admin 忘记密码的恢复手段**：去掉主密码后（密钥文件机制），admin 密码忘记即无法登录且无恢复途径；可后续提供基于 `db.key` 密钥文件的 admin 密码重置命令（如服务端本地 CLI）。
+16. **联网搜索 + 文档上传二期**：联网搜索切换为 MCP rmcp 实现（替代百炼 `enable_search` 单一通道）；文档解析下沉到后端端点 `/api/docs/parse`（替代当前前端 pdf/docx/txt 解析，支持 `.doc` 等更多格式）；联网回答附搜索来源角标（引用标注）。
 
 ### 8.1 LLM 对话功能缺口清单（2026-08-07 审计）
 
@@ -323,4 +332,4 @@ NLQ / 互动记录 AI 提取需要：
 - 每完成一个小功能后，立即执行一次 Git commit。
 - 该 commit 流程默认自动进行，不需要再次向用户请示确认。
 
-*最后更新：2026-08-07*
+*最后更新：2026-08-08*
