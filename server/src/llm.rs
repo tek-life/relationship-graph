@@ -45,11 +45,14 @@ struct OllamaResponse {
 }
 
 async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str) -> Result<String, String> {
-    // 双轨分发：RG_LLM_BACKEND=rig 时全量走 rig；legacy 模式下命中
-    // RG_LLM_RIG_FNS 白名单的函数走 rig（函数级灰度），其余走原 reqwest
-    // legacy 实现（默认行为与改造前完全一致）。详见 use_rig 注释。
-    if use_rig(fn_name) {
-        return call_rig(prompt, format, timeout).await;
+    // 三值通道分发：RG_LLM_BACKEND=rig/cloud 时全量走对应通道；legacy 模式下
+    // 命中 RG_LLM_CLOUD_FNS / RG_LLM_RIG_FNS 白名单的函数分别走 cloud / rig
+    //（函数级灰度，cloud 优先），其余走原 reqwest legacy 实现（默认行为与
+    // 改造前完全一致）。详见 llm_channel_for 注释。
+    match llm_channel(fn_name) {
+        Channel::Rig => return call_rig(prompt, format, timeout).await,
+        // Cloud 通道在下一步接线，暂回落 legacy
+        Channel::Cloud | Channel::Legacy => {}
     }
 
     let client = reqwest::Client::builder()
@@ -92,10 +95,88 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
     data.response.ok_or_else(|| "Empty response from Ollama".to_string())
 }
 
-// ---------- rig 通道（双轨改造 Step 2） ----------
+// ---------- 通道分发（legacy | rig | cloud 三值） ----------
 
-/// 读取双轨开关：RG_LLM_BACKEND = "legacy" | "rig"，默认 legacy。
-/// trim 处理与 rig_fns_whitelist 保持对称，避免环境变量含首尾空白时静默回退 legacy。
+const DEFAULT_CLOUD_TIMEOUT_SECS: u64 = 60;
+
+/// 云端（阿里云百炼）兼容端点
+fn cloud_base_url() -> String {
+    std::env::var("RG_CLOUD_BASE_URL")
+        .unwrap_or_else(|_| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string())
+}
+
+/// 云端聊天主力模型（开思考）
+fn cloud_chat_model() -> String {
+    std::env::var("RG_CLOUD_CHAT_MODEL").unwrap_or_else(|_| "qwen3.7-plus".to_string())
+}
+
+/// 云端抽取首选模型（无思考开销，json_object 正常）
+fn cloud_extract_model() -> String {
+    std::env::var("RG_CLOUD_EXTRACT_MODEL").unwrap_or_else(|_| "qwen-flash".to_string())
+}
+
+fn cloud_timeout() -> Duration {
+    ollama_timeout("RG_CLOUD_TIMEOUT_SECS", DEFAULT_CLOUD_TIMEOUT_SECS)
+}
+
+/// 云端 API Key 默认文件路径：~/.config/rg-cloud-api-key
+fn cloud_api_key_file() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from(".config"))
+        .join("rg-cloud-api-key")
+}
+
+/// 解析云端 API Key：优先 env RG_CLOUD_API_KEY，缺省读文件（均 trim）；
+/// 两者皆无/皆空时报错。Key 不落日志与代码。
+fn cloud_api_key() -> Result<String, String> {
+    cloud_api_key_from(std::env::var("RG_CLOUD_API_KEY").ok(), &cloud_api_key_file())
+}
+
+/// Key 解析纯函数版本（便于单测）
+fn cloud_api_key_from(env_value: Option<String>, file_path: &std::path::Path) -> Result<String, String> {
+    const MISSING_HINT: &str = "未配置云端 API Key：请设置环境变量 RG_CLOUD_API_KEY 或文件 ~/.config/rg-cloud-api-key";
+    if let Some(value) = env_value {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    match std::fs::read_to_string(file_path) {
+        Ok(content) => {
+            let trimmed = content.trim();
+            if trimmed.is_empty() {
+                Err(MISSING_HINT.to_string())
+            } else {
+                Ok(trimmed.to_string())
+            }
+        }
+        Err(_) => Err(MISSING_HINT.to_string()),
+    }
+}
+
+/// 云端模型类别：聊天类函数用聊天模型，其余（extract_* / compress_context）用抽取模型
+fn is_cloud_chat_fn(fn_name: &str) -> bool {
+    matches!(fn_name, "general_chat" | "profile_qa_chat" | "generate_profile_document")
+}
+
+fn cloud_model_for(fn_name: &str) -> String {
+    if is_cloud_chat_fn(fn_name) {
+        cloud_chat_model()
+    } else {
+        cloud_extract_model()
+    }
+}
+
+/// LLM 通道（三值）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Channel {
+    Legacy,
+    Rig,
+    Cloud,
+}
+
+/// 读取通道开关：RG_LLM_BACKEND = "legacy" | "rig" | "cloud"，默认 legacy。
+/// trim 处理与白名单解析保持对称，避免环境变量含首尾空白时静默回退 legacy。
 fn llm_backend() -> String {
     std::env::var("RG_LLM_BACKEND")
         .unwrap_or_else(|_| "legacy".to_string())
@@ -103,10 +184,10 @@ fn llm_backend() -> String {
         .to_lowercase()
 }
 
-/// 读取函数白名单：RG_LLM_RIG_FNS（逗号分隔），仅在 RG_LLM_BACKEND=legacy 时生效。
+/// 读取函数白名单（逗号分隔），仅在 RG_LLM_BACKEND=legacy 时生效。
 /// 未设置返回 None；设置了但为空（或全为空白）视为无函数启用灰度。
-fn rig_fns_whitelist() -> Option<Vec<String>> {
-    std::env::var("RG_LLM_RIG_FNS").ok().map(|value| {
+fn env_fns_whitelist(env_key: &str) -> Option<Vec<String>> {
+    std::env::var(env_key).ok().map(|value| {
         value
             .split(',')
             .map(|s| s.trim().to_string())
@@ -115,45 +196,162 @@ fn rig_fns_whitelist() -> Option<Vec<String>> {
     })
 }
 
-/// 判断指定函数是否应走 rig 通道。双轨开关语义：
-/// - RG_LLM_BACKEND=rig → 所有函数全量走 rig（忽略 RG_LLM_RIG_FNS 白名单）；
-/// - RG_LLM_BACKEND=legacy（默认）且 RG_LLM_RIG_FNS 白名单包含 fn_name
-///   → 该函数走 rig（函数级灰度发布）；
-/// - 其余情况走 legacy。
-/// 白名单未设置或为空列表时，legacy 模式下无函数走 rig。
-/// 双轨开关决策（纯函数，语义见 use_rig），抽出便于单元测试。
-fn should_use_rig(backend: &str, whitelist: Option<&[String]>, fn_name: &str) -> bool {
-    if backend == "rig" {
-        // backend=rig 时全量切换，白名单不再生效（避免白名单不含该函数时静默回退 legacy）
-        return true;
-    }
-    match whitelist {
-        None => false,
-        Some(list) if list.is_empty() => false,
-        Some(list) => list.iter().any(|f| f == fn_name),
-    }
+fn rig_fns_whitelist() -> Option<Vec<String>> {
+    env_fns_whitelist("RG_LLM_RIG_FNS")
 }
 
-fn use_rig(fn_name: &str) -> bool {
-    should_use_rig(&llm_backend(), rig_fns_whitelist().as_deref(), fn_name)
+fn cloud_fns_whitelist() -> Option<Vec<String>> {
+    env_fns_whitelist("RG_LLM_CLOUD_FNS")
+}
+
+/// 三值通道决策（纯函数，可单测）。语义：
+/// - backend=rig / cloud → 全量走对应通道（两个白名单均忽略）；
+/// - legacy（默认）：命中 RG_LLM_CLOUD_FNS → Cloud；否则命中
+///   RG_LLM_RIG_FNS → Rig；否则 Legacy（函数级灰度发布）。
+/// 同一函数同时命中两个白名单时 Cloud 优先。
+/// 与原双轨开关（should_use_rig）语义等价：rig 白名单未设置/为空时
+/// legacy 模式下无函数走 rig，cloud 白名单同理。
+fn llm_channel_for(
+    backend: &str,
+    rig_whitelist: Option<&[String]>,
+    cloud_whitelist: Option<&[String]>,
+    fn_name: &str,
+) -> Channel {
+    match backend {
+        "rig" => return Channel::Rig,
+        "cloud" => return Channel::Cloud,
+        _ => {}
+    }
+    if let Some(list) = cloud_whitelist {
+        if list.iter().any(|f| f == fn_name) {
+            return Channel::Cloud;
+        }
+    }
+    if let Some(list) = rig_whitelist {
+        if list.iter().any(|f| f == fn_name) {
+            return Channel::Rig;
+        }
+    }
+    Channel::Legacy
+}
+
+fn llm_channel(fn_name: &str) -> Channel {
+    llm_channel_for(
+        &llm_backend(),
+        rig_fns_whitelist().as_deref(),
+        cloud_fns_whitelist().as_deref(),
+        fn_name,
+    )
 }
 
 #[cfg(test)]
-mod dual_track_tests {
+mod channel_tests {
     use super::*;
 
+    /// 与原双轨开关 6 断言等价的 rig 语义（以 Channel 表达）
     #[test]
-    fn dual_track_switch_semantics() {
+    fn legacy_rig_semantics_preserved() {
         // backend=rig → 全量走 rig，即使白名单不含该函数
-        assert!(should_use_rig("rig", None, "general_chat"));
-        assert!(should_use_rig("rig", Some(&["other_fn".to_string()]), "general_chat"));
-        // legacy + 白名单命中 → 函数级灰度走 rig
-        assert!(should_use_rig("legacy", Some(&["general_chat".to_string()]), "general_chat"));
+        assert_eq!(llm_channel_for("rig", None, None, "general_chat"), Channel::Rig);
+        assert_eq!(
+            llm_channel_for("rig", Some(&["other_fn".to_string()]), None, "general_chat"),
+            Channel::Rig
+        );
+        // legacy + rig 白名单命中 → 函数级灰度走 rig
+        assert_eq!(
+            llm_channel_for("legacy", Some(&["general_chat".to_string()]), None, "general_chat"),
+            Channel::Rig
+        );
         // legacy + 白名单未命中 → legacy
-        assert!(!should_use_rig("legacy", Some(&["other_fn".to_string()]), "general_chat"));
+        assert_eq!(
+            llm_channel_for("legacy", Some(&["other_fn".to_string()]), None, "general_chat"),
+            Channel::Legacy
+        );
         // legacy + 未设置/空白名单 → legacy
-        assert!(!should_use_rig("legacy", None, "general_chat"));
-        assert!(!should_use_rig("legacy", Some(&[]), "general_chat"));
+        assert_eq!(llm_channel_for("legacy", None, None, "general_chat"), Channel::Legacy);
+        assert_eq!(llm_channel_for("legacy", Some(&[]), None, "general_chat"), Channel::Legacy);
+    }
+
+    #[test]
+    fn cloud_channel_semantics() {
+        // backend=cloud → 全量走 cloud，两个白名单均忽略
+        assert_eq!(llm_channel_for("cloud", None, None, "general_chat"), Channel::Cloud);
+        assert_eq!(
+            llm_channel_for(
+                "cloud",
+                Some(&["general_chat".to_string()]),
+                Some(&["other".to_string()]),
+                "extract_person_fields"
+            ),
+            Channel::Cloud
+        );
+        // legacy + cloud 白名单命中 → cloud
+        assert_eq!(
+            llm_channel_for("legacy", None, Some(&["general_chat".to_string()]), "general_chat"),
+            Channel::Cloud
+        );
+        // legacy + cloud 未命中、rig 命中 → rig
+        assert_eq!(
+            llm_channel_for(
+                "legacy",
+                Some(&["general_chat".to_string()]),
+                Some(&["other".to_string()]),
+                "general_chat"
+            ),
+            Channel::Rig
+        );
+        // 两个白名单同时命中 → cloud 优先
+        assert_eq!(
+            llm_channel_for(
+                "legacy",
+                Some(&["general_chat".to_string()]),
+                Some(&["general_chat".to_string()]),
+                "general_chat"
+            ),
+            Channel::Cloud
+        );
+        // 空 cloud 白名单 → legacy
+        assert_eq!(
+            llm_channel_for("legacy", None, Some(&[]), "general_chat"),
+            Channel::Legacy
+        );
+    }
+
+    #[test]
+    fn cloud_api_key_resolution() {
+        let missing = std::env::temp_dir().join("rg-test-nonexistent-key-file");
+        let _ = std::fs::remove_file(&missing);
+        // env 与文件均缺失 → 报错
+        let err = cloud_api_key_from(None, &missing).unwrap_err();
+        assert!(err.contains("未配置云端 API Key"));
+        // env 优先且 trim
+        assert_eq!(cloud_api_key_from(Some("  sk-abc  ".to_string()), &missing).unwrap(), "sk-abc");
+        // env 为空白 → 回退文件（trim）
+        let file = std::env::temp_dir().join("rg-test-key-file");
+        std::fs::write(&file, " sk-file \n").unwrap();
+        assert_eq!(cloud_api_key_from(Some("   ".to_string()), &file).unwrap(), "sk-file");
+        assert_eq!(cloud_api_key_from(None, &file).unwrap(), "sk-file");
+        // 文件内容为空白 → 报错
+        std::fs::write(&file, "  \n").unwrap();
+        assert!(cloud_api_key_from(None, &file).is_err());
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn cloud_model_category_selection() {
+        // 聊天类函数
+        assert!(is_cloud_chat_fn("general_chat"));
+        assert!(is_cloud_chat_fn("profile_qa_chat"));
+        assert!(is_cloud_chat_fn("generate_profile_document"));
+        // 抽取/压缩类函数
+        assert!(!is_cloud_chat_fn("extract_person_fields"));
+        assert!(!is_cloud_chat_fn("extract_update_fields"));
+        assert!(!is_cloud_chat_fn("extract_interaction_data"));
+        assert!(!is_cloud_chat_fn("extract_path_target"));
+        assert!(!is_cloud_chat_fn("compress_context"));
+        // 默认模型名（env 未设置时）
+        assert_eq!(cloud_model_for("general_chat"), "qwen3.7-plus");
+        assert_eq!(cloud_model_for("compress_context"), "qwen-flash");
     }
 }
 
@@ -284,14 +482,22 @@ fn general_chat_prompt(query: &str, skills: &str) -> String {
     }
 }
 
-/// 当前 general_chat 实际走的通道（"rig" / "legacy"），供 SSE 端点发 routing 事件
+/// 当前 general_chat 实际走的通道（"rig" / "cloud" / "legacy"），供 SSE 端点发 routing 事件
 pub fn general_chat_backend() -> &'static str {
-    if use_rig("general_chat") { "rig" } else { "legacy" }
+    match llm_channel("general_chat") {
+        Channel::Rig => "rig",
+        Channel::Cloud => "cloud",
+        Channel::Legacy => "legacy",
+    }
 }
 
-/// 当前对话模型名，供 SSE 端点发 llm_call 事件
+/// 当前对话模型名，供 SSE 端点发 llm_call 事件（cloud 通道返回云端聊天模型名）
 pub fn general_chat_model() -> String {
-    ollama_model()
+    if llm_channel("general_chat") == Channel::Cloud {
+        cloud_chat_model()
+    } else {
+        ollama_model()
+    }
 }
 
 pub async fn general_chat(query: &str, skills: &str) -> Result<String, String> {
