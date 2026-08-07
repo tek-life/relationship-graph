@@ -755,34 +755,89 @@ async fn chat_handler(
     Ok(Json(ChatResponse { reply }))
 }
 
-/// 解析请求指定数字人的技能 prompt（注入 /api/chat 与 /api/chat/stream 两条链路）。
-/// agent_id 为 None 时返回空串；DB 锁约定：锁内取数据 → 立即 drop guard →
-/// 再由调用方 await LLM；任何错误（锁失败/库未解锁/查询失败）均 log::warn
-/// 后返回空串——技能故障永不阻断聊天。日志仅记元数据，不落技能内容。
-/// user_id 预留参数：下一步用于用户画像常驻技能注入。
+/// 解析聊天注入的技能 prompt（注入 /api/chat 与 /api/chat/stream 两条链路）：
+/// 用户画像常驻段（user_id 有值且画像已完成时，永远注入、无需 agentId）
+/// 在前（最高优先级），数字人技能段（agent_id 有值时）在后；合并后整体走
+/// apply_skill_budget 共享预算（截断从尾部按段边界砍，画像在前天然优先保留）。
+/// 画像段先经 apply_profile_budget（RG_PROFILE_SKILL_BUDGET_CHARS 默认 4000）
+/// 预裁剪，防止超长画像挤掉全部数字人技能。
+/// NLQ 链路（nlq_multi）不注入画像与技能（agents.md §11.5 约定）。
+/// DB 锁约定：锁内取数据 → 立即 drop guard → 再由调用方 await LLM；
+/// 任何错误（锁失败/库未解锁/查询失败）均 log::warn 后降级——画像/技能
+/// 故障永不阻断聊天。日志仅记元数据，不落内容。
 fn resolve_skills_prompt(state: &SharedState, agent_id: Option<&str>, user_id: Option<&str>) -> String {
-    let _ = user_id;
-    let Some(agent_id) = agent_id else {
+    if agent_id.is_none() && user_id.is_none() {
         return String::new();
-    };
+    }
     let guard = match state.db.lock() {
         Ok(guard) => guard,
         Err(e) => {
-            log::warn!(target: "chat", "resolve_skills_prompt lock_failed agent_id={} err={}", agent_id, e);
+            log::warn!(target: "chat", "resolve_skills_prompt lock_failed err={}", e);
             return String::new();
         }
     };
-    let result = get_conn(&guard).and_then(|conn| {
-        agent_config::build_skills_prompt(conn, agent_id).map_err(|e| e.to_string())
-    });
-    drop(guard);
-    match result {
-        Ok(prompt) => prompt,
-        Err(e) => {
-            log::warn!(target: "chat", "resolve_skills_prompt_failed agent_id={} err={}", agent_id, e);
-            String::new()
+    // 一次加锁内先取画像后取数字人技能，各自失败独立降级互不影响
+    let (profile_section, agent_section) = match get_conn(&guard) {
+        Ok(conn) => {
+            let profile_section = match user_id {
+                Some(user_id) => match user_db::get_profile_doc(conn, user_id) {
+                    Ok(Some(doc)) => {
+                        let section = agent_config::build_profile_skill_prompt(&doc);
+                        agent_config::apply_profile_budget(
+                            &section,
+                            agent_config::profile_skill_budget_chars(),
+                        )
+                    }
+                    Ok(None) => String::new(),
+                    Err(e) => {
+                        log::warn!(target: "chat", "resolve_skills_prompt profile_failed err={}", e);
+                        String::new()
+                    }
+                },
+                None => String::new(),
+            };
+            let agent_section = match agent_id {
+                Some(agent_id) => match agent_config::build_skills_prompt(conn, agent_id) {
+                    Ok(prompt) => prompt,
+                    Err(e) => {
+                        log::warn!(
+                            target: "chat",
+                            "resolve_skills_prompt skills_failed agent_id={} err={}",
+                            agent_id,
+                            e
+                        );
+                        String::new()
+                    }
+                },
+                None => String::new(),
+            };
+            (profile_section, agent_section)
         }
-    }
+        Err(e) => {
+            log::warn!(target: "chat", "resolve_skills_prompt conn_failed err={}", e);
+            drop(guard);
+            return String::new();
+        }
+    };
+    drop(guard);
+
+    // 画像段在前（最高优先级），数字人技能段在后；合并后整体走共享预算，
+    // 截断从尾部按段边界砍，画像在前天然优先保留
+    let merged = format!("{}{}", profile_section, agent_section);
+    let budget = agent_config::skill_budget_chars();
+    let total_chars = merged.chars().count();
+    let truncated = total_chars > budget;
+    let merged = agent_config::apply_skill_budget(&merged, budget);
+    log::info!(
+        target: "chat",
+        "resolve_skills_prompt profile_chars={} agent_chars={} merged_chars={} budget={} truncated={}",
+        profile_section.chars().count(),
+        agent_section.chars().count(),
+        total_chars,
+        budget,
+        truncated
+    );
+    merged
 }
 
 // ---------- SSE 流式聊天 ----------

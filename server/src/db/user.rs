@@ -90,8 +90,6 @@ pub fn update_user_profile_completed(conn: &Connection, id: &str) -> Result<(), 
 /// 读取用户画像文档（chat 链路常驻技能注入用）：仅查 profile_doc /
 /// profile_completed 两列，不把 password_hash 等敏感字段带出。
 /// 画像未完成（profile_completed=0）、文档为空/空白、用户不存在均返回 None。
-// S3 接线 resolve_skills_prompt 后移除 allow
-#[allow(dead_code)]
 pub fn get_profile_doc(conn: &Connection, user_id: &str) -> Result<Option<String>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT profile_doc, profile_completed FROM users WHERE id = ?1",
