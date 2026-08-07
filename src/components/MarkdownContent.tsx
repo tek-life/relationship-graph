@@ -1,211 +1,134 @@
-import type { ReactNode } from 'react';
+/**
+ * Markdown 渲染组件
+ * 基于 react-markdown + remark-gfm（支持表格/删除线/任务列表）+ 代码语法高亮。
+ * 保持原有 props 签名（content / className）完全兼容。
+ */
+import { useState, type ReactNode } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light';
 
 interface MarkdownContentProps {
   content: string;
   className?: string;
 }
 
-type Block =
-  | { type: 'heading'; level: number; text: string }
-  | { type: 'paragraph'; text: string }
-  | { type: 'blockquote'; text: string }
-  | { type: 'unordered-list'; items: string[] }
-  | { type: 'ordered-list'; items: string[] }
-  | { type: 'code'; text: string }
-  | { type: 'spacer' };
-
 export default function MarkdownContent({ content, className = '' }: MarkdownContentProps) {
-  const blocks = parseMarkdown(content);
-
   return (
-    <div className={className}>
-      {blocks.map((block, index) => {
-        switch (block.type) {
-          case 'heading':
-            return block.level === 1 ? (
-              <h1 key={index} className="text-xl font-semibold leading-snug">
-                {renderInline(block.text)}
-              </h1>
-            ) : block.level === 2 ? (
-              <h2 key={index} className="text-lg font-semibold leading-snug">
-                {renderInline(block.text)}
-              </h2>
-            ) : (
-              <h3 key={index} className="text-base font-semibold leading-snug">
-                {renderInline(block.text)}
-              </h3>
-            );
-          case 'blockquote':
+    <div className={`markdown-body ${className}`}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children }) => (
+            <h1 className="mt-4 mb-2 text-xl font-semibold leading-snug first:mt-0">{children}</h1>
+          ),
+          h2: ({ children }) => (
+            <h2 className="mt-4 mb-2 text-lg font-semibold leading-snug first:mt-0">{children}</h2>
+          ),
+          h3: ({ children }) => (
+            <h3 className="mt-3 mb-1.5 text-base font-semibold leading-snug first:mt-0">{children}</h3>
+          ),
+          h4: ({ children }) => (
+            <h4 className="mt-3 mb-1.5 text-sm font-semibold leading-snug first:mt-0">{children}</h4>
+          ),
+          p: ({ children }) => <p className="my-2 leading-7 first:mt-0 last:mb-0">{children}</p>,
+          blockquote: ({ children }) => (
+            <blockquote className="my-3 border-l-4 border-slate-300 pl-3 text-sm text-slate-600">
+              {children}
+            </blockquote>
+          ),
+          ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
+          ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
+          li: ({ children }) => <li className="leading-6">{children}</li>,
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              className="text-blue-600 underline underline-offset-2"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {children}
+            </a>
+          ),
+          hr: () => <hr className="my-4 border-slate-200" />,
+          img: ({ src, alt }) => (
+            <img src={src} alt={alt ?? ''} className="my-3 max-w-full rounded-xl border border-slate-200" />
+          ),
+          table: ({ children }) => (
+            <div className="my-3 overflow-x-auto">
+              <table className="w-full border-collapse text-sm">{children}</table>
+            </div>
+          ),
+          thead: ({ children }) => <thead className="bg-slate-50">{children}</thead>,
+          th: ({ children }) => (
+            <th className="border border-slate-200 px-3 py-1.5 text-left font-semibold">{children}</th>
+          ),
+          td: ({ children }) => (
+            <td className="border border-slate-200 px-3 py-1.5 align-top">{children}</td>
+          ),
+          code: ({ className: codeClassName, children, ...rest }) => {
+            const text = String(children ?? '').replace(/\n$/, '');
+            const match = /language-([\w-]+)/.exec(codeClassName ?? '');
+            // 块级代码：带语言标记，或内容含换行
+            const isBlock = Boolean(match) || text.includes('\n');
+            if (isBlock) {
+              return <CodeBlock language={match?.[1]} code={text} />;
+            }
             return (
-              <blockquote key={index} className="border-l-4 border-slate-300 pl-3 text-sm text-slate-600">
-                {renderInline(block.text)}
-              </blockquote>
+              <code
+                className="rounded bg-slate-100 px-1.5 py-0.5 text-[0.9em] text-slate-800"
+                {...rest}
+              >
+                {children}
+              </code>
             );
-          case 'unordered-list':
-            return (
-              <ul key={index} className="list-disc space-y-1 pl-5">
-                {block.items.map((item, itemIndex) => (
-                  <li key={itemIndex} className="text-sm leading-6">
-                    {renderInline(item)}
-                  </li>
-                ))}
-              </ul>
-            );
-          case 'ordered-list':
-            return (
-              <ol key={index} className="list-decimal space-y-1 pl-5">
-                {block.items.map((item, itemIndex) => (
-                  <li key={itemIndex} className="text-sm leading-6">
-                    {renderInline(item)}
-                  </li>
-                ))}
-              </ol>
-            );
-          case 'code':
-            return (
-              <pre key={index} className="overflow-x-auto rounded-xl bg-slate-950 px-4 py-3 text-sm text-slate-100">
-                <code>{block.text}</code>
-              </pre>
-            );
-          case 'spacer':
-            return <div key={index} className="h-2" />;
-          default:
-            return (
-              <p key={index} className="text-sm leading-7">
-                {renderInline((block as { text: string }).text)}
-              </p>
-            );
-        }
-      })}
+          },
+          pre: ({ children }) => <>{children as ReactNode}</>,
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }
 
-function parseMarkdown(content: string): Block[] {
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
-  const blocks: Block[] = [];
-  let i = 0;
+/** 带语言标签与"复制"按钮的高亮代码块（亮色主题，与整体 UI 协调） */
+function CodeBlock({ language, code }: { language?: string; code: string }) {
+  const [copied, setCopied] = useState(false);
 
-  while (i < lines.length) {
-    const line = lines[i].trimEnd();
-    const trimmed = line.trim();
-
-    if (!trimmed) {
-      blocks.push({ type: 'spacer' });
-      i += 1;
-      continue;
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用时静默失败
     }
+  };
 
-    if (trimmed.startsWith('```')) {
-      const codeLines: string[] = [];
-      i += 1;
-      while (i < lines.length && !lines[i].trim().startsWith('```')) {
-        codeLines.push(lines[i]);
-        i += 1;
-      }
-      if (i < lines.length) i += 1;
-      blocks.push({ type: 'code', text: codeLines.join('\n') });
-      continue;
-    }
-
-    if (trimmed.startsWith('#')) {
-      const level = Math.min(trimmed.match(/^#+/)?.[0].length ?? 1, 3);
-      blocks.push({ type: 'heading', level, text: trimmed.replace(/^#+\s*/, '') });
-      i += 1;
-      continue;
-    }
-
-    if (trimmed.startsWith('>')) {
-      blocks.push({ type: 'blockquote', text: trimmed.replace(/^>\s*/, '') });
-      i += 1;
-      continue;
-    }
-
-    if (/^[-*]\s+/.test(trimmed)) {
-      const items: string[] = [];
-      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
-        items.push(lines[i].trim().replace(/^[-*]\s+/, ''));
-        i += 1;
-      }
-      blocks.push({ type: 'unordered-list', items });
-      continue;
-    }
-
-    if (/^\d+\.\s+/.test(trimmed)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
-        items.push(lines[i].trim().replace(/^\d+\.\s+/, ''));
-        i += 1;
-      }
-      blocks.push({ type: 'ordered-list', items });
-      continue;
-    }
-
-    const paragraphLines = [trimmed];
-    i += 1;
-    while (i < lines.length) {
-      const next = lines[i].trim();
-      if (!next || next.startsWith('#') || next.startsWith('>') || /^[-*]\s+/.test(next) || /^\d+\.\s+/.test(next) || next.startsWith('```')) {
-        break;
-      }
-      paragraphLines.push(next);
-      i += 1;
-    }
-    blocks.push({ type: 'paragraph', text: paragraphLines.join(' ') });
-  }
-
-  return blocks;
-}
-
-function renderInline(text: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
-  let lastIndex = 0;
-
-  for (const match of text.matchAll(pattern)) {
-    const token = match[0];
-    const index = match.index ?? 0;
-    if (index > lastIndex) {
-      nodes.push(text.slice(lastIndex, index));
-    }
-    nodes.push(renderToken(token, nodes.length));
-    lastIndex = index + token.length;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-
-  return nodes;
-}
-
-function renderToken(token: string, key: number): ReactNode {
-  if (token.startsWith('[')) {
-    const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-    if (linkMatch) {
-      return (
-        <a key={key} href={linkMatch[2]} className="text-blue-600 underline underline-offset-2" target="_blank" rel="noreferrer">
-          {linkMatch[1]}
-        </a>
-      );
-    }
-  }
-
-  if (token.startsWith('**') && token.endsWith('**')) {
-    return <strong key={key}>{token.slice(2, -2)}</strong>;
-  }
-
-  if (token.startsWith('*') && token.endsWith('*')) {
-    return <em key={key}>{token.slice(1, -1)}</em>;
-  }
-
-  if (token.startsWith('`') && token.endsWith('`')) {
-    return (
-      <code key={key} className="rounded bg-slate-100 px-1.5 py-0.5 text-[0.9em] text-slate-800">
-        {token.slice(1, -1)}
-      </code>
-    );
-  }
-
-  return token;
+  return (
+    <div className="my-3 overflow-hidden rounded-xl border border-slate-200">
+      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-100/80 px-3 py-1.5">
+        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          {language ?? 'text'}
+        </span>
+        <button
+          type="button"
+          className="rounded-md px-2 py-0.5 text-xs text-slate-500 transition hover:bg-slate-200 hover:text-slate-700"
+          onClick={handleCopy}
+        >
+          {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      <SyntaxHighlighter
+        language={language ?? 'text'}
+        style={oneLight}
+        customStyle={{ margin: 0, borderRadius: 0, fontSize: '0.85rem', lineHeight: 1.6 }}
+        PreTag="div"
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
 }

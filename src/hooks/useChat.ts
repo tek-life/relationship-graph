@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { routeQuery } from '../services/chatRouter';
 import { nlqConfirm } from '../services/db';
+import { resolveTextDisplay } from '../services/contentPolicy';
 import * as sessionApi from '../services/session';
 import type {
   Session,
@@ -90,34 +91,8 @@ function toDisplayMessage(msg: ChatMessage): ChatDisplayMessage {
   };
 }
 
-/** 判断是否为长内容（需要右侧面板展示） */
-function isLongContent(reply: string): boolean {
-  const normalized = reply.trim();
-  if (normalized.length >= 220) return true;
-  if (normalized.split('\n').length >= 6) return true;
-  return false;
-}
-
-/** 拆分长回复为预览 + 详情 */
-function splitAssistantReply(reply: string): { preview: string; detail: string; attachmentTitle: string } {
-  const normalized = reply.trim();
-  const paragraphs = normalized.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
-
-  if (paragraphs.length > 1) {
-    return {
-      preview: paragraphs[0],
-      detail: paragraphs.slice(1).join('\n\n').trim(),
-      attachmentTitle: '输出内容.md',
-    };
-  }
-
-  const cut = Math.min(Math.max(220, 120), normalized.length);
-  return {
-    preview: normalized.slice(0, cut).trim() || normalized,
-    detail: normalized.slice(cut).trim(),
-    attachmentTitle: '输出内容.md',
-  };
-}
+/** 附件模式下的默认标题 */
+const ATTACHMENT_TITLE = '详细回复.md';
 
 // === Hook 实现 ===
 
@@ -257,21 +232,22 @@ export function useChat(): UseChatReturn {
           }
         }
 
-        // 处理长内容（右侧面板）
+        // 长内容统一走 contentPolicy（结构化结果维持原渲染不变）
         if (response.fileContent) {
           assistantMsg.attachment = {
-            title: response.fileTitle || '输出内容.md',
+            title: response.fileTitle || ATTACHMENT_TITLE,
             content: response.fileContent,
           };
-        } else if (isLongContent(response.reply)) {
-          const split = splitAssistantReply(response.reply);
-          assistantMsg.content = split.preview;
-          if (split.detail) {
+        } else if (!assistantMsg.resultType && response.type === 'chat') {
+          const decision = resolveTextDisplay(response.reply);
+          if (decision.mode === 'attachment') {
+            assistantMsg.content = decision.summary ?? response.reply;
             assistantMsg.attachment = {
-              title: split.attachmentTitle,
-              content: split.detail,
+              title: ATTACHMENT_TITLE,
+              content: response.reply,
             };
           }
+          // collapsible / inline 模式由 ChatBubble 按 contentPolicy 渲染
         }
 
         setMessages((prev) => [...prev, assistantMsg]);

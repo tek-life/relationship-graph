@@ -74,19 +74,11 @@ function formatNlqResponse(resp: NlqResponse): ChatRouterResponse {
   }
 }
 
-/** 将通用聊天响应转换为统一路由响应，提取长文档到右侧面板 */
+/**
+ * 将通用聊天响应转换为统一路由响应。
+ * 长内容展示不再在此处判断，统一由 contentPolicy.resolveTextDisplay 决定
+ * （气泡直出 / 折叠展开 / FilePanel 附件）。
+ */
 function formatChatResponse(resp: ChatResponse): ChatRouterResponse {
-  const result: ChatRouterResponse = { type: 'chat', chatResponse: resp, reply: resp.reply };
-
-  // 检查回复中是否包含 markdown 代码块或长文档
-  const codeBlockMatch = resp.reply.match(/```[\s\S]*?```/);
-  if (codeBlockMatch) {
-    result.fileContent = codeBlockMatch[0];
-    result.fileTitle = '代码/文档';
-  } else if (resp.reply.length > 800) {
-    result.fileContent = resp.reply;
-    result.fileTitle = '详细回复';
-  }
-
-  return result;
+  return { type: 'chat', chatResponse: resp, reply: resp.reply };
 }

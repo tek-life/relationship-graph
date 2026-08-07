@@ -25,6 +25,7 @@ import ImageOcrButton, { type ImageOcrHandle } from './ImageOcrButton';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
 import { DIGITAL_AGENTS, CONTACT_MANAGER_AGENT_ID } from '../services/digitalAgents';
+import { resolveTextDisplay } from '../services/contentPolicy';
 import type { NlqResponse } from '../types';
 
 // === 示例查询 ===
@@ -412,8 +413,14 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
     ? { borderColor: 'rgba(148,163,184,0.35)', backgroundColor: 'rgba(255,255,255,0.92)' }
     : { borderColor: 'transparent', backgroundColor: 'transparent' };
 
+  // 助手纯文本消息（无结构化结果）：应用长内容策略与工具条
+  const isAssistantText = !isUser && !message.resultType;
+  const fullContent = message.attachment?.content ?? message.content;
+  const decision = isAssistantText ? resolveTextDisplay(fullContent) : null;
+  const isCollapsible = decision?.mode === 'collapsible' && !message.attachment;
+
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`group flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={`flex w-full max-w-3xl gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
         {/* 头像 */}
         <div
@@ -444,10 +451,14 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
               }`}
               style={bubbleStyle}
             >
-              <MarkdownContent
-                content={message.content}
-                className={`text-[15px] leading-7 ${isUser ? 'text-right' : 'text-left'}`}
-              />
+              {isCollapsible ? (
+                <CollapsibleMarkdown content={message.content} />
+              ) : (
+                <MarkdownContent
+                  content={message.content}
+                  className={`text-[15px] leading-7 ${isUser ? 'text-right' : 'text-left'}`}
+                />
+              )}
 
               {/* 附件按钮 */}
               {message.attachment && (
@@ -508,10 +519,95 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
                 </div>
               )}
             </div>
+
+            {/* 助手文本消息工具条：复制原文 / 下载 .md / 在面板打开 */}
+            {isAssistantText && (
+              <MessageToolbar
+                content={fullContent}
+                title={message.attachment?.title ?? '回复内容.md'}
+                onShowPanel={onShowPanel}
+              />
+            )}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+// === 可折叠长文本（400–1500 字区间） ===
+
+function CollapsibleMarkdown({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(true);
+
+  const preview = useMemo(() => {
+    const text = content.trim();
+    return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+  }, [content]);
+
+  return (
+    <div className="text-left">
+      <MarkdownContent
+        content={expanded ? content : preview}
+        className="text-[15px] leading-7"
+      />
+      <button
+        type="button"
+        className="mt-2 text-xs font-medium text-blue-600 transition hover:underline"
+        onClick={() => setExpanded((prev) => !prev)}
+      >
+        {expanded ? '收起' : '展开全文'}
+      </button>
+    </div>
+  );
+}
+
+// === 助手文本消息工具条 ===
+
+interface MessageToolbarProps {
+  content: string;
+  title: string;
+  onShowPanel: (content: string, title: string) => void;
+}
+
+function MessageToolbar({ content, title, onShowPanel }: MessageToolbarProps) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用时静默失败
+    }
+  }, [content]);
+
+  return (
+    <div className="flex items-center gap-1 px-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      <ToolbarActionButton onClick={() => void handleCopy()}>
+        {copied ? '已复制' : '复制原文'}
+      </ToolbarActionButton>
+      <ToolbarActionButton onClick={() => downloadMarkdown(title, content)}>
+        下载 .md
+      </ToolbarActionButton>
+      <ToolbarActionButton onClick={() => onShowPanel(content, title)}>
+        在面板打开
+      </ToolbarActionButton>
+    </div>
+  );
+}
+
+function ToolbarActionButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="rounded-full px-2 py-0.5 text-xs transition hover:bg-slate-100"
+      style={{ color: 'var(--text-secondary)' }}
+      onClick={onClick}
+    >
+      {children}
+    </button>
   );
 }
 
