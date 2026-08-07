@@ -22,7 +22,7 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // 新用户首次进入时自动引导到画像问卷；完成/跳过后本轮不再强制
+  // 新用户首次进入时自动引导到内观画像问卷；完成/跳过后本轮不再强制
   const [profilePrompted, setProfilePrompted] = useState(false);
 
   useEffect(() => {
@@ -120,7 +120,7 @@ function App() {
             <TabButton active={isPathActive('/contacts')} onClick={() => navigate('/contacts')}>联系人</TabButton>
             <TabButton active={isPathActive('/graph')} onClick={() => navigate('/graph')}>图谱</TabButton>
             <TabButton active={isPathActive('/import')} onClick={() => navigate('/import')}>导入</TabButton>
-            <TabButton active={isPathActive('/profile-qa')} onClick={() => navigate('/profile-qa')}>个人画像</TabButton>
+            <TabButton active={isPathActive('/profile-qa')} onClick={() => navigate('/profile-qa')}>内观画像</TabButton>
             {isAdmin && (
               <TabButton active={isPathActive('/admin')} onClick={() => navigate('/admin')}>管理后台</TabButton>
             )}

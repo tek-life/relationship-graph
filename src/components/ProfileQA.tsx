@@ -1,6 +1,6 @@
 /**
- * 个人画像构建 — 逐问逐答对话式 UI
- * 三阶段流程：英雄之旅复盘 → 芒格多元思维 → 个人画像生成
+ * 内观画像构建 — 逐问逐答对话式 UI
+ * 三阶段流程：英雄之旅复盘 → 芒格多元思维 → 内观画像生成
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -37,9 +37,9 @@ interface QaModuleInfo {
 
 interface ProfileQAProps {
   onComplete?: () => void;
-  /** 已保存的画像文档（已完成用户进入时直接查看） */
+  /** 已保存的内观画像文档（已完成用户进入时直接查看） */
   initialProfileDoc?: string | null;
-  /** 当前用户是否已完成画像 */
+  /** 当前用户是否已完成内观画像 */
   initialCompleted?: boolean;
 }
 
@@ -47,7 +47,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
   const [stages, setStages] = useState<QaModuleInfo[]>([
     { id: 'hero_journey', name: '英雄之旅复盘' },
     { id: 'munger_thinking', name: '芒格多元思维' },
-    { id: 'profile_generate', name: '画像生成' },
+    { id: 'profile_generate', name: '内观画像生成' },
   ]);
   const [stageIndex, setStageIndex] = useState(0);
   const [history, setHistory] = useState<QaExchange[]>([]);
@@ -59,7 +59,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [isComposing, setIsComposing] = useState(false);
-  // 已完成用户重新作答模式（默认展示已有画像，点击“重新作答”后进入问卷）
+  // 已完成用户重新作答模式（默认展示已有内观画像，点击“重新作答”后进入问卷）
   const hasExistingDoc = Boolean(initialCompleted && initialProfileDoc);
   const [redoing, setRedoing] = useState(false);
   const showExistingDoc = hasExistingDoc && !redoing && !profileDoc;
@@ -115,7 +115,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
           // 自动获取下一阶段第一个问题
           setTimeout(() => fetchNextQuestion(nextIndex, hist), 500);
         } else if (res.isFlowComplete) {
-          // 整个流程完成，生成画像
+          // 整个流程完成，生成内观画像
           await generateProfile(hist);
         }
       } catch (e: unknown) {
@@ -128,7 +128,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
     [],
   );
 
-  // 初始加载第一个问题；已有画像的用户先展示现有画像，不自动开问
+  // 初始加载第一个问题；已有内观画像的用户先展示现有内观画像，不自动开问
   useEffect(() => {
     if (!hasExistingDoc) {
       fetchNextQuestion(0, []);
@@ -148,7 +148,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
     void fetchNextQuestion(0, []);
   };
 
-  // 生成画像文档
+  // 生成内观画像文档
   const generateProfile = async (hist: QaExchange[]) => {
     setLoading(true);
     setError('');
@@ -159,7 +159,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
       setProfileDoc(res.profileDoc);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '未知错误';
-      setError(`生成画像失败：${msg}`);
+      setError(`生成内观画像失败：${msg}`);
     } finally {
       setLoading(false);
     }
@@ -184,7 +184,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
     await fetchNextQuestion(stageIndex, newHistory);
   };
 
-  // 保存画像
+  // 保存内观画像
   const handleSave = async () => {
     if (!profileDoc) return;
     setSaving(true);
@@ -270,7 +270,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
         </div>
       )}
 
-      {/* 已有画像查看 / 对话流区域 / 画像预览 */}
+      {/* 已有内观画像查看 / 对话流区域 / 内观画像预览 */}
       {showExistingDoc ? (
         <div className="flex-1 overflow-y-auto px-6 py-6">
           <div className="mx-auto max-w-3xl">
@@ -285,13 +285,13 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                 className="mb-1 text-lg font-semibold"
                 style={{ color: 'var(--text-primary, #1e293b)' }}
               >
-                我的画像
+                我的内观画像
               </h2>
               <p
                 className="mb-4 text-xs"
                 style={{ color: 'var(--text-muted, #94a3b8)' }}
               >
-                如需更新画像，可重新回答问卷生成新版本并覆盖保存。
+                如需更新内观画像，可重新回答问卷生成新版本并覆盖保存。
               </p>
               <MarkdownContent
                 content={initialProfileDoc ?? ''}
@@ -306,7 +306,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                 style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
                 onClick={handleRestart}
               >
-                重新作答更新画像
+                重新作答更新内观画像
               </button>
               {onComplete && (
                 <button
@@ -338,7 +338,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                 className="mb-4 text-lg font-semibold"
                 style={{ color: 'var(--text-primary, #1e293b)' }}
               >
-                个人画像文档
+                内观画像文档
               </h2>
               <MarkdownContent
                 content={profileDoc}
@@ -355,14 +355,14 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                   style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
                   onClick={handleSave}
                 >
-                  {saving ? '保存中…' : '确认保存画像'}
+                  {saving ? '保存中…' : '确认保存内观画像'}
                 </button>
               ) : (
                 <span
                   className="flex items-center gap-1 text-sm font-medium"
                   style={{ color: '#22c55e' }}
                 >
-                  ✓ 画像已保存
+                  ✓ 内观画像已保存
                 </span>
               )}
               {onComplete && (
@@ -482,7 +482,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
         </div>
       )}
 
-      {/* 底部输入区域（仅在非画像预览时显示） */}
+      {/* 底部输入区域（仅在未预览内观画像时显示） */}
       {!profileDoc && currentQuestion && !loading && (
         <div
           className="shrink-0 border-t px-6 py-4"
@@ -527,7 +527,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
             style={{ color: 'var(--text-secondary, #64748b)' }}
             onClick={onComplete}
           >
-            {hasExistingDoc ? '返回首页' : '跳过画像构建，返回首页'}
+            {hasExistingDoc ? '返回首页' : '跳过内观画像构建，返回首页'}
           </button>
         </div>
       )}

@@ -98,7 +98,7 @@ export default function UserManager() {
                 <th className="px-3 py-2 text-left font-medium">用户名</th>
                 <th className="px-3 py-2 text-left font-medium">显示名称</th>
                 <th className="px-3 py-2 text-left font-medium">角色</th>
-                <th className="px-3 py-2 text-left font-medium">画像完成</th>
+                <th className="px-3 py-2 text-left font-medium">内观画像完成</th>
                 <th className="px-3 py-2 text-left font-medium">创建时间</th>
                 <th className="px-3 py-2 text-left font-medium">操作</th>
               </tr>
