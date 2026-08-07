@@ -15,6 +15,7 @@ Ollama（localhost:11434）仅本地开发走 legacy/rig 通道时需要。
 - [start-services.sh — 生产/开发服务启动](#start-servicessh--生产开发服务启动)
 - [restart-services.sh — 服务重启](#restart-servicessh--服务重启)
 - [deploy.sh — 一键部署](#deploysh--一键部署)
+- [阿里云 ECS 部署（本地构建 + 上传）](#阿里云-ecs-部署本地构建--上传)
 - [install-system-deps.sh — 系统依赖安装](#install-system-depssh--系统依赖安装)
 - [install-ai-deps.sh — AI 依赖安装（Whisper）](#install-ai-depssh--ai-依赖安装whisper)
 - [setup-proxy.sh 与 Caddyfile — 代理与反向代理](#setup-proxysh-与-caddyfile--代理与反向代理)
@@ -32,7 +33,9 @@ Ollama（localhost:11434）仅本地开发走 legacy/rig 通道时需要。
 | `dev.sh` | 本地开发一键启动（可选 Ollama + cargo run 后端 + Vite） | 日常开发调试 |
 | `start-services.sh` | 启动后端 + 前端（生产/开发模式自动检测），默认云端 LLM | 生产启动、被 restart/deploy 复用 |
 | `restart-services.sh` | 按端口动态停掉再拉起，可带 `--build` | 后端代码更新后重启 |
-| `deploy.sh` | 全新机器一键部署（依赖→构建→启动→初始化数据库→种子数据） | 阿里云 ECS / WSL 首次部署 |
+| `deploy.sh` | 全新机器一键部署（依赖→构建→启动→初始化数据库→种子数据） | 阿里云 ECS / WSL 首次部署（服务器上编译） |
+| `server-init.sh` | ECS 一次性初始化（运行时依赖 + Caddy + systemd 用户级服务） | 阿里云 ECS 部署方案，在服务器上运行 |
+| `release.sh` | 本地构建 → rsync 上传 → 远端重启 → 健康检查 | 阿里云 ECS 日常发版，在开发机运行 |
 | `install-system-deps.sh` | apt 安装系统级依赖 | 被 deploy.sh 调用，也可单独执行 |
 | `install-ai-deps.sh` | 编译安装 whisper-cli + 下载 Whisper 模型 | 语音转写依赖 |
 | `setup-proxy.sh` | 为当前 shell 配置宿主机代理 | 网络受限环境（GitHub/HF 下载） |
@@ -160,6 +163,69 @@ RG_INIT_PASSWORD='你的管理员密码' ./scripts/deploy.sh
 ```
 
 **注意**：脚本会对已初始化实例改用 admin 登录校验（不会重复 setup）；演示数据导入失败不阻断部署。
+
+> 低配 ECS（2C4G）在服务器上 `cargo build --release` 有 OOM 风险，推荐改用下方[阿里云 ECS 部署（本地构建 + 上传）](#阿里云-ecs-部署本地构建--上传)方案。
+
+---
+
+## 阿里云 ECS 部署（本地构建 + 上传）
+
+**思路**：服务器不装 Rust / Node.js / Ollama，只做运行时。产物在本地（WSL2 Ubuntu 24.04，x86_64 与 ECS 架构一致）编译后 rsync 上传；两个服务用 **systemd 用户级 unit** 托管（崩溃自动拉起、开机自启、发版无需 root）。LLM 走百炼云端（`RG_LLM_BACKEND=cloud`）。
+
+**远端目录布局**：
+
+```
+~/relationship-graph/{bin,web,logs,Caddyfile}     # 产物与配置（release.sh 上传）
+~/.local/share/relationship-graph/                # SQLCipher 数据库 + db.key（勿动）
+~/.config/rg-cloud-api-key                        # 百炼 API Key（chmod 600）
+~/.config/systemd/user/relationship-graph.service # Axum 后端（8790）
+~/.config/systemd/user/rg-caddy.service           # Caddy 前端 + /api 反代（8080）
+```
+
+### 步骤 1：服务器一次性初始化（server-init.sh）
+
+```bash
+# 本地把脚本传到服务器并执行
+scp scripts/server-init.sh <user>@<ip>:~/ && ssh <user>@<ip> bash server-init.sh
+
+# 服务器上配置百炼 API Key（LLM 功能需要）
+ssh <user>@<ip> "mkdir -p ~/.config && printf '%s' 'sk-xxx' > ~/.config/rg-cloud-api-key && chmod 600 ~/.config/rg-cloud-api-key"
+```
+
+脚本内容：apt 安装运行时依赖（rsync/tesseract 等）→ 官方仓库安装 Caddy → 生成 `~/relationship-graph/Caddyfile` → 创建并 enable 两个 systemd 用户级服务 → 启用 linger（开机自启）。
+
+### 步骤 2：首次发版 + 初始化数据库（release.sh，在本地运行）
+
+```bash
+# 前提：已配置 SSH 免密（ssh-copy-id <user>@<ip>）
+RG_HOST=<user>@<ip> ./scripts/release.sh
+
+# 首次部署后初始化数据库（创建 admin）
+curl -X POST http://<ip>:8080/api/auth/setup \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<至少8位密码>"}'
+```
+
+### release.sh 参数
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `RG_HOST` | 必填 | SSH 目标，如 `hfli@47.98.x.x` |
+| `RG_SSH_PORT` | `22` | SSH 端口 |
+| `RG_REMOTE_DIR` | `relationship-graph` | 远端应用目录（相对 home） |
+| `SKIP_BACKEND` / `SKIP_FRONTEND` | `0` | 设 `1` 只发前端 / 只发后端 |
+
+流程：`cargo build --release` → `npm run build` → rsync 上传（二进制先传 `.new` 再原子替换）→ `systemctl --user restart` → curl 健康检查（失败自动打印 journalctl 日志）。
+
+### 日常运维
+
+```bash
+RG_HOST=<user>@<ip> ./scripts/release.sh              # 每次改动后发版
+ssh <user>@<ip> 'systemctl --user status relationship-graph'
+ssh <user>@<ip> 'journalctl --user -u relationship-graph -f'   # 跟踪后端日志
+```
+
+**前置条件**：阿里云安全组放行 8080/tcp（如需 HTTPS 另放行 80/443 并备案域名）。
 
 ---
 
@@ -299,7 +365,7 @@ RG_LLM_BACKEND=legacy ./scripts/dev.sh
 ## 注意事项
 
 1. **API Key 安全**：严禁把 Key 写进任何脚本、配置或提交到仓库；脚本对 Key 只做存在性检查，绝不打印/回显内容。Key 文件请保持 `chmod 600`。
-2. **服务无进程守护**：后端为 nohup 裸跑，机器重启或进程崩溃不会自动拉起；重启服务时务必**动态查端口持有 PID**（`ss -ltnp | grep 8790`）再 kill，勿写死 PID（历史上出现过并发重启导致 PID 漂移）。
+2. **服务托管方式**：本地/WSL 开发环境的后端为 nohup 裸跑，无进程守护，重启服务时务必**动态查端口持有 PID**（`ss -ltnp | grep 8790`）再 kill，勿写死 PID；阿里云 ECS 生产环境请用 `server-init.sh` + `release.sh` 方案（systemd 用户级服务，自动拉起）。
 3. **数据目录勿动**：`~/.local/share/relationship-graph` 含加密数据库与 db.key 密钥文件，更换目录等同丢失全部数据。
 4. **先停后编译**：`restart-services.sh --build` 已遵循"先停服务再 cargo build"，手动操作时也请照此，避免旧进程运行已被覆盖删除的二进制。
 5. **沙箱/容器内启动陷阱**：在只读挂载的沙箱里启动服务会命中"数据库只读"错误，请在真实文件系统（沙箱外）启动常驻服务。
