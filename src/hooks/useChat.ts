@@ -11,7 +11,7 @@ import { routeQuery } from '../services/chatRouter';
 import { nlqConfirm } from '../services/db';
 import { getDigitalAgentById } from '../services/digitalAgents';
 import { resolveTextDisplay } from '../services/contentPolicy';
-import { streamChat, type StreamStep } from '../services/stream';
+import { streamChat, type StreamStep, type StreamChatOptions } from '../services/stream';
 import * as sessionApi from '../services/session';
 import type {
   Session,
@@ -48,6 +48,8 @@ export interface ChatDisplayMessage {
   routerResponse?: ChatRouterResponse;
   /** 模型思考过程（流式累积，历史消息从 metadata 还原） */
   thinking?: ChatThinking;
+  /** 本轮请求开启了联网搜索（仅前端本地标记，用于气泡提示） */
+  webSearched?: boolean;
   /** 流式生成中 */
   streaming?: boolean;
   /** 错误消息（带"重试"按钮） */
@@ -77,12 +79,14 @@ export interface UseChatReturn {
   deleteSession: (sessionId: string) => Promise<void>;
   /** 更新会话标题 */
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
-  /** 发送消息（text 为发给后端的正文；displayText 为含 @mention 前缀的原文，仅用于展示与持久化，缺省同 text） */
+  /** 发送消息（text 为发给后端的正文；displayText 为含 @mention 前缀的原文，仅用于展示与持久化，缺省同 text；
+   * options 携带联网开关与文档附件，仅流式链路透传） */
   sendMessage: (
     text: string,
     agentId?: string | null,
     activeAgentIds?: string[],
     displayText?: string,
+    options?: StreamChatOptions,
   ) => Promise<ChatRouterResponse | null>;
   /** 停止流式生成（保留已生成内容） */
   stopGeneration: () => void;
@@ -208,6 +212,7 @@ export function useChat(userId?: string | null): UseChatReturn {
     text: string;
     agentId?: string | null;
     activeAgentIds?: string[];
+    options?: StreamChatOptions;
   } | null>(null);
 
   // 保持 ref 同步
@@ -419,6 +424,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       text: string,
       agentId?: string | null,
       activeAgentIds?: string[],
+      options?: StreamChatOptions,
     ) => {
       // 多智能体协同模式：在消息中附带多 agent 上下文
       const query =
@@ -440,6 +446,7 @@ export function useChat(userId?: string | null): UseChatReturn {
         content: '',
         streaming: true,
         thinking: { steps: [], reasoning: '' },
+        webSearched: Boolean(options?.webSearch),
       };
       setMessages((prev) => [...prev, placeholder]);
       setStreaming(true);
@@ -494,6 +501,7 @@ export function useChat(userId?: string | null): UseChatReturn {
           },
           controller.signal,
           agentId ?? undefined,
+          options,
         );
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
@@ -593,6 +601,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       agentId?: string | null,
       activeAgentIds?: string[],
       displayText?: string,
+      options?: StreamChatOptions,
     ): Promise<ChatRouterResponse | null> => {
       // 粘性 agentId：未显式 @ 时沿用该会话最近一次被 @ 的对话型数字人
       // （校验其仍存在；relationship 模式如联系人管家不参与粘性）
@@ -617,7 +626,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       };
       setLoading(true);
       setError('');
-      lastRequestRef.current = { text, agentId: effectiveAgentId, activeAgentIds };
+      lastRequestRef.current = { text, agentId: effectiveAgentId, activeAgentIds, options };
 
       try {
         if (!sessionId) {
@@ -650,7 +659,7 @@ export function useChat(userId?: string | null): UseChatReturn {
         if (effectiveAgentId === 'contact_manager') {
           return await runNlqRequest(sessionId!, text, effectiveAgentId, activeAgentIds);
         }
-        await runStreamRequest(sessionId!, text, effectiveAgentId, activeAgentIds);
+        await runStreamRequest(sessionId!, text, effectiveAgentId, activeAgentIds, options);
         return null;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -690,7 +699,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       if (last.agentId === 'contact_manager') {
         await runNlqRequest(sessionId, last.text, last.agentId, last.activeAgentIds);
       } else {
-        await runStreamRequest(sessionId, last.text, last.agentId, last.activeAgentIds);
+        await runStreamRequest(sessionId, last.text, last.agentId, last.activeAgentIds, last.options);
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);

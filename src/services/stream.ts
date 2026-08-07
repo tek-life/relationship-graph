@@ -15,7 +15,7 @@
  */
 import { API_BASE, getToken, clearToken, AUTH_EXPIRED_EVENT } from './api';
 
-export type StreamStage = 'routing' | 'llm_call';
+export type StreamStage = 'routing' | 'llm_call' | 'web_search';
 
 export interface StreamStep {
   stage: StreamStage;
@@ -25,6 +25,18 @@ export interface StreamStep {
 export interface StreamDone {
   usage: { input: number; output: number } | null;
   backend: 'rig' | 'cloud' | 'legacy';
+}
+
+export interface StreamDocument {
+  fileName: string;
+  content: string;
+}
+
+export interface StreamChatOptions {
+  /** 是否开启联网搜索（缺省 false） */
+  webSearch?: boolean;
+  /** 随请求提交的文档附件（已在前端抽取为纯文本） */
+  documents?: StreamDocument[];
 }
 
 export interface StreamChatCallbacks {
@@ -49,6 +61,7 @@ export async function streamChat(
   callbacks: StreamChatCallbacks,
   signal?: AbortSignal,
   agentId?: string,
+  options?: StreamChatOptions,
 ): Promise<void> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -59,10 +72,16 @@ export async function streamChat(
     headers.Authorization = `Bearer ${token}`;
   }
 
+  // 请求体按需附带 webSearch / documents（后端契约：均为可选字段）
+  const payload: Record<string, unknown> = { query };
+  if (agentId) payload.agentId = agentId;
+  if (options?.webSearch) payload.webSearch = true;
+  if (options?.documents && options.documents.length > 0) payload.documents = options.documents;
+
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(agentId ? { query, agentId } : { query }),
+    body: JSON.stringify(payload),
     signal,
   });
 

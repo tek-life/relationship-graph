@@ -68,6 +68,8 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
   const [query, setQuery] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** 联网搜索开关（默认关，仅影响本轮请求） */
+  const [webSearchOn, setWebSearchOn] = useState(false);
 
   // 右侧面板状态
   const [panelContent, setPanelContent] = useState<string | null>(null);
@@ -151,8 +153,10 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
 
     setQuery('');
     // 后端只收剥离后的正文（agents.md §11.2）；气泡展示与持久化用含 @mention 的原文
-    await sendMessage(cleanedQuery, agentId, activeIds, text);
-  }, [query, loading, voice, selectedAgentIds, sendMessage]);
+    await sendMessage(cleanedQuery, agentId, activeIds, text, {
+      webSearch: webSearchOn || undefined,
+    });
+  }, [query, loading, voice, selectedAgentIds, sendMessage, webSearchOn]);
 
   // Enter 发送，Shift+Enter 换行
   const handleKeyDown = useCallback(
@@ -330,6 +334,8 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
                   onStopGeneration={stopGeneration}
                   onOcrText={appendText}
                   ocrRef={ocrRef}
+                  webSearchOn={webSearchOn}
+                  onToggleWebSearch={() => setWebSearchOn((prev) => !prev)}
                 />
               </div>
             </div>
@@ -520,6 +526,11 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
                 </button>
               )}
 
+              {/* 联网搜索提示（仅前端本地标记） */}
+              {!isUser && message.webSearched && (
+                <p className="mt-1 text-xs text-slate-400">本回答可能包含联网信息</p>
+              )}
+
               {/* 附件按钮 */}
               {message.attachment && (
                 <button
@@ -605,6 +616,7 @@ interface ThinkingBlockProps {
 const STAGE_LABELS: Record<string, string> = {
   routing: '意图路由',
   llm_call: '模型调用',
+  web_search: '联网搜索',
 };
 
 function ThinkingBlock({ thinking, streaming }: ThinkingBlockProps) {
@@ -785,6 +797,8 @@ interface ComposerProps {
   onStopGeneration: () => void;
   onOcrText: (text: string) => void;
   ocrRef: RefObject<ImageOcrHandle | null>;
+  webSearchOn: boolean;
+  onToggleWebSearch: () => void;
 }
 
 const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Composer(
@@ -803,6 +817,8 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
     onStopGeneration,
     onOcrText,
     ocrRef,
+    webSearchOn,
+    onToggleWebSearch,
   },
   ref,
 ) {
@@ -861,6 +877,26 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
             )}
             {/* OCR 图片识别 */}
             <ImageOcrButton ref={ocrRef} onText={onOcrText} disabled={busy} />
+            {/* 联网搜索开关 */}
+            <button
+              type="button"
+              title={webSearchOn ? '联网搜索已开启，点击关闭' : '开启联网搜索（回答可能引用实时网络信息）'}
+              aria-pressed={webSearchOn}
+              className={`flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                webSearchOn
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'hover:bg-slate-100'
+              }`}
+              style={!webSearchOn ? { color: 'var(--text-secondary)' } : undefined}
+              disabled={busy}
+              onClick={onToggleWebSearch}
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
+              </svg>
+              联网
+            </button>
           </div>
           {/* 停止生成 + 发送按钮 */}
           <div className="flex items-center gap-2">
