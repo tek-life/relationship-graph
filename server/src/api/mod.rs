@@ -16,10 +16,16 @@ use crate::types::{
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use futures::Stream;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 mod admin;
@@ -51,6 +57,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/nlq", post(natural_language_query))
         .route("/api/nlq/multi", post(nlq_multi_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/chat/stream", post(chat_stream_handler))
         .route("/api/nlq/confirm", post(nlq_confirm_handler))
         .route("/api/import/preview", post(import::preview))
         .route("/api/import/persons", post(import::commit))
@@ -725,6 +732,164 @@ async fn chat_handler(Json(req): Json<ChatRequest>) -> Result<Json<ChatResponse>
     );
     let reply = crate::llm::general_chat(query).await.map_err(ApiError::internal)?;
     Ok(Json(ChatResponse { reply }))
+}
+
+// ---------- SSE 流式聊天 ----------
+
+/// SSE 事件构建：事件契约见前端约定（step / thinking_delta / text_delta / done / error）。
+/// axum 0.7 的 Event::data 要求 AsRef<str>，统一先序列化为 JSON 字符串。
+fn sse_step(stage: &str, detail: &str) -> Event {
+    Event::default().event("step").data(
+        serde_json::json!({ "stage": stage, "detail": detail }).to_string(),
+    )
+}
+
+fn sse_delta(event_name: &str, text: String) -> Event {
+    Event::default()
+        .event(event_name)
+        .data(serde_json::json!({ "text": text }).to_string())
+}
+
+fn sse_done(usage: Option<(usize, usize)>, backend: &str) -> Event {
+    Event::default().event("done").data(
+        serde_json::json!({
+            "usage": usage.map(|(input, output)| serde_json::json!({ "input": input, "output": output })),
+            "backend": backend,
+        })
+        .to_string(),
+    )
+}
+
+fn sse_error(message: String) -> Event {
+    Event::default()
+        .event("error")
+        .data(serde_json::json!({ "message": message }).to_string())
+}
+
+type RigEventStream = Pin<Box<dyn Stream<Item = Result<crate::llm::ChatStreamEvent, String>> + Send>>;
+
+/// 流式聊天状态机：保证 step(llm_call) 在模型调用之前发出，
+/// 每个 unfold 轮次恰产出一条 SSE 事件。
+enum ChatStreamPhase {
+    Routing,
+    LlmCallStep,
+    Init,
+    Rig(RigEventStream),
+    LegacyDone,
+    End,
+}
+
+/// 从 rig 事件流取下一条 SSE 事件；流耗尽时补发 done（usage=null）。
+/// 顺带累加事件计数（仅元数据，不落内容）。
+async fn poll_rig_event(
+    mut stream: RigEventStream,
+    thinking_count: &AtomicUsize,
+    text_count: &AtomicUsize,
+) -> Option<(Result<Event, Infallible>, ChatStreamPhase)> {
+    use futures::StreamExt;
+    match stream.next().await {
+        Some(Ok(crate::llm::ChatStreamEvent::Reasoning(text))) => {
+            thinking_count.fetch_add(1, Ordering::SeqCst);
+            Some((
+                Ok(sse_delta("thinking_delta", text)),
+                ChatStreamPhase::Rig(stream),
+            ))
+        }
+        Some(Ok(crate::llm::ChatStreamEvent::Text(text))) => {
+            text_count.fetch_add(1, Ordering::SeqCst);
+            Some((
+                Ok(sse_delta("text_delta", text)),
+                ChatStreamPhase::Rig(stream),
+            ))
+        }
+        Some(Ok(crate::llm::ChatStreamEvent::Done(usage))) => {
+            Some((Ok(sse_done(usage, "rig")), ChatStreamPhase::End))
+        }
+        Some(Err(e)) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
+        None => Some((Ok(sse_done(None, "rig")), ChatStreamPhase::End)),
+    }
+}
+
+/// POST /api/chat/stream — SSE 流式聊天。
+/// rig 路径：rig model.stream() 增量推送 thinking_delta / text_delta，Final 携带 usage；
+/// legacy 降级路径：step 事件后同步调用 general_chat，完整回复作为单条 text_delta。
+async fn chat_stream_handler(
+    Json(req): Json<ChatRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let query = req.query.trim().to_string();
+    if query.is_empty() {
+        return Err(ApiError::bad_request("问题不能为空"));
+    }
+
+    let backend = crate::llm::general_chat_backend();
+    let model_name = crate::llm::general_chat_model();
+    log::info!(
+        target: "llm",
+        "chat_stream_start backend={} model={} query_len={}",
+        backend,
+        model_name,
+        query.chars().count()
+    );
+
+    // 仅记元数据的事件计数（不落内容）
+    let thinking_count = Arc::new(AtomicUsize::new(0));
+    let text_count = Arc::new(AtomicUsize::new(0));
+
+    let stream = futures::stream::unfold(ChatStreamPhase::Routing, move |phase| {
+        let query = query.clone();
+        let model_name = model_name.clone();
+        let thinking_count = thinking_count.clone();
+        let text_count = text_count.clone();
+        async move {
+            match phase {
+                ChatStreamPhase::Routing => Some((
+                    Ok(sse_step("routing", &format!("backend={}", backend))),
+                    ChatStreamPhase::LlmCallStep,
+                )),
+                ChatStreamPhase::LlmCallStep => Some((
+                    Ok(sse_step("llm_call", &format!("model={}", model_name))),
+                    ChatStreamPhase::Init,
+                )),
+                ChatStreamPhase::Init => {
+                    if backend == "rig" {
+                        match crate::llm::general_chat_stream(&query).await {
+                            Ok(stream) => {
+                                poll_rig_event(stream, &thinking_count, &text_count).await
+                            }
+                            Err(e) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
+                        }
+                    } else {
+                        match crate::llm::general_chat(&query).await {
+                            Ok(reply) => {
+                                text_count.fetch_add(1, Ordering::SeqCst);
+                                Some((Ok(sse_delta("text_delta", reply)), ChatStreamPhase::LegacyDone))
+                            }
+                            Err(e) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
+                        }
+                    }
+                }
+                ChatStreamPhase::Rig(stream) => {
+                    poll_rig_event(stream, &thinking_count, &text_count).await
+                }
+                ChatStreamPhase::LegacyDone => {
+                    Some((Ok(sse_done(None, "legacy")), ChatStreamPhase::End))
+                }
+                ChatStreamPhase::End => {
+                    log::info!(
+                        target: "llm",
+                        "chat_stream_finish backend={} model={} thinking_events={} text_events={}",
+                        backend,
+                        model_name,
+                        thinking_count.load(Ordering::SeqCst),
+                        text_count.load(Ordering::SeqCst)
+                    );
+                    None
+                }
+            }
+        }
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 // ---------- NLQ Multi-Intent ----------

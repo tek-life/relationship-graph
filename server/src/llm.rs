@@ -6,6 +6,7 @@ use log::{info, warn};
 use rig_core::client::{CompletionClient, Nothing};
 use rig_core::completion::{AssistantContent, CompletionModel as _};
 use rig_core::providers::ollama;
+use rig_core::streaming::StreamedAssistantContent;
 
 use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage};
 
@@ -229,13 +230,28 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
     }
 }
 
-pub async fn general_chat(query: &str) -> Result<String, String> {
-    let prompt = format!(
+/// general_chat 的系统语（流式与非流式保持一致）
+fn general_chat_prompt(query: &str) -> String {
+    format!(
         "你是关系图谱应用中的通用助理。请直接回答用户问题，默认使用简体中文。\
 当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。\
 \n\n用户问题：{}",
         query
-    );
+    )
+}
+
+/// 当前 general_chat 实际走的通道（"rig" / "legacy"），供 SSE 端点发 routing 事件
+pub fn general_chat_backend() -> &'static str {
+    if use_rig("general_chat") { "rig" } else { "legacy" }
+}
+
+/// 当前对话模型名，供 SSE 端点发 llm_call 事件
+pub fn general_chat_model() -> String {
+    ollama_model()
+}
+
+pub async fn general_chat(query: &str) -> Result<String, String> {
+    let prompt = general_chat_prompt(query);
 
     call_ollama(
         &prompt,
@@ -244,6 +260,105 @@ pub async fn general_chat(query: &str) -> Result<String, String> {
         "general_chat",
     )
     .await
+}
+
+/// general_chat_stream 的流式输出事件：
+/// Reasoning → thinking_delta；Text → text_delta；Done → done（usage 无则 None）
+pub enum ChatStreamEvent {
+    Reasoning(String),
+    Text(String),
+    Done(Option<(usize, usize)>),
+}
+
+/// general_chat 的 rig 流式版本：通过 rig `model.stream()` 调用 Ollama /api/chat，
+/// 将 StreamedAssistantContent::Reasoning / ReasoningDelta 映射为 Reasoning 事件、
+/// Text 映射为 Text 事件、Final 映射为 Done（usage 取 prompt_eval_count / eval_count，
+/// 缺失时为 None）。复用 rig client 缓存、ollama_url()/ollama_model() 与聊天超时
+/// （RG_OLLAMA_CHAT_TIMEOUT_SECS），超时文案与 call_rig 一致。
+/// 客户端断开时流自然 drop（rig stream 支持 cancel）。
+pub async fn general_chat_stream(
+    query: &str,
+) -> Result<
+    std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
+    String,
+> {
+    let client = rig_client()?;
+    let model_name = ollama_model();
+    let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
+    let prompt = general_chat_prompt(query);
+    info!(
+        target: "llm",
+        "rig_stream_request url={} model={} prompt_len={}",
+        ollama_url(),
+        model_name,
+        prompt.len()
+    );
+
+    let model = client.completion_model(&model_name);
+    let request = model.completion_request(prompt).build();
+
+    // 超时覆盖连接建立阶段；流消费阶段由 rig stream 自身驱动，
+    // 客户端断开时 Abortable 包装使流取消。
+    let rig_stream = match tokio::time::timeout(timeout, model.stream(request)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => return Err(format!("Ollama request failed: {}", e)),
+        Err(_) => return Err(format!(
+            "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
+            model_name,
+            timeout.as_secs()
+        )),
+    };
+
+    let stream = Box::pin(rig_stream);
+    let mapped = futures::stream::try_unfold(stream, |mut stream| async move {
+        use futures::StreamExt;
+        loop {
+            match stream.next().await {
+                None => return Ok(None),
+                Some(Ok(StreamedAssistantContent::Reasoning(reasoning))) => {
+                    let text: String = reasoning
+                        .content
+                        .iter()
+                        .filter_map(|item| match item {
+                            rig_core::completion::message::ReasoningContent::Text { text, .. } => {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    return Ok(Some((ChatStreamEvent::Reasoning(text), stream)));
+                }
+                Some(Ok(StreamedAssistantContent::ReasoningDelta { reasoning, .. })) => {
+                    if reasoning.is_empty() {
+                        continue;
+                    }
+                    return Ok(Some((ChatStreamEvent::Reasoning(reasoning), stream)));
+                }
+                Some(Ok(StreamedAssistantContent::Text(text))) => {
+                    if text.text.is_empty() {
+                        continue;
+                    }
+                    return Ok(Some((ChatStreamEvent::Text(text.text), stream)));
+                }
+                Some(Ok(StreamedAssistantContent::Final(final_response))) => {
+                    let usage = match (final_response.prompt_eval_count, final_response.eval_count) {
+                        (None, None) => None,
+                        (input, output) => {
+                            Some((input.unwrap_or(0) as usize, output.unwrap_or(0) as usize))
+                        }
+                    };
+                    return Ok(Some((ChatStreamEvent::Done(usage), stream)));
+                }
+                // ToolCall / ToolCallDelta / Unknown 等与通用聊天无关，忽略
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => return Err(format!("Ollama 流式响应失败：{}", e)),
+            }
+        }
+    });
+    Ok(Box::pin(mapped))
 }
 
 /// 画像构建 QA 流程：根据系统提示词和对话历史生成下一个引导问题
