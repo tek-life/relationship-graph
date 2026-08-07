@@ -1,5 +1,6 @@
 mod api;
 mod db;
+mod document;
 mod infer;
 mod llm;
 mod nlq;
