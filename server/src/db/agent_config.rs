@@ -312,6 +312,54 @@ pub fn strip_skill_frontmatter(markdown: &str) -> &str {
     markdown
 }
 
+// ---------- 用户画像常驻技能 ----------
+
+/// 将用户画像文档包装为常驻技能段（纯函数，可单测）：空/空白输入返回
+/// 空串；否则经 strip_skill_frontmatter（容忍画像意外携带 frontmatter）+ trim
+/// 后包装为 `### 技能：用户画像\n<正文>\n\n`，格式与 build_skills_prompt
+/// 产出一致，可共享 apply_skill_budget 的段边界截断。
+/// 合并时画像段在前（最高优先级），数字人技能段在后。
+// S3 接线 resolve_skills_prompt 后移除 allow
+#[allow(dead_code)]
+pub fn build_profile_skill_prompt(profile_doc: &str) -> String {
+    let body = strip_skill_frontmatter(profile_doc).trim();
+    if body.is_empty() {
+        return String::new();
+    }
+    format!("### 技能：用户画像\n{}\n\n", body)
+}
+
+/// 画像段预裁剪字符预算：默认 4000，env `RG_PROFILE_SKILL_BUDGET_CHARS`
+/// 可覆盖（非法值回退默认）。防止超长画像在共享预算
+///（RG_SKILL_BUDGET_CHARS）内挤掉全部数字人技能。
+// S3 接线 resolve_skills_prompt 后移除 allow
+#[allow(dead_code)]
+pub fn profile_skill_budget_chars() -> usize {
+    const DEFAULT_PROFILE_SKILL_BUDGET_CHARS: usize = 4000;
+    std::env::var("RG_PROFILE_SKILL_BUDGET_CHARS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_PROFILE_SKILL_BUDGET_CHARS)
+}
+
+/// 画像段预裁剪（纯函数，可单测）：字符数未超预算时原文返回；超限时
+/// 按字符（非字节）截断到预算长度并追加一行截断说明。画像为单一段落，
+/// 不适用 apply_skill_budget 的段边界回退（首段即超时会丢全部内容）。
+// S3 接线 resolve_skills_prompt 后移除 allow
+#[allow(dead_code)]
+pub fn apply_profile_budget(section: &str, budget_chars: usize) -> String {
+    let total = section.chars().count();
+    if total <= budget_chars {
+        return section.to_string();
+    }
+    let cut: String = section.chars().take(budget_chars).collect();
+    format!(
+        "{}（注：用户画像超出字符预算 {}，已截断）\n",
+        cut, budget_chars
+    )
+}
+
 // === qa_instruction_modules ===
 
 pub fn list_qa_modules(conn: &Connection) -> Result<Vec<QaInstructionModule>, rusqlite::Error> {

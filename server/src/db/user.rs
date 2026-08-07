@@ -87,6 +87,27 @@ pub fn update_user_profile_completed(conn: &Connection, id: &str) -> Result<(), 
     Ok(())
 }
 
+/// 读取用户画像文档（chat 链路常驻技能注入用）：仅查 profile_doc /
+/// profile_completed 两列，不把 password_hash 等敏感字段带出。
+/// 画像未完成（profile_completed=0）、文档为空/空白、用户不存在均返回 None。
+// S3 接线 resolve_skills_prompt 后移除 allow
+#[allow(dead_code)]
+pub fn get_profile_doc(conn: &Connection, user_id: &str) -> Result<Option<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT profile_doc, profile_completed FROM users WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query(params![user_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let completed: i32 = row.get(1)?;
+    if completed == 0 {
+        return Ok(None);
+    }
+    let doc: Option<String> = row.get(0)?;
+    Ok(doc.filter(|d| !d.trim().is_empty()))
+}
+
 // === invite_tokens ===
 
 pub fn create_invite_token(conn: &Connection, req: CreateInviteTokenRequest) -> Result<(), rusqlite::Error> {
