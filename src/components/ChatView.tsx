@@ -150,7 +150,8 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
     const activeIds = selectedAgentIds.length > 0 ? selectedAgentIds : undefined;
 
     setQuery('');
-    await sendMessage(cleanedQuery, agentId, activeIds);
+    // 后端只收剥离后的正文（agents.md §11.2）；气泡展示与持久化用含 @mention 的原文
+    await sendMessage(cleanedQuery, agentId, activeIds, text);
   }, [query, loading, voice, selectedAgentIds, sendMessage]);
 
   // Enter 发送，Shift+Enter 换行

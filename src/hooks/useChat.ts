@@ -77,11 +77,12 @@ export interface UseChatReturn {
   deleteSession: (sessionId: string) => Promise<void>;
   /** 更新会话标题 */
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
-  /** 发送消息 */
+  /** 发送消息（text 为发给后端的正文；displayText 为含 @mention 前缀的原文，仅用于展示与持久化，缺省同 text） */
   sendMessage: (
     text: string,
     agentId?: string | null,
     activeAgentIds?: string[],
+    displayText?: string,
   ) => Promise<ChatRouterResponse | null>;
   /** 停止流式生成（保留已生成内容） */
   stopGeneration: () => void;
@@ -591,6 +592,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       text: string,
       agentId?: string | null,
       activeAgentIds?: string[],
+      displayText?: string,
     ): Promise<ChatRouterResponse | null> => {
       // 粘性 agentId：未显式 @ 时沿用该会话最近一次被 @ 的对话型数字人
       // （校验其仍存在；relationship 模式如联系人管家不参与粘性）
@@ -603,11 +605,15 @@ export function useChat(userId?: string | null): UseChatReturn {
       // 确保有活跃会话；createSession 失败时需要走统一的错误提示，不能静默抛出
       let sessionId = currentSessionRef.current;
 
+      // 用户气泡与持久化使用含 @mention 前缀的原文（回显保留前缀）；
+      // 发给后端的 query 仍是剥离后的 text（agents.md §11.2）
+      const displayContent = displayText ?? text;
+
       // 添加用户消息到 UI
       const userMsg: ChatDisplayMessage = {
         id: `user-${Date.now()}`,
         role: 'user',
-        content: text,
+        content: displayContent,
       };
       setLoading(true);
       setError('');
@@ -621,8 +627,8 @@ export function useChat(userId?: string | null): UseChatReturn {
           setCurrentSessionId(sessionId);
         }
         setMessages((prev) => [...prev, userMsg]);
-        // 持久化用户消息到后端
-        await sessionApi.addMessage(sessionId!, 'user', text);
+        // 持久化用户消息到后端（存含 mention 的原文，历史回显保留前缀）
+        await sessionApi.addMessage(sessionId!, 'user', displayContent);
 
         // 更新该会话的粘性记录：
         // - 显式 @ 对话型数字人：写入新粘性；
