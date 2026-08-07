@@ -2,14 +2,18 @@
 set -euo pipefail
 
 # =============================================================================
-# 个人关系图谱 v1.3 服务端一键部署脚本
-# 运行环境：WSL2 + Ubuntu 24.04（亦兼容原生 Ubuntu 22.04+）
+# 个人智能 AI 平台服务端一键部署脚本
+# 运行环境：Ubuntu 22.04+（WSL2 / 阿里云 ECS 均适用）
 #
 # 说明：
 #   - 本脚本会安装系统依赖、开发工具链、AI 服务、数据库及前端/服务端构建依赖。
+#   - LLM 通道：**生产默认使用阿里百炼云端模型**（RG_LLM_BACKEND=cloud），
+#     无需本地 Ollama；部署前请配置云端 API Key：
+#       echo 'sk-xxx' > ~/.config/rg-cloud-api-key && chmod 600 ~/.config/rg-cloud-api-key
+#     （也可用 env RG_CLOUD_API_KEY 覆盖；任何脚本与输出严禁打印 Key）
+#   - 仅当 RG_USE_OLLAMA=1 或 RG_LLM_BACKEND=legacy 时才拉取本地 Ollama 模型。
 #   - 若网络受限，可先 source ./scripts/setup-proxy.sh 配置宿主机代理。
 #   - whisper.cpp 使用 SSH 协议从 GitHub clone，需先配置好 GitHub SSH key。
-#   - 默认使用 qwen2.5:7b（可通过环境变量 OLLAMA_MODEL 覆盖）。
 #
 # 用法：
 #   cd /home/hfli/personal_ai_workspace
@@ -38,6 +42,9 @@ VENV_DIR="${HOME}/.venvs/${APP_NAME}"
 MODELS_DIR="${APP_DATA_DIR}/models"
 WHISPER_MODEL="${MODELS_DIR}/ggml-base.bin"
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
+# LLM 通道：生产默认云端（百炼）；本地模型回退设 RG_LLM_BACKEND=legacy
+RG_LLM_BACKEND="${RG_LLM_BACKEND:-cloud}"
+RG_USE_OLLAMA="${RG_USE_OLLAMA:-0}"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -131,17 +138,35 @@ fi
 log_info "Python 虚拟环境已就绪：${VENV_DIR}"
 
 # =============================================================================
-# 5. AI 服务：Ollama + Whisper
+# 5. AI 服务：Whisper（语音转写）+ 可选 Ollama（仅本地模型通道）
 # =============================================================================
-log_info "步骤 5/12: 安装 AI 服务（Ollama、Whisper）"
+log_info "步骤 5/12: 安装 AI 服务（Whisper；生产 LLM 走阿里百炼云端）"
 log_info "若网络受限，请先运行: source ./scripts/setup-proxy.sh"
 "${PROJECT_DIR}/scripts/install-ai-deps.sh"
 
-log_info "步骤 5b: 拉取默认 LLM 模型 ${OLLAMA_MODEL}"
-if ! ollama list 2>/dev/null | grep -q "^${OLLAMA_MODEL}"; then
-  ollama pull "${OLLAMA_MODEL}"
+if [ "${RG_USE_OLLAMA}" = "1" ] || [ "${RG_LLM_BACKEND}" = "legacy" ]; then
+  log_info "步骤 5b: 拉取本地 LLM 模型 ${OLLAMA_MODEL}（仅 legacy/rig 通道需要）"
+  if ! command -v ollama >/dev/null 2>&1; then
+    log_warn "未安装 ollama，跳过本地模型拉取（如需本地通道请先安装 Ollama）"
+  else
+    if ! ollama list 2>/dev/null | grep -q "^${OLLAMA_MODEL}"; then
+      ollama pull "${OLLAMA_MODEL}"
+    fi
+    ollama list
+  fi
+else
+  log_info "步骤 5b: 跳过本地 Ollama 模型（生产默认使用阿里百炼云端模型，RG_LLM_BACKEND=${RG_LLM_BACKEND}）"
+  # 云端 API Key 轻量检查（仅提示不阻断，严禁打印 Key 内容）
+  if [ -n "${RG_CLOUD_API_KEY:-}" ]; then
+    log_info "云端 API Key：已设置 RG_CLOUD_API_KEY 环境变量（内容不回显）"
+  elif [ -f "${HOME}/.config/rg-cloud-api-key" ]; then
+    log_info "云端 API Key：将使用 ~/.config/rg-cloud-api-key（服务端自动读取）"
+  else
+    log_warn "未检测到云端 API Key！请部署后配置："
+    log_warn "  echo 'sk-xxx' > ~/.config/rg-cloud-api-key && chmod 600 ~/.config/rg-cloud-api-key"
+    log_warn "  详见 scripts/README.md「云端模型（阿里百炼）配置」"
+  fi
 fi
-ollama list
 
 # =============================================================================
 # 6. 前端 npm 依赖
@@ -201,9 +226,9 @@ fi
 log_info "服务端构建完成"
 
 # =============================================================================
-# 9. 启动服务（后端 + 前端静态/Caddy 反向代理）
+# 9. 启动服务（后端默认云端 LLM 通道 + 前端静态/Caddy 反向代理）
 # =============================================================================
-log_info "步骤 9/12: 启动服务"
+log_info "步骤 9/12: 启动服务（RG_LLM_BACKEND=${RG_LLM_BACKEND}）"
 "${PROJECT_DIR}/scripts/start-services.sh"
 
 # =============================================================================
@@ -331,8 +356,10 @@ echo "服务状态汇总："
 # Ollama
 if pgrep -x "ollama" >/dev/null; then
   echo "  Ollama     - http://localhost:11434  - [运行中]"
-else
+elif [ "${RG_USE_OLLAMA}" = "1" ] || [ "${RG_LLM_BACKEND}" = "legacy" ]; then
   echo "  Ollama     - http://localhost:11434  - [未运行]"
+else
+  echo "  Ollama     - （云端模式，未启用；LLM 通道 RG_LLM_BACKEND=${RG_LLM_BACKEND}）"
 fi
 
 # Axum

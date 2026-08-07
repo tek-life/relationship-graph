@@ -2,16 +2,22 @@
 set -e
 
 # =============================================================================
-# 个人关系图谱 - 轻量开发启动脚本（仅用于开发模式）
+# 个人智能 AI 平台 - 轻量开发启动脚本（仅用于开发模式）
 #
-# 用途：快速启动开发环境（Ollama + Axum 后端 + Vite 前端）
+# 用途：快速启动开发环境（可选 Ollama + Axum 后端 + Vite 前端）
 # 用法：./scripts/dev.sh
+#
+# LLM 通道（开发环境两种玩法）：
+#   - 本地模型：RG_LLM_BACKEND=legacy，需本机 Ollama（本脚本会尝试拉起，
+#     未安装/未运行仅提示不阻断）；默认模型 qwen2.5:7b
+#   - 云端百炼：RG_LLM_BACKEND=cloud，无需 Ollama，服务端自动读取
+#     ~/.config/rg-cloud-api-key（或 env RG_CLOUD_API_KEY）
 #
 # 注意：本脚本仅用于开发模式，不启动 Caddy 反向代理。
 #       生产部署请使用 ./scripts/deploy.sh + ./scripts/start-services.sh
 #
 # 启动的服务：
-#   1. Ollama（如果未运行）
+#   1. Ollama（可选：已安装且未运行时拉起；未安装仅提示）
 #   2. Axum 后端（cargo run，非 release 模式，编译更快）
 #   3. Vite 前端开发服务器（npm run dev，端口 1420）
 # =============================================================================
@@ -36,10 +42,13 @@ echo "=========================================="
 echo ""
 
 # =============================================================================
-# 1. 启动 Ollama 服务
+# 1. 启动 Ollama 服务（可选，带保护：未安装/启动失败仅提示，不硬失败）
+#    开发走云端百炼（RG_LLM_BACKEND=cloud）时本步骤并非必需。
 # =============================================================================
 log_step "检查 Ollama 服务..."
-if pgrep -x "ollama" >/dev/null; then
+if ! command -v ollama >/dev/null 2>&1; then
+  log_warn "未安装 Ollama，跳过（本地模型通道 RG_LLM_BACKEND=legacy 需要；云端通道无需）"
+elif pgrep -x "ollama" >/dev/null; then
   log_info "Ollama 已在运行"
 else
   log_info "启动 Ollama 服务..."
@@ -54,7 +63,7 @@ else
   if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
     log_info "Ollama 服务已启动"
   else
-    log_warn "Ollama 启动中，请稍后检查（日志：/tmp/ollama.log）"
+    log_warn "Ollama 启动中或未就绪（日志：/tmp/ollama.log）；云端通道不受影响"
   fi
 fi
 
@@ -113,6 +122,7 @@ else
 fi
 
 log_info "开发模式不启动 Caddy 反向代理（生产部署请使用 ./scripts/deploy.sh）"
+log_info "LLM 通道：本地模型用 RG_LLM_BACKEND=legacy；云端百炼用 RG_LLM_BACKEND=cloud（当前未强制指定，随环境/服务端默认）"
 
 # =============================================================================
 # 状态汇总

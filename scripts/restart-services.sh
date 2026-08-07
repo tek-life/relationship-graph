@@ -3,18 +3,20 @@ set -euo pipefail
 
 # =============================================================================
 # 重启个人智能 AI 平台各常驻服务
-# 运行环境：WSL2 + Ubuntu 24.04
+# 运行环境：Ubuntu 24.04（WSL2 / 阿里云 ECS 均适用）
 #
 # 用法：
 #   ./scripts/restart-services.sh            # 重启 Axum 后端 + 前端（保留 Ollama）
-#   ./scripts/restart-services.sh --all      # 连同 Ollama 一起重启
+#   ./scripts/restart-services.sh --all      # 连同 Ollama 一起重启（仅本地开发通道需要）
 #   ./scripts/restart-services.sh --build    # 先重新编译后端（cargo build --release）再重启
 #
 # 说明：
-#   - 停止逻辑按端口精确匹配，不会误杀其它进程
-#   - Ollama 默认不重启（模型常驻内存，重启会触发重新加载）
+#   - 生产默认 LLM 通道为阿里百炼云端（RG_LLM_BACKEND=cloud），无需 Ollama；
+#     回退本地模型可设 RG_LLM_BACKEND=legacy（配合 RG_USE_OLLAMA=1）
+#   - 停止逻辑按端口动态查持有 PID，不会误杀其它进程
+#   - Ollama 默认不重启（本地模型常驻内存，重启会触发重新加载）
 #   - 停止后委托 start-services.sh 完成拉起与健康检查
-#   - 注意：后端重启会使数据库回到锁定状态，需在页面上重新输入主密码解锁
+#   - 数据库使用 db.key 密钥文件自动解锁，重启后无需人工解锁
 # =============================================================================
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -78,7 +80,7 @@ stop_by_port 1420 "Vite 开发服务器"
 stop_by_port 8080 "Caddy 反向代理"
 stop_by_port 8000 "Python http.server"
 
-# Ollama（默认保留）
+# Ollama（默认保留；云端模式下 Ollama 本就不参与 LLM 链路）
 if [ "${WITH_OLLAMA}" -eq 1 ]; then
   if pgrep -x "ollama" >/dev/null; then
     echo "  停止 Ollama 服务"
