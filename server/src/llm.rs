@@ -376,7 +376,7 @@ mod general_chat_prompt_tests {
     /// 旧格式基准（技能注入改造前的 prompt 结构）：空技能时必须逐字节一致
     fn legacy_prompt(query: &str) -> String {
         format!(
-            "你是关系图谱应用中的通用助理。请直接回答用户问题，默认使用简体中文。\
+            "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。\
 当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。\
 \n\n用户问题：{}",
             query
@@ -396,7 +396,7 @@ mod general_chat_prompt_tests {
         let skills = "### 技能：演示\n技能正文\n\n";
         let prompt = general_chat_prompt("你好", skills);
         // 角色设定在前、技能段居中、用户问题殿后
-        assert!(prompt.starts_with("你是关系图谱应用中的通用助理。"));
+        assert!(prompt.starts_with("你是您的个人 AI 平台的通用助理。"));
         assert!(prompt.contains("\n\n你当前具备以下技能，请在适用时遵循：\n### 技能：演示\n技能正文\n\n用户问题：你好"));
         assert!(prompt.ends_with("用户问题：你好"));
         // 技能尾部空白被归一，与“用户问题：”之间恰有一个空行
@@ -702,7 +702,7 @@ async fn cloud_chat_stream(
 /// “用户问题：”之间插入技能段（技能内容由 db::agent_config::build_skills_prompt
 /// 构建，已剥离 frontmatter 并按字符预算截断）。
 fn general_chat_prompt(query: &str, skills: &str) -> String {
-    let base = "你是关系图谱应用中的通用助理。请直接回答用户问题，默认使用简体中文。\
+    let base = "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。\
 当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。";
     if skills.is_empty() {
         format!("{}\n\n用户问题：{}", base, query)
