@@ -333,6 +333,8 @@ RG_WEB_ROOT=~/relationship-graph/web caddy run --config scripts/Caddyfile   # �
 | `RG_CLOUD_TIMEOUT_SECS` | `120` | 云端调用超时（秒） |
 | `RG_CLOUD_API_KEY` | 无 | API Key。**优先 env**；缺省由服务端自动读取 `~/.config/rg-cloud-api-key` |
 | `RG_SKILL_BUDGET_CHARS` | 脚本默认 `8000` | 技能/画像注入总字符预算 |
+| `RG_WEB_SEARCH` | 允许 | 聊天联网搜索总闸（cloud 通道百炼 `enable_search`）；设为 `off` 全局关闭，默认不设置即允许 |
+| `RG_DOC_CONTEXT_CHARS` | `12000` | 聊天文档注入字符预算，超出尾部截断并附截断提示 |
 | `RG_LLM_CLOUD_FNS` | 无 | 仅 `legacy` 通道有效：按函数灰度切云端（逗号分隔函数名） |
 
 ### API Key 配置（二选一）
