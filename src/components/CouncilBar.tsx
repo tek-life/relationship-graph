@@ -1,6 +1,6 @@
 /**
  * 数字人头像栏组件
- * 水平排列所有激活数字人的头像 + 名字标签，支持多选（多智能体协同）
+ * 水平排列所有激活数字人的头像 + 名字标签，点击即插入 @提及并选中该数字人
  * hover 显示 tooltip（数字人名称 + 功能描述）
  * 渲染在输入框容器内部，与输入框左右边缘对齐
  */
@@ -9,10 +9,10 @@ import { fetchDigitalAgents, type DigitalAgent } from '../services/digitalAgents
 
 interface CouncilBarProps {
   selectedAgentIds: string[];
-  onToggleAgent: (agentId: string) => void;
+  onPickAgent: (agent: DigitalAgent) => void;
 }
 
-export default function CouncilBar({ selectedAgentIds, onToggleAgent }: CouncilBarProps) {
+export default function CouncilBar({ selectedAgentIds, onPickAgent }: CouncilBarProps) {
   const [agents, setAgents] = useState<DigitalAgent[]>([]);
 
   useEffect(() => {
@@ -34,7 +34,7 @@ export default function CouncilBar({ selectedAgentIds, onToggleAgent }: CouncilB
           <div key={agent.id} className="relative group">
             <button
               type="button"
-              onClick={() => onToggleAgent(agent.id)}
+              onClick={() => onPickAgent(agent)}
               aria-label={`${agent.displayName}${isSelected ? '（已选中）' : ''}`}
               className="flex items-center gap-1.5 rounded-full transition-all duration-200"
             >

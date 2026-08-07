@@ -24,7 +24,7 @@ import MarkdownContent from './MarkdownContent';
 import ImageOcrButton, { type ImageOcrHandle } from './ImageOcrButton';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
-import { DIGITAL_AGENTS, CONTACT_MANAGER_AGENT_ID } from '../services/digitalAgents';
+import { DIGITAL_AGENTS, CONTACT_MANAGER_AGENT_ID, type DigitalAgent } from '../services/digitalAgents';
 import { resolveTextDisplay } from '../services/contentPolicy';
 import type { NlqResponse } from '../types';
 
@@ -124,12 +124,14 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
     [contactManager],
   );
 
-  // 切换数字人选中状态
-  const toggleAgent = useCallback((agentId: string) => {
-    setSelectedAgentIds((prev) =>
-      prev.includes(agentId) ? prev.filter((id) => id !== agentId) : [...prev, agentId],
-    );
-  }, []);
+  // 选中数字人：插入 @ 提及并设为选中（单选）
+  const handlePickAgent = useCallback(
+    (agent: DigitalAgent) => {
+      insertAgentMention(agent.mention);
+      setSelectedAgentIds([agent.id]);
+    },
+    [insertAgentMention],
+  );
 
   // 发送消息
   const handleSend = useCallback(async () => {
@@ -310,7 +312,7 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
             {/* 输入区域：幕僚团与输入框共用同一容器，保证左右边缘与垂直方向精确对齐 */}
             <div className="px-4 pb-4 pt-2 shrink-0">
               <div className={`${panelIsVisible ? '' : 'mx-auto max-w-4xl'}`}>
-                <CouncilBar selectedAgentIds={selectedAgentIds} onToggleAgent={toggleAgent} />
+                <CouncilBar selectedAgentIds={selectedAgentIds} onPickAgent={handlePickAgent} />
                 <Composer
                   ref={textareaRef}
                   query={query}
