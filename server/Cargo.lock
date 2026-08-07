@@ -1847,6 +1847,7 @@ dependencies = [
  "chrono",
  "dirs",
  "env_logger",
+ "futures",
  "hex",
  "log",
  "rand 0.8.7",
