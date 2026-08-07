@@ -7,6 +7,20 @@ pub struct ChatRequest {
     /// 指定数字人 id（可选）：非空时在聊天 prompt 中注入该数字人的 SKILL 文档
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// 是否启用联网搜索（可选）：仅云端通道生效，另受 env RG_WEB_SEARCH 总闸约束
+    #[serde(default)]
+    pub web_search: Option<bool>,
+    /// 用户上传文档（可选）：抽取文本注入聊天 prompt 上下文
+    #[serde(default)]
+    pub documents: Option<Vec<ChatDocument>>,
+}
+
+/// 聊天请求随附的单个上传文档（fileName / content 由外层 camelCase 映射）
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDocument {
+    pub file_name: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -571,4 +585,45 @@ pub struct QaModuleInfo {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+}
+
+#[cfg(test)]
+mod chat_request_tests {
+    use super::*;
+
+    /// 老契约（仅 query/agentId）反序列化：新增字段缺省为 None，行为不变
+    #[test]
+    fn chat_request_legacy_payload_defaults() {
+        let req: ChatRequest =
+            serde_json::from_str(r#"{"query":"你好"}"#).unwrap();
+        assert_eq!(req.query, "你好");
+        assert!(req.agent_id.is_none());
+        assert!(req.web_search.is_none());
+        assert!(req.documents.is_none());
+    }
+
+    /// 新契约：webSearch + documents（camelCase 映射 fileName）
+    #[test]
+    fn chat_request_new_fields_camel_case() {
+        let req: ChatRequest = serde_json::from_str(
+            r#"{"query":"总结文档","agentId":"contact_manager","webSearch":true,
+               "documents":[{"fileName":"报告.pdf","content":"抽取文本…"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(req.web_search, Some(true));
+        let docs = req.documents.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].file_name, "报告.pdf");
+        assert_eq!(docs[0].content, "抽取文本…");
+    }
+
+    /// webSearch=false 与空 documents 数组显式传入同样可解析
+    #[test]
+    fn chat_request_explicit_false_and_empty_docs() {
+        let req: ChatRequest =
+            serde_json::from_str(r#"{"query":"hi","webSearch":false,"documents":[]}"#)
+                .unwrap();
+        assert_eq!(req.web_search, Some(false));
+        assert_eq!(req.documents.unwrap().len(), 0);
+    }
 }
