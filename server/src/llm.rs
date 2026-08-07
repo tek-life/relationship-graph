@@ -51,7 +51,9 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
     // 改造前完全一致）。详见 llm_channel_for 注释。
     match llm_channel(fn_name) {
         Channel::Rig => return call_rig(prompt, format, timeout).await,
-        Channel::Cloud => return call_cloud(prompt, format, cloud_timeout(), fn_name).await,
+        // Cloud 尊重调用方传入的 timeout（聊天类 120s、抽取类 45s），
+        // 避免长调用（generate_profile_document / compress_context）被 60s 截断
+        Channel::Cloud => return call_cloud(prompt, format, timeout, fn_name).await,
         Channel::Legacy => {}
     }
 
@@ -97,7 +99,7 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
 
 // ---------- 通道分发（legacy | rig | cloud 三值） ----------
 
-const DEFAULT_CLOUD_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_CLOUD_TIMEOUT_SECS: u64 = 120;
 
 /// 云端（阿里云百炼）兼容端点
 fn cloud_base_url() -> String {
@@ -115,6 +117,10 @@ fn cloud_extract_model() -> String {
     std::env::var("RG_CLOUD_EXTRACT_MODEL").unwrap_or_else(|_| "qwen-flash".to_string())
 }
 
+/// 云端默认超时（RG_CLOUD_TIMEOUT_SECS 可覆盖）：仅作为 cloud 流式
+/// （cloud_chat_stream）建连超时的默认值，默认值对齐聊天超时语义
+///（与 DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS 同档）；非流式 call_cloud 由
+/// call_ollama 分发时尊重调用方传入的 timeout，不受此 env 覆盖。
 fn cloud_timeout() -> Duration {
     ollama_timeout("RG_CLOUD_TIMEOUT_SECS", DEFAULT_CLOUD_TIMEOUT_SECS)
 }
@@ -486,6 +492,8 @@ fn cloud_client() -> Result<openai::CompletionsClient, String> {
 }
 
 /// 通过 rig openai CompletionsClient 调用百炼兼容端点（非流式）。
+/// timeout 尊重调用方传入值（聊天类 120s / 抽取类 45s）；RG_CLOUD_TIMEOUT_SECS
+/// 仅作 cloud 流式建连默认值，不覆盖此处。
 /// 模型按 fn 类别选择：聊天类 → RG_CLOUD_CHAT_MODEL（默认 qwen3.7-plus），
 /// 抽取/压缩类 → RG_CLOUD_EXTRACT_MODEL（默认 qwen-flash）。
 /// format=Some 时经 additional_params 注入 response_format=json_object
@@ -585,6 +593,7 @@ async fn cloud_chat_stream(
 > {
     let client = cloud_client()?;
     let model_name = cloud_chat_model();
+    // 建连超时对齐聊天超时语义（默认 120s，RG_CLOUD_TIMEOUT_SECS 可覆盖）
     let timeout = cloud_timeout();
     info!(
         target: "llm",
