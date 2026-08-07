@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { apiGet, apiPut, apiPost, apiDelete } from '../services/api';
+import { apiGet, apiPut, apiDelete } from '../services/api';
 import { fetchDigitalAgentById, clearDigitalAgentsCache, type DigitalAgent } from '../services/digitalAgents';
+import { extractSkillDescription } from '../services/skillDoc';
+import SkillForm from './admin/SkillForm';
+import type { AgentSkill } from './admin/types';
 
 // ============================================================
 // 类型定义（对应后端 server/src/types.rs 的 camelCase 序列化）
@@ -22,18 +25,6 @@ interface DigitalAgentDto {
   updatedAt: string;
 }
 
-/** 数字人技能（对应后端 AgentSkill） */
-interface AgentSkill {
-  id: string;
-  agentId: string;
-  skillName: string;
-  skillConfigJson: string;
-  triggerScenario: string | null;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
 /** 更新数字人请求体（对应后端 CreateDigitalAgentRequest） */
 interface SaveAgentRequest {
   displayName: string;
@@ -45,15 +36,6 @@ interface SaveAgentRequest {
   skillDescription: string | null;
   isActive: boolean;
   sortOrder: number;
-}
-
-/** 创建/更新技能请求体（对应后端 CreateAgentSkillRequest） */
-interface SaveSkillRequest {
-  agentId: string;
-  skillName: string;
-  skillConfigJson: string;
-  triggerScenario: string | null;
-  isActive: boolean;
 }
 
 // ============================================================
@@ -126,16 +108,8 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
   const [savingAgent, setSavingAgent] = useState(false);
   const [agentFormError, setAgentFormError] = useState('');
 
-  // 技能编辑状态：null=列表模式，对象=编辑/新增模式
-  const [skillEdit, setSkillEdit] = useState<{ id: string | null; isNew: boolean } | null>(null);
-  const [skillForm, setSkillForm] = useState({
-    skillName: '',
-    skillConfigJson: '{}',
-    triggerScenario: 'always',
-    isActive: true,
-  });
-  const [savingSkill, setSavingSkill] = useState(false);
-  const [skillFormError, setSkillFormError] = useState('');
+  // 技能编辑状态：null=列表模式；{ skill: null }=新增；{ skill }=编辑
+  const [skillEdit, setSkillEdit] = useState<{ skill: AgentSkill | null } | null>(null);
 
   // ============================================================
   // 数据加载
@@ -258,83 +232,17 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
   };
 
   // ============================================================
-  // 技能 CRUD
+  // 技能删除（新增/编辑表单由共享组件 SkillForm 承担）
   // ============================================================
-
-  const handleStartNewSkill = () => {
-    setSkillForm({
-      skillName: '',
-      skillConfigJson: '{}',
-      triggerScenario: 'always',
-      isActive: true,
-    });
-    setSkillFormError('');
-    setSkillEdit({ id: null, isNew: true });
-  };
-
-  const handleStartEditSkill = (skill: AgentSkill) => {
-    setSkillForm({
-      skillName: skill.skillName,
-      skillConfigJson: skill.skillConfigJson,
-      triggerScenario: skill.triggerScenario ?? 'always',
-      isActive: skill.isActive,
-    });
-    setSkillFormError('');
-    setSkillEdit({ id: skill.id, isNew: false });
-  };
-
-  const handleSaveSkill = async () => {
-    if (!skillEdit) return;
-
-    const skillName = skillForm.skillName.trim();
-    if (!skillName) {
-      setSkillFormError('技能名称不能为空');
-      return;
-    }
-
-    // 验证 JSON 格式
-    try {
-      JSON.parse(skillForm.skillConfigJson);
-    } catch {
-      setSkillFormError('技能配置 JSON 格式无效');
-      return;
-    }
-
-    setSkillFormError('');
-    setSavingSkill(true);
-
-    try {
-      const body: SaveSkillRequest = {
-        agentId,
-        skillName,
-        skillConfigJson: skillForm.skillConfigJson,
-        triggerScenario: skillForm.triggerScenario,
-        isActive: skillForm.isActive,
-      };
-
-      if (skillEdit.isNew) {
-        await apiPost(`/api/admin/digital-agents/${agentId}/skills`, body);
-      } else if (skillEdit.id) {
-        await apiPut(`/api/admin/agent-skills/${skillEdit.id}`, body);
-      }
-
-      // 重新加载技能列表
-      await loadSkills();
-      setSkillEdit(null);
-    } catch (err) {
-      setSkillFormError(`保存技能失败：${String(err)}`);
-    } finally {
-      setSavingSkill(false);
-    }
-  };
 
   const handleDeleteSkill = async (skillId: string) => {
     if (!confirm('确定要删除这个技能吗？')) return;
     try {
       await apiDelete(`/api/admin/agent-skills/${skillId}`);
+      clearDigitalAgentsCache();
       await loadSkills();
     } catch (err) {
-      setSkillFormError(`删除技能失败：${String(err)}`);
+      console.error('删除技能失败', err);
     }
   };
 
@@ -738,126 +646,25 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
                 技能配置
               </h3>
               {!skillEdit && (
-                <button onClick={handleStartNewSkill} className="btn-primary text-sm">
+                <button onClick={() => setSkillEdit({ skill: null })} className="btn-primary text-sm">
                   + 新增技能
                 </button>
               )}
             </div>
 
-            {/* 技能编辑/新增表单 */}
+            {/* 技能编辑/新增表单（共享组件，自动探测 Markdown/旧 JSON 形态） */}
             {skillEdit && (
-              <div
-                className="mt-4 rounded-xl border p-4"
-                style={{
-                  borderColor: 'var(--border-color)',
-                  backgroundColor: 'var(--bg-secondary)',
-                }}
-              >
-                <h4 className="mb-3 text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-                  {skillEdit.isNew ? '新增技能' : '编辑技能'}
-                </h4>
-                <div className="space-y-3">
-                  {/* 技能名称 */}
-                  <div>
-                    <label className="mb-1 block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                      技能名称 *
-                    </label>
-                    <input
-                      className="input"
-                      placeholder="如：联系人查询"
-                      value={skillForm.skillName}
-                      onChange={(e) => setSkillForm({ ...skillForm, skillName: e.target.value })}
-                    />
-                  </div>
-
-                  {/* 触发场景 */}
-                  <div>
-                    <label className="mb-1 block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                      触发场景
-                    </label>
-                    <select
-                      className="input"
-                      value={skillForm.triggerScenario}
-                      onChange={(e) => setSkillForm({ ...skillForm, triggerScenario: e.target.value })}
-                    >
-                      {TRIGGER_SCENARIO_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* 技能配置 JSON */}
-                  <div>
-                    <label className="mb-1 block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                      技能配置 JSON
-                    </label>
-                    <textarea
-                      className="input min-h-32 font-mono text-xs"
-                      placeholder='{"model":"qwen2:7b","temperature":0.7}'
-                      value={skillForm.skillConfigJson}
-                      onChange={(e) => setSkillForm({ ...skillForm, skillConfigJson: e.target.value })}
-                    />
-                  </div>
-
-                  {/* 启用开关 */}
-                  <div className="flex items-center gap-3">
-                    <label className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-                      启用此技能
-                    </label>
-                    <button
-                      type="button"
-                      className="relative inline-flex h-6 w-11 items-center rounded-full transition"
-                      style={{
-                        backgroundColor: skillForm.isActive
-                          ? 'var(--accent-color)'
-                          : 'var(--border-color)',
-                      }}
-                      onClick={() => setSkillForm({ ...skillForm, isActive: !skillForm.isActive })}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-                          skillForm.isActive ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                    </button>
-                  </div>
-
-                  {/* 错误提示 */}
-                  {skillFormError && (
-                    <div
-                      className="rounded-lg border p-3 text-sm"
-                      style={{
-                        borderColor: 'var(--danger-color)',
-                        color: 'var(--danger-color)',
-                        backgroundColor: 'var(--bg-card)',
-                      }}
-                    >
-                      {skillFormError}
-                    </div>
-                  )}
-
-                  {/* 操作按钮 */}
-                  <div className="flex justify-end gap-2">
-                    <button
-                      onClick={() => {
-                        setSkillEdit(null);
-                        setSkillFormError('');
-                      }}
-                      className="btn-secondary text-sm"
-                    >
-                      取消
-                    </button>
-                    <button
-                      onClick={handleSaveSkill}
-                      disabled={savingSkill}
-                      className="btn-primary text-sm"
-                    >
-                      {savingSkill ? '保存中...' : '保存技能'}
-                    </button>
-                  </div>
-                </div>
+              <div className="mt-4">
+                <SkillForm
+                  key={skillEdit.skill?.id ?? 'new'}
+                  agentId={agentId}
+                  skill={skillEdit.skill}
+                  onSaved={async () => {
+                    setSkillEdit(null);
+                    await loadSkills();
+                  }}
+                  onCancel={() => setSkillEdit(null)}
+                />
               </div>
             )}
 
@@ -869,15 +676,18 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
                     暂无技能配置，点击"新增技能"添加
                   </p>
                 ) : (
-                  skills.map((skill) => (
+                  skills.map((skill) => {
+                    const description = extractSkillDescription(skill.skillMarkdown);
+                    return (
                     <div
                       key={skill.id}
-                      className="flex items-center justify-between rounded-xl border p-3"
+                      className="rounded-xl border p-3"
                       style={{
                         borderColor: 'var(--border-color)',
                         backgroundColor: 'var(--bg-secondary)',
                       }}
                     >
+                      <div className="flex items-center justify-between">
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>
@@ -898,10 +708,16 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
                         <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
                           触发场景：{TRIGGER_SCENARIO_OPTIONS.find((o) => o.value === skill.triggerScenario)?.label ?? skill.triggerScenario ?? '未设置'}
                         </p>
+                        {/* Markdown 形态技能：展示 frontmatter description 摘要；旧 JSON 技能不显示 */}
+                        {description && (
+                          <p className="mt-1 truncate text-xs" style={{ color: 'var(--text-muted)' }} title={description}>
+                            {description}
+                          </p>
+                        )}
                       </div>
                       <div className="flex gap-2">
                         <button
-                          onClick={() => handleStartEditSkill(skill)}
+                          onClick={() => setSkillEdit({ skill })}
                           className="rounded px-2 py-1 text-xs transition hover:opacity-70"
                           style={{
                             color: 'var(--accent-color)',
@@ -919,8 +735,10 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
                           删除
                         </button>
                       </div>
+                      </div>
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             )}
