@@ -174,13 +174,19 @@ pub fn delete_agent_skill(conn: &Connection, id: &str) -> Result<(), rusqlite::E
     Ok(())
 }
 
-/// 构建指定数字人的技能 prompt（注入锚点，本期不接线）。
+/// 构建指定数字人的技能 prompt（运行时注入点）。
+///
+/// 接线点：`api/mod.rs::resolve_skills_prompt` → `chat_handler` / `chat_stream_handler`，
+/// 经 `llm::general_chat_prompt` 注入 /api/chat 与 /api/chat/stream 两条链路。
+/// 决策：NLQ 链路（routeMode=relationship 的 extract_* JSON 抽取）不接线技能注入。
 ///
 /// 取该 agent 下 is_active=1 的技能，按 created_at 升序排列，
-/// 每条拼为 `### 技能：<skill_name>\n<skill_markdown 全文>\n\n`；
-/// skill_markdown 为空/空白的技能跳过；无可用技能时返回空串。
-// 接线点在后续步骤的 system prompt 组装中，当前仅单测引用
-#[allow(dead_code)]
+/// 每条先剥离 skill_markdown 的 frontmatter（`---` 开闭块）再拼为
+/// `### 技能：<skill_name>\n<正文>\n\n`；skill_markdown 为空/空白（含仅剩
+/// frontmatter）的技能跳过；无可用技能时返回空串。
+///
+/// 拼接结果超过字符预算（默认 3000，env `RG_SKILL_BUDGET_CHARS` 可覆盖）时，
+/// 截断到最近一个 `### 技能：` 边界并追加一行截断说明；日志仅记元数据，不落内容。
 pub fn build_skills_prompt(conn: &Connection, agent_id: &str) -> Result<String, rusqlite::Error> {
     let sql = "SELECT skill_name, skill_markdown FROM agent_skills
                WHERE agent_id = ?1 AND is_active = 1
@@ -201,11 +207,109 @@ pub fn build_skills_prompt(conn: &Connection, agent_id: &str) -> Result<String, 
             Some(md) if !md.trim().is_empty() => md,
             _ => continue,
         };
-        prompt.push_str(&format!("### 技能：{}\n{}\n\n", skill_name, markdown));
+        let body = strip_skill_frontmatter(&markdown);
+        let body = body.trim();
+        if body.is_empty() {
+            continue;
+        }
+        prompt.push_str(&format!("### 技能：{}\n{}\n\n", skill_name, body));
         count += 1;
     }
-    log::info!(target: "db", "build_skills_prompt agent_id={} count={}", agent_id, count);
+
+    let budget = skill_budget_chars();
+    let total_chars = prompt.chars().count();
+    let truncated = total_chars > budget;
+    let prompt = apply_skill_budget(&prompt, budget);
+    if truncated {
+        log::warn!(
+            target: "db",
+            "build_skills_prompt_truncated agent_id={} count={} chars={} budget={}",
+            agent_id,
+            count,
+            total_chars,
+            budget
+        );
+    }
+    log::info!(
+        target: "db",
+        "build_skills_prompt agent_id={} count={} chars={} truncated={}",
+        agent_id,
+        count,
+        total_chars,
+        truncated
+    );
     Ok(prompt)
+}
+
+/// 技能 prompt 字符预算：默认 3000，env `RG_SKILL_BUDGET_CHARS` 可覆盖（非法值回退默认）。
+pub fn skill_budget_chars() -> usize {
+    const DEFAULT_SKILL_BUDGET_CHARS: usize = 3000;
+    std::env::var("RG_SKILL_BUDGET_CHARS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_SKILL_BUDGET_CHARS)
+}
+
+/// 预算截断（纯函数，可单测）：字符数未超预算时原文返回；超限时回退到
+/// 不超过预算的最近一个 `### 技能：` 段落边界（完整保留边界前的技能），
+/// 并追加一行截断说明。build_skills_prompt 产出恒以 `### 技能：` 开头，
+/// 首段即超预算时退化为仅保留截断说明。
+pub fn apply_skill_budget(prompt: &str, budget_chars: usize) -> String {
+    let total = prompt.chars().count();
+    if total <= budget_chars {
+        return prompt.to_string();
+    }
+    // 收集所有段首边界的（字符偏移，字节偏移）
+    let mut boundaries: Vec<(usize, usize)> = Vec::new();
+    let mut char_count = 0usize;
+    for (byte_idx, ch) in prompt.char_indices() {
+        if ch == '#'
+            && prompt[byte_idx..].starts_with("### 技能：")
+            && (byte_idx == 0 || prompt.as_bytes()[byte_idx - 1] == b'\n')
+        {
+            boundaries.push((char_count, byte_idx));
+        }
+        char_count += 1;
+    }
+    let cut_byte = boundaries
+        .iter()
+        .rev()
+        .find(|(char_off, _)| *char_off <= budget_chars)
+        .map(|(_, byte_idx)| *byte_idx)
+        .unwrap_or(0);
+    format!(
+        "{}（注：技能内容超出字符预算 {}，已按技能边界截断，未加载的技能本轮不生效）\n",
+        &prompt[..cut_byte],
+        budget_chars
+    )
+}
+
+/// 剥离 SKILL Markdown 的 frontmatter（`---` 开闭块），仅保留正文。
+/// 手写切分风格与 `validate_skill_markdown` 一致（容忍 BOM 与首部空白）；
+/// 无 frontmatter / 未闭合 / 空白内容时原文保留。
+pub fn strip_skill_frontmatter(markdown: &str) -> &str {
+    let trimmed = markdown.trim_start().trim_start_matches('\u{FEFF}').trim_start();
+    if trimmed.is_empty() {
+        return markdown;
+    }
+    let mut lines = trimmed.lines();
+    let first = match lines.next() {
+        Some(line) if line.trim() == "---" => line,
+        _ => return markdown,
+    };
+    // 逐行扫描直到闭合行，再取其后的全部内容（手动累加字节偏移，
+    // +1 为行尾 '\n'；\r\n 时 '\r' 已被 lines() 剥离，不影响下一行判断）；
+    // 未闭合时原文保留
+    let mut offset = first.len() + 1;
+    for line in lines {
+        if line.trim() == "---" {
+            let start = (offset + line.len() + 1).min(trimmed.len());
+            return &trimmed[start..];
+        }
+        offset += line.len() + 1;
+    }
+    markdown
 }
 
 // === qa_instruction_modules ===

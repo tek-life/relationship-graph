@@ -271,7 +271,8 @@ mod tests {
 
     // === build_skills_prompt ===
 
-    /// 无技能返回空串；skill_markdown 为空/空白的技能跳过；停用技能不参与
+    /// 无技能返回空串；skill_markdown 为空/空白的技能跳过；停用技能不参与；
+    /// 拼接前剥离每条技能的 frontmatter
     #[test]
     fn build_skills_prompt_filters_and_orders_skills() {
         let conn = in_memory_db();
@@ -286,17 +287,92 @@ mod tests {
         agent_config::create_agent_skill(&conn, skill_request(&agent_id, "无正文", None, true)).unwrap();
         agent_config::create_agent_skill(&conn, skill_request(&agent_id, "空白正文", Some("   "), true)).unwrap();
         agent_config::create_agent_skill(&conn, skill_request(&agent_id, "技能二", Some(md2), true)).unwrap();
+        // 仅剩 frontmatter（剥离后正文为空）的技能同样跳过
+        agent_config::create_agent_skill(&conn, skill_request(&agent_id, "纯头部", Some("---\nname: s3\ndescription: d3\n---"), true)).unwrap();
         agent_config::create_agent_skill(&conn, skill_request(&agent_id, "已停用", Some(md1), false)).unwrap();
 
         let prompt = agent_config::build_skills_prompt(&conn, &agent_id).unwrap();
         assert!(prompt.contains("### 技能：技能一"));
         assert!(prompt.contains("### 技能：技能二"));
+        assert!(prompt.contains("技能一正文"));
         assert!(!prompt.contains("无正文"));
         assert!(!prompt.contains("空白正文"));
+        assert!(!prompt.contains("纯头部"));
         assert!(!prompt.contains("已停用"));
+        // frontmatter 已剥离：不包含 frontmatter 键值与分隔线
+        assert!(!prompt.contains("name: s1"));
+        assert!(!prompt.contains("name: s2"));
+        assert!(!prompt.contains("description: d1"));
+        assert!(!prompt.contains("---"));
         // 按 created_at 排序：技能一在前
         assert!(prompt.find("技能：技能一").unwrap() < prompt.find("技能：技能二").unwrap());
         // 每条以空行分隔结尾
         assert!(prompt.ends_with("\n\n"));
+    }
+
+    // === strip_skill_frontmatter ===
+
+    /// 标准 frontmatter 剥离；无 frontmatter / 未闭合 / 空白 / BOM 等边界情形
+    #[test]
+    fn strip_skill_frontmatter_cases() {
+        // 标准 frontmatter → 仅保留正文（含正文首行前的换行，调用方 trim）
+        let md = "---\nname: s\ndescription: d\n---\n正文第一行\n正文第二行";
+        assert_eq!(agent_config::strip_skill_frontmatter(md).trim(), "正文第一行\n正文第二行");
+        // BOM + 首部空白同样剥离
+        let bom_md = "\u{FEFF}---\nname: a\ndescription: b\n---\n正文";
+        assert_eq!(agent_config::strip_skill_frontmatter(bom_md).trim(), "正文");
+        // 无 frontmatter → 原文保留
+        let plain = "# 标题\n内容";
+        assert_eq!(agent_config::strip_skill_frontmatter(plain), plain);
+        // 未闭合 → 原文保留
+        let unclosed = "---\nname: a\ndescription: b\n正文";
+        assert_eq!(agent_config::strip_skill_frontmatter(unclosed), unclosed);
+        // 空白内容 → 原文保留
+        assert_eq!(agent_config::strip_skill_frontmatter("   "), "   ");
+        // 闭合后无正文 → 空串
+        assert_eq!(agent_config::strip_skill_frontmatter("---\nname: a\ndescription: b\n---").trim(), "");
+    }
+
+    // === apply_skill_budget ===
+
+    /// 预算截断：未超预算原文返回；超限时回退到最近 `### 技能：` 边界并追加说明
+    #[test]
+    fn apply_skill_budget_truncates_at_section_boundary() {
+        // 未超预算：原文返回
+        let short = "### 技能：一\n内容\n\n";
+        assert_eq!(agent_config::apply_skill_budget(short, 3000), short);
+
+        let s1 = "### 技能：一\n内容一\n\n";
+        let s2 = "### 技能：二\n内容二\n\n";
+        let full = format!("{}{}", s1, s2);
+        let total = full.chars().count();
+
+        // 预算恰好容纳全文：不截断
+        assert_eq!(agent_config::apply_skill_budget(&full, total), full);
+
+        // 预算能容下第一段、容不下第二段 → 截到第二段边界，仅保留第一段 + 说明行
+        let budget = total - 1;
+        let out = agent_config::apply_skill_budget(&full, budget);
+        assert!(out.starts_with(s1));
+        assert!(!out.contains("### 技能：二"));
+        assert!(out.contains("（注：技能内容超出字符预算"));
+
+        // 首段即超预算 → 退化为仅保留截断说明
+        let tiny = agent_config::apply_skill_budget(&full, 1);
+        assert!(!tiny.contains("### 技能："));
+        assert!(tiny.contains("（注：技能内容超出字符预算 1"));
+    }
+
+    /// 预算默认值与 env 覆盖（单测进程内设置环境变量）
+    #[test]
+    fn skill_budget_env_override() {
+        std::env::remove_var("RG_SKILL_BUDGET_CHARS");
+        assert_eq!(agent_config::skill_budget_chars(), 3000);
+        std::env::set_var("RG_SKILL_BUDGET_CHARS", "128");
+        assert_eq!(agent_config::skill_budget_chars(), 128);
+        // 非法值回退默认
+        std::env::set_var("RG_SKILL_BUDGET_CHARS", "abc");
+        assert_eq!(agent_config::skill_budget_chars(), 3000);
+        std::env::remove_var("RG_SKILL_BUDGET_CHARS");
     }
 }
