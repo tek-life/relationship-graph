@@ -2,64 +2,77 @@
 # 个人关系图谱 - Caddy 反向代理配置
 # 
 # 功能：
-#   - 提供前端静态文件服务（dist/ 目录）
+#   - 提供前端静态文件服务（默认 dist/ 目录，可用 RG_WEB_ROOT 覆盖）
 #   - 反向代理 /api/* 请求到 Axum 后端（localhost:8790）
 #   - SPA fallback：未匹配路径返回 index.html
 #   - PWA Service Worker 禁止缓存（确保更新即时生效）
 #   - 静态资源长缓存（assets/ 目录 immutable）
 #   - JSON 格式访问日志
 #
+# 可移植性（环境变量，均有默认值，本机可直接用）：
+#   RG_WEB_ROOT   静态资源根目录（默认 /home/hfli/personal_ai_workspace/dist；
+#                 ECS 部署设为 ~/relationship-graph/web 即可复用本文件）
+#
 # 使用方法：
 #   caddy run --config /home/hfli/personal_ai_workspace/scripts/Caddyfile
 #
 # 或使用 adapt 子命令检查配置：
-#   caddy adapt --config /home/hfli/personal_ai_workspace/scripts/Caddyfile
+#   caddy adapt --config scripts/Caddyfile
 #
 # 注意：
 #   - 端口 8080 可通过环境变量覆盖：caddy run --config Caddyfile --listen :9090
-#   - 日志目录需提前创建：sudo mkdir -p /var/log/relationship-graph
+#   - admin 端点固定为 localhost:2020（见下方全局块）：与系统级 caddy（apt 安装，
+#     占用默认 admin 2019）共存，否则报 admin endpoint address already in use；
+#     caddy 2.6 的 run 子命令无 --admin flag，只能在全局块设置
+#   - 访问日志路径由占位符 __RG_ACCESS_LOG__ 表示，由 start-services.sh 按目录
+#     可写性替换（可写时用 /var/log/relationship-graph/access.log，否则回退
+#     /tmp/relationship-graph-caddy-access.log）；手工运行 caddy 前请先 sed 替换
 # =============================================================================
+{
+	# 与系统级 caddy（admin 默认 127.0.0.1:2019）共存，错开到 2020
+	admin localhost:2020
+}
 
 :8080 {
-    # 前端静态文件根目录
-    root * /home/hfli/personal_ai_workspace/dist
+	# 前端静态文件根目录（RG_WEB_ROOT 可覆盖，默认本工作区 dist/）
+	root * {$RG_WEB_ROOT:/home/hfli/personal_ai_workspace/dist}
 
-    # API 反向代理到 Axum 后端
-    reverse_proxy /api/* localhost:8790
+	# API 反向代理到 Axum 后端
+	reverse_proxy /api/* localhost:8790
 
-    # 静态文件服务
-    file_server
+	# 静态文件服务
+	file_server
 
-    # SPA fallback（所有未匹配的路径返回 index.html，支持前端路由）
-    try_files {path} /index.html
+	# SPA fallback（所有未匹配的路径返回 index.html，支持前端路由）
+	try_files {path} /index.html
 
-    # PWA Service Worker 不缓存（开发阶段确保 SW 更新即时生效）
-    @sw path /sw.js
-    header @sw Cache-Control "no-cache"
+	# PWA Service Worker 不缓存（开发阶段确保 SW 更新即时生效）
+	@sw path /sw.js
+	header @sw Cache-Control "no-cache"
 
-    # 静态资源长缓存（Vite 构建的 assets/ 带文件哈希，可安全长缓存）
-    @assets path /assets/*
-    header @assets Cache-Control "public, max-age=31536000, immutable"
+	# 静态资源长缓存（Vite 构建的 assets/ 带文件哈希，可安全长缓存）
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
 
-    # manifest.json 禁止缓存（确保 PWA 配置更新即时生效）
-    @manifest path /manifest.json
-    header @manifest Cache-Control "no-cache"
+	# manifest.json 禁止缓存（确保 PWA 配置更新即时生效）
+	@manifest path /manifest.json
+	header @manifest Cache-Control "no-cache"
 
-    # 安全响应头
-    header {
-        # 防止 MIME 类型嗅探
-        X-Content-Type-Options "nosniff"
-        # 防止点击劫持
-        X-Frame-Options "DENY"
-        # XSS 保护
-        X-XSS-Protection "1; mode=block"
-        # 参考 Referrer 策略
-        Referrer-Policy "strict-origin-when-cross-origin"
-    }
+	# 安全响应头
+	header {
+		# 防止 MIME 类型嗅探
+		X-Content-Type-Options "nosniff"
+		# 防止点击劫持
+		X-Frame-Options "DENY"
+		# XSS 保护
+		X-XSS-Protection "1; mode=block"
+		# 参考 Referrer 策略
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
 
-    # 日志
-    log {
-        output file /var/log/relationship-graph/access.log
-        format json
-    }
+	# 日志（路径由 start-services.sh 替换占位符，见文件头说明）
+	log {
+		output file __RG_ACCESS_LOG__
+		format json
+	}
 }

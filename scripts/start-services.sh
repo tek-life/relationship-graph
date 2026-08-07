@@ -48,13 +48,15 @@ fi
 
 mkdir -p "${APP_DATA_DIR}"
 
-# systemd 用户级服务检测提示：本机（WSL）与 ECS 均已用 systemd user unit
-# 托管 8790 后端，日常运维建议改用 systemctl（仅提示，不改变脚本逻辑）
+# 后端托管探测：若 systemd 用户级 unit（relationship-graph.service）已安装，
+# 后端全程委托 systemctl 管理（启动/状态），脚本不再自行拉起，
+# 避免与 systemd Restart=always 自动拉起产生双进程/端口竞争。
+RG_SYSTEMD_BACKEND=0
 if systemctl --user is-enabled relationship-graph >/dev/null 2>&1; then
-  echo "[提示] 检测到 systemd 用户级服务 relationship-graph 已安装，后端建议用 systemctl 管理："
-  echo "       systemctl --user status/restart relationship-graph"
-  echo "       journalctl --user -u relationship-graph -f"
-  echo "       unit 模板见 scripts/systemd/relationship-graph.service.example"
+  RG_SYSTEMD_BACKEND=1
+  echo "[提示] 检测到 systemd 用户级服务 relationship-graph，后端将委托 systemctl 管理："
+  echo "       日常运维：systemctl --user status/restart relationship-graph"
+  echo "       跟踪日志：journalctl --user -u relationship-graph -f（服务日志仍写 server/server.log）"
 fi
 
 echo ""
@@ -110,10 +112,33 @@ fi
 
 # =============================================================================
 # 2. 启动 Axum 服务端
+#    已安装 systemd user unit 时委托 systemctl（不与 systemd 竞争）；
+#    未安装时保留 nohup 兜底。
 # =============================================================================
 echo ""
-echo "==> 启动 Axum 服务端（后台，端口 8790）"
-if ! lsof -i :8790 >/dev/null 2>&1; then
+echo "==> 启动 Axum 服务端（端口 8790）"
+if [ "${RG_SYSTEMD_BACKEND}" = "1" ]; then
+  if systemctl --user is-active --quiet relationship-graph; then
+    echo "  后端由 systemd 托管（relationship-graph，运行中），不重复启动"
+  else
+    echo "  后端由 systemd 托管（未运行），systemctl --user start 拉起"
+    systemctl --user start relationship-graph \
+      || echo "  [WARN] systemctl start 失败：journalctl --user -u relationship-graph -n 50 查看原因"
+  fi
+  echo "  重启命令：systemctl --user restart relationship-graph"
+  # 等待服务就绪
+  for i in {1..60}; do
+    if curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
+    echo "  Axum 服务端已就绪（systemd 托管，日志：server/server.log）"
+  else
+    echo "  [WARN] Axum 服务端启动中：journalctl --user -u relationship-graph -f 查看"
+  fi
+elif ! lsof -i :8790 >/dev/null 2>&1; then
   cd "${PROJECT_DIR}/server"
   source "${HOME}/.cargo/env" 2>/dev/null || true
 
@@ -181,10 +206,26 @@ if [ "${RUN_MODE}" = "production" ]; then
   # 优先使用 Caddy 反向代理
   if command -v caddy &>/dev/null; then
     if ! lsof -i :8080 >/dev/null 2>&1; then
-      # 确保日志目录存在
-      sudo mkdir -p /var/log/relationship-graph 2>/dev/null || true
-      nohup caddy run --config "${PROJECT_DIR}/scripts/Caddyfile" >"${CADDY_LOG}" 2>&1 &
-      echo "  Caddy 反向代理已启动（端口 8080），日志：${CADDY_LOG}"
+      # 访问日志路径：目录可写则用 /var/log/relationship-graph，否则回退 /tmp
+      # （避免依赖 sudo 创建目录；Caddyfile 中的占位符在此替换）
+      if [ -d /var/log/relationship-graph ] && [ -w /var/log/relationship-graph ]; then
+        RG_ACCESS_LOG="/var/log/relationship-graph/access.log"
+      else
+        RG_ACCESS_LOG="/tmp/relationship-graph-caddy-access.log"
+        echo "  [提示] /var/log/relationship-graph 不存在或不可写，访问日志回退：${RG_ACCESS_LOG}"
+      fi
+      CADDYFILE_GEN="/tmp/relationship-graph.Caddyfile"
+      # 只替换日志指令行，避免注释中的占位符说明被一并替换
+      sed "s|output file __RG_ACCESS_LOG__|output file ${RG_ACCESS_LOG}|" \
+        "${PROJECT_DIR}/scripts/Caddyfile" > "${CADDYFILE_GEN}"
+      # 静态资源根目录：默认本工作区 dist/（Caddyfile 内 {$RG_WEB_ROOT:...} 占位），
+      # ECS 等迁移场景可外部覆盖为如 ~/relationship-graph/web
+      export RG_WEB_ROOT="${RG_WEB_ROOT:-${PROJECT_DIR}/dist}"
+      # --adapter caddyfile：生成文件名非 Caddyfile，caddy 无法自动推断适配器；
+      # admin 端口冲突已改在 Caddyfile 全局块设置（admin localhost:2020）：
+      # caddy 2.6 的 run 子命令无 --admin flag，与系统级 caddy（admin 2019）共存必需
+      nohup caddy run --config "${CADDYFILE_GEN}" --adapter caddyfile >"${CADDY_LOG}" 2>&1 &
+      echo "  Caddy 反向代理已启动（端口 8080，静态根 ${RG_WEB_ROOT}），日志：${CADDY_LOG}"
       # 等待就绪
       for i in {1..30}; do
         if curl -s http://localhost:8080 >/dev/null 2>&1; then
@@ -261,6 +302,8 @@ echo "==> 健康检查"
 # Axum 后端健康检查
 if curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
   echo "  Axum 后端健康检查：通过"
+elif [ "${RG_SYSTEMD_BACKEND}" = "1" ]; then
+  echo "  Axum 后端健康检查：失败（systemd 托管：journalctl --user -u relationship-graph -n 50）"
 else
   echo "  Axum 后端健康检查：失败（请查看日志 ${SERVER_LOG}）"
 fi
@@ -300,10 +343,18 @@ fi
 
 # Axum
 if curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
-  echo "  Axum 服务端  - http://localhost:8790   - [已就绪]"
+  if [ "${RG_SYSTEMD_BACKEND}" = "1" ]; then
+    echo "  Axum 服务端  - http://localhost:8790   - [已就绪，systemd 托管]"
+  else
+    echo "  Axum 服务端  - http://localhost:8790   - [已就绪]"
+  fi
 else
   echo "  Axum 服务端  - http://localhost:8790   - [启动中]"
-  echo "    查看日志：${SERVER_LOG}"
+  if [ "${RG_SYSTEMD_BACKEND}" = "1" ]; then
+    echo "    查看日志：journalctl --user -u relationship-graph -f"
+  else
+    echo "    查看日志：${SERVER_LOG}"
+  fi
 fi
 
 # 前端

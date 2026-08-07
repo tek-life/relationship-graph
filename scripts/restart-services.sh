@@ -67,13 +67,12 @@ echo "  个人智能 AI 平台 - 服务重启"
 echo "=========================================="
 echo ""
 
-# systemd 用户级服务检测提示：本机（WSL）与 ECS 的 8790 后端已由 systemd 托管，
-# 本脚本按端口 kill 后 systemd 会立即自动拉起、与本脚本竞争，日常重启请改用
-# systemctl --user restart relationship-graph（仅提示，不改变脚本逻辑）
+# systemd 用户级服务检测：本机（WSL）与 ECS 的 8790 后端已由 systemd 托管，
+# kill 会被 Restart=always 立即拉起、与脚本竞争，因此后端段改走
+# systemctl stop/start（前端段仍按端口停起，逻辑不变）
 if systemctl --user is-enabled relationship-graph >/dev/null 2>&1; then
-  echo "[提示] 检测到 systemd 用户级服务 relationship-graph 已安装："
-  echo "       后端重启建议改用：systemctl --user restart relationship-graph"
-  echo "       （本脚本 kill 后端进程会被 systemd 立刻自动拉起，两者会竞争）"
+  echo "[提示] 后端由 systemd 用户级服务托管：停止/拉起改走 systemctl，"
+  echo "       日常仅重启后端也可直接：systemctl --user restart relationship-graph"
   echo ""
 fi
 
@@ -82,8 +81,15 @@ fi
 # =============================================================================
 echo "==> 停止现有服务"
 
-# Axum 后端（8790）
-stop_by_port 8790 "Axum 服务端"
+# Axum 后端（8790）：systemd 托管时走 systemctl stop（kill 会被立即拉起，产生竞争）；
+# 停止后由 start-services.sh 委托 systemctl start 重新拉起
+if systemctl --user is-enabled relationship-graph >/dev/null 2>&1; then
+  echo "  停止 Axum 服务端（systemd 托管：systemctl --user stop）"
+  systemctl --user stop relationship-graph || true
+  echo "  Axum 服务端已停止（将由 start-services.sh 通过 systemctl 拉起）"
+else
+  stop_by_port 8790 "Axum 服务端"
+fi
 
 # 前端：开发模式 Vite（1420）/ 生产模式 Caddy（8080）或 http.server（8000）
 stop_by_port 1420 "Vite 开发服务器"
