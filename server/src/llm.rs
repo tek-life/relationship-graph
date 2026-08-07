@@ -679,12 +679,13 @@ async fn cloud_chat_stream(
                         return Ok(Some((ChatStreamEvent::Text(text.text), stream)));
                     }
                     Some(Ok(StreamedAssistantContent::Final(final_response))) => {
-                        // openai provider 的 Final 携带 Usage（prompt_tokens/completion_tokens）
-                        let usage = (
-                            final_response.usage.prompt_tokens,
-                            final_response.usage.completion_tokens.unwrap_or(0),
-                        );
-                        return Ok(Some((ChatStreamEvent::Done(Some(usage)), stream)));
+                        // openai provider 的 Final 携带 Usage（prompt_tokens/completion_tokens）；
+                        // provider 未回 usage 时 Usage::default() 全 0，此时映射为
+                        // Done(None)，与 ollama 路径 usage=null 语义一致
+                        let input = final_response.usage.prompt_tokens;
+                        let output = final_response.usage.completion_tokens.unwrap_or(0);
+                        let usage = if input == 0 && output == 0 { None } else { Some((input, output)) };
+                        return Ok(Some((ChatStreamEvent::Done(usage), stream)));
                     }
                     // ToolCall / ToolCallDelta / Unknown 等与通用聊天无关，忽略
                     Some(Ok(_)) => continue,
