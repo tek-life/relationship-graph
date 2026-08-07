@@ -48,6 +48,15 @@ fi
 
 mkdir -p "${APP_DATA_DIR}"
 
+# systemd 用户级服务检测提示：本机（WSL）与 ECS 均已用 systemd user unit
+# 托管 8790 后端，日常运维建议改用 systemctl（仅提示，不改变脚本逻辑）
+if systemctl --user is-enabled relationship-graph >/dev/null 2>&1; then
+  echo "[提示] 检测到 systemd 用户级服务 relationship-graph 已安装，后端建议用 systemctl 管理："
+  echo "       systemctl --user status/restart relationship-graph"
+  echo "       journalctl --user -u relationship-graph -f"
+  echo "       unit 模板见 scripts/systemd/relationship-graph.service.example"
+fi
+
 echo ""
 echo "=========================================="
 echo "  个人关系图谱 - 服务启动（${RUN_MODE} 模式）"

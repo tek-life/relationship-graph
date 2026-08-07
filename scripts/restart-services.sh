@@ -67,6 +67,16 @@ echo "  个人智能 AI 平台 - 服务重启"
 echo "=========================================="
 echo ""
 
+# systemd 用户级服务检测提示：本机（WSL）与 ECS 的 8790 后端已由 systemd 托管，
+# 本脚本按端口 kill 后 systemd 会立即自动拉起、与本脚本竞争，日常重启请改用
+# systemctl --user restart relationship-graph（仅提示，不改变脚本逻辑）
+if systemctl --user is-enabled relationship-graph >/dev/null 2>&1; then
+  echo "[提示] 检测到 systemd 用户级服务 relationship-graph 已安装："
+  echo "       后端重启建议改用：systemctl --user restart relationship-graph"
+  echo "       （本脚本 kill 后端进程会被 systemd 立刻自动拉起，两者会竞争）"
+  echo ""
+fi
+
 # =============================================================================
 # 1. 停止现有服务
 # =============================================================================

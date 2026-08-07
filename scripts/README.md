@@ -43,6 +43,7 @@ Ollama（localhost:11434）仅本地开发走 legacy/rig 通道时需要。
 | `seed-demo-data.mjs` | 通过 HTTP API 导入演示数据 | 部署后初始化演示 |
 | `generate-test-data.mjs` | 生成 1000 条脏数据 Excel | 导入功能测试 |
 | `e2e-import-test.mjs` | 端到端导入链路验证（指向独立测试实例） | 回归测试 |
+| `systemd/relationship-graph.service.example` | 8790 后端 systemd 用户级 unit 模板（本机 WSL 与 ECS 同名复用） | 见[注意事项](#注意事项)第 2 条 |
 
 ---
 
@@ -110,9 +111,10 @@ RG_LLM_BACKEND=legacy RG_USE_OLLAMA=1 ./scripts/start-services.sh
 RG_CLOUD_CHAT_MODEL=qwen-plus ./scripts/start-services.sh
 ```
 
-**约定（保持不变）**：后端端口 8790；日志 `/tmp/relationship-graph-server.log`；
-数据目录 `~/.local/share/relationship-graph`（db.key 密钥文件启动即自动解锁，无主密码流程）。
+**约定（保持不变）**：后端端口 8790；数据目录 `~/.local/share/relationship-graph`（db.key 密钥文件启动即自动解锁，无主密码流程）。
 若 8790 已有进程在跑，脚本不会重复启动（先检测端口占用）。
+
+> **提示**：本机（WSL）与 ECS 的 8790 后端已改用 systemd 用户级服务托管（见[注意事项](#注意事项)第 2 条），日常启动建议直接 `systemctl --user start relationship-graph`；脚本检测到 unit 已安装时会给出提示。日志位置：systemd 托管时为 `server/server.log`，脚本裸跑时为 `/tmp/relationship-graph-server.log`。
 
 ---
 
@@ -133,6 +135,8 @@ RG_CLOUD_CHAT_MODEL=qwen-plus ./scripts/start-services.sh
 - 停止后委托 `start-services.sh` 重新拉起并做健康检查，因此 `RG_LLM_BACKEND` 等环境变量同样在此生效（默认 cloud）；
 - 数据库使用 db.key 密钥文件自动解锁，重启后无需人工解锁；
 - LLM 通道环境变量会继承当前 shell，如需回退：`RG_LLM_BACKEND=legacy RG_USE_OLLAMA=1 ./scripts/restart-services.sh --build`。
+
+> **提示**：后端已由 systemd 用户级服务托管时，日常重启请直接 `systemctl --user restart relationship-graph`（脚本检测到 unit 会给出提示）；本脚本按端口 kill 会被 systemd 立刻自动拉起、两者竞争，仅在需要 `--build` 换二进制等场景使用（systemd 会自动拉起新二进制，`--build` 后建议改走 `cargo build` + `systemctl --user restart`）。
 
 ---
 
@@ -365,7 +369,13 @@ RG_LLM_BACKEND=legacy ./scripts/dev.sh
 ## 注意事项
 
 1. **API Key 安全**：严禁把 Key 写进任何脚本、配置或提交到仓库；脚本对 Key 只做存在性检查，绝不打印/回显内容。Key 文件请保持 `chmod 600`。
-2. **服务托管方式**：本地/WSL 开发环境的后端为 nohup 裸跑，无进程守护，重启服务时务必**动态查端口持有 PID**（`ss -ltnp | grep 8790`）再 kill，勿写死 PID；阿里云 ECS 生产环境请用 `server-init.sh` + `release.sh` 方案（systemd 用户级服务，自动拉起）。
+2. **服务托管方式（本机已迁移 systemd）**：本地/WSL 的 8790 后端已由 **systemd 用户级 unit**（`relationship-graph.service`）托管，进程崩溃 3 秒自动拉起、开机/登录后自启（已开 linger），替代旧的 nohup 裸跑。unit 模板：`scripts/systemd/relationship-graph.service.example`（安装到 `~/.config/systemd/user/relationship-graph.service`，需替换 `__PROJECT_DIR__`）。常用命令：
+   ```bash
+   systemctl --user status  relationship-graph       # 查看状态
+   systemctl --user restart relationship-graph       # 重启（发版换二进制后用这个）
+   journalctl --user -u relationship-graph -f        # 跟踪日志（服务日志仍追加写 server/server.log）
+   ```
+   阿里云 ECS 生产环境用 `server-init.sh` + `release.sh` 方案（同名 unit，自动拉起）；如手工排查端口占用，仍须**动态查端口持有 PID**（`ss -ltnp | grep 8790`）再 kill，勿写死 PID。
 3. **数据目录勿动**：`~/.local/share/relationship-graph` 含加密数据库与 db.key 密钥文件，更换目录等同丢失全部数据。
 4. **先停后编译**：`restart-services.sh --build` 已遵循"先停服务再 cargo build"，手动操作时也请照此，避免旧进程运行已被覆盖删除的二进制。
 5. **沙箱/容器内启动陷阱**：在只读挂载的沙箱里启动服务会命中"数据库只读"错误，请在真实文件系统（沙箱外）启动常驻服务。
