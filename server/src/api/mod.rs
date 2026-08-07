@@ -2,7 +2,7 @@
 //! 日志遵循脱敏原则：不记录密码、token、姓名、电话及内容原文。
 
 use crate::db::{crypto::{derive_key, generate_db_key, open_encrypted_db, rekey_db, validate_encrypted_db},
-    get_conn, interaction, person, relationship, schema, user as user_db};
+    agent_config, get_conn, interaction, person, relationship, schema, user as user_db};
 use crate::nlq::{self, NlqRequest, NlqResult};
 use crate::security::auth;
 use crate::security::sensitivity;
@@ -719,19 +719,52 @@ async fn natural_language_query(
     Ok(Json(results))
 }
 
-async fn chat_handler(Json(req): Json<ChatRequest>) -> Result<Json<ChatResponse>, ApiError> {
+async fn chat_handler(
+    State(state): State<SharedState>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, ApiError> {
     let query = req.query.trim();
     if query.is_empty() {
         return Err(ApiError::bad_request("问题不能为空"));
     }
 
+    let skills = resolve_skills_prompt(&state, req.agent_id.as_deref());
     log::info!(
         target: "chat",
-        "chat_handler query_len={}",
-        query.chars().count()
+        "chat_handler query_len={} skills_chars={}",
+        query.chars().count(),
+        skills.chars().count()
     );
-    let reply = crate::llm::general_chat(query).await.map_err(ApiError::internal)?;
+    let reply = crate::llm::general_chat(query, &skills).await.map_err(ApiError::internal)?;
     Ok(Json(ChatResponse { reply }))
+}
+
+/// 解析请求指定数字人的技能 prompt（注入 /api/chat 与 /api/chat/stream 两条链路）。
+/// agent_id 为 None 时返回空串；DB 锁约定：锁内取数据 → 立即 drop guard →
+/// 再由调用方 await LLM；任何错误（锁失败/库未解锁/查询失败）均 log::warn
+/// 后返回空串——技能故障永不阻断聊天。日志仅记元数据，不落技能内容。
+fn resolve_skills_prompt(state: &SharedState, agent_id: Option<&str>) -> String {
+    let Some(agent_id) = agent_id else {
+        return String::new();
+    };
+    let guard = match state.db.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::warn!(target: "chat", "resolve_skills_prompt lock_failed agent_id={} err={}", agent_id, e);
+            return String::new();
+        }
+    };
+    let result = get_conn(&guard).and_then(|conn| {
+        agent_config::build_skills_prompt(conn, agent_id).map_err(|e| e.to_string())
+    });
+    drop(guard);
+    match result {
+        Ok(prompt) => prompt,
+        Err(e) => {
+            log::warn!(target: "chat", "resolve_skills_prompt_failed agent_id={} err={}", agent_id, e);
+            String::new()
+        }
+    }
 }
 
 // ---------- SSE 流式聊天 ----------
@@ -814,6 +847,7 @@ async fn poll_rig_event(
 /// rig 路径：rig model.stream() 增量推送 thinking_delta / text_delta，Final 携带 usage；
 /// legacy 降级路径：step 事件后同步调用 general_chat，完整回复作为单条 text_delta。
 async fn chat_stream_handler(
+    State(state): State<SharedState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let query = req.query.trim().to_string();
@@ -821,14 +855,19 @@ async fn chat_stream_handler(
         return Err(ApiError::bad_request("问题不能为空"));
     }
 
+    // 技能 prompt 在 unfold 之前同步解析（锁内取数 → drop guard），
+    // clone 进闭包后 rig / legacy 两分支共用
+    let skills = resolve_skills_prompt(&state, req.agent_id.as_deref());
+
     let backend = crate::llm::general_chat_backend();
     let model_name = crate::llm::general_chat_model();
     log::info!(
         target: "llm",
-        "chat_stream_start backend={} model={} query_len={}",
+        "chat_stream_start backend={} model={} query_len={} skills_chars={}",
         backend,
         model_name,
-        query.chars().count()
+        query.chars().count(),
+        skills.chars().count()
     );
 
     // 仅记元数据的事件计数（不落内容）
@@ -837,6 +876,7 @@ async fn chat_stream_handler(
 
     let stream = futures::stream::unfold(ChatStreamPhase::Routing, move |phase| {
         let query = query.clone();
+        let skills = skills.clone();
         let model_name = model_name.clone();
         let thinking_count = thinking_count.clone();
         let text_count = text_count.clone();
@@ -852,14 +892,14 @@ async fn chat_stream_handler(
                 )),
                 ChatStreamPhase::Init => {
                     if backend == "rig" {
-                        match crate::llm::general_chat_stream(&query).await {
+                        match crate::llm::general_chat_stream(&query, &skills).await {
                             Ok(stream) => {
                                 poll_rig_event(stream, &thinking_count, &text_count).await
                             }
                             Err(e) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
                         }
                     } else {
-                        match crate::llm::general_chat(&query).await {
+                        match crate::llm::general_chat(&query, &skills).await {
                             Ok(reply) => {
                                 text_count.fetch_add(1, Ordering::SeqCst);
                                 Some((Ok(sse_delta("text_delta", reply)), ChatStreamPhase::LegacyDone))

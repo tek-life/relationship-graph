@@ -157,6 +157,41 @@ mod dual_track_tests {
     }
 }
 
+#[cfg(test)]
+mod general_chat_prompt_tests {
+    use super::*;
+
+    /// 旧格式基准（技能注入改造前的 prompt 结构）：空技能时必须逐字节一致
+    fn legacy_prompt(query: &str) -> String {
+        format!(
+            "你是关系图谱应用中的通用助理。请直接回答用户问题，默认使用简体中文。\
+当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。\
+\n\n用户问题：{}",
+            query
+        )
+    }
+
+    #[test]
+    fn empty_skills_prompt_matches_legacy_format_byte_for_byte() {
+        let query = "帮我总结一下最近的关系维护情况";
+        assert_eq!(general_chat_prompt(query, ""), legacy_prompt(query));
+        // 空 query 同样一致
+        assert_eq!(general_chat_prompt("", ""), legacy_prompt(""));
+    }
+
+    #[test]
+    fn non_empty_skills_insert_section_between_role_and_question() {
+        let skills = "### 技能：演示\n技能正文\n\n";
+        let prompt = general_chat_prompt("你好", skills);
+        // 角色设定在前、技能段居中、用户问题殿后
+        assert!(prompt.starts_with("你是关系图谱应用中的通用助理。"));
+        assert!(prompt.contains("\n\n你当前具备以下技能，请在适用时遵循：\n### 技能：演示\n技能正文\n\n用户问题：你好"));
+        assert!(prompt.ends_with("用户问题：你好"));
+        // 技能尾部空白被归一，与“用户问题：”之间恰有一个空行
+        assert!(!prompt.contains("\n\n\n\n用户问题"));
+    }
+}
+
 /// 缓存 rig 的 Ollama client（顺带修复每次新建连接问题）。
 /// 构建失败不缓存，下次调用可重试（client Clone 廉价，构建也廉价）。
 /// 不注入自定义 http_client，超时完全由 tokio::time::timeout 控制。
@@ -230,14 +265,23 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
     }
 }
 
-/// general_chat 的系统语（流式与非流式保持一致）
-fn general_chat_prompt(query: &str) -> String {
-    format!(
-        "你是关系图谱应用中的通用助理。请直接回答用户问题，默认使用简体中文。\
-当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。\
-\n\n用户问题：{}",
-        query
-    )
+/// general_chat 的系统语（流式与非流式保持一致）。
+/// skills 为空时输出与无技能注入的旧格式逐字节一致；非空时在角色设定与
+/// “用户问题：”之间插入技能段（技能内容由 db::agent_config::build_skills_prompt
+/// 构建，已剥离 frontmatter 并按字符预算截断）。
+fn general_chat_prompt(query: &str, skills: &str) -> String {
+    let base = "你是关系图谱应用中的通用助理。请直接回答用户问题，默认使用简体中文。\
+当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。";
+    if skills.is_empty() {
+        format!("{}\n\n用户问题：{}", base, query)
+    } else {
+        format!(
+            "{}\n\n你当前具备以下技能，请在适用时遵循：\n{}\n\n用户问题：{}",
+            base,
+            skills.trim_end(),
+            query
+        )
+    }
 }
 
 /// 当前 general_chat 实际走的通道（"rig" / "legacy"），供 SSE 端点发 routing 事件
@@ -250,8 +294,8 @@ pub fn general_chat_model() -> String {
     ollama_model()
 }
 
-pub async fn general_chat(query: &str) -> Result<String, String> {
-    let prompt = general_chat_prompt(query);
+pub async fn general_chat(query: &str, skills: &str) -> Result<String, String> {
+    let prompt = general_chat_prompt(query, skills);
 
     call_ollama(
         &prompt,
@@ -278,6 +322,7 @@ pub enum ChatStreamEvent {
 /// 客户端断开时流自然 drop（rig stream 支持 cancel）。
 pub async fn general_chat_stream(
     query: &str,
+    skills: &str,
 ) -> Result<
     std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
     String,
@@ -285,7 +330,7 @@ pub async fn general_chat_stream(
     let client = rig_client()?;
     let model_name = ollama_model();
     let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
-    let prompt = general_chat_prompt(query);
+    let prompt = general_chat_prompt(query, skills);
     info!(
         target: "llm",
         "rig_stream_request url={} model={} prompt_len={}",
