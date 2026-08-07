@@ -120,6 +120,7 @@ function App() {
             <TabButton active={isPathActive('/contacts')} onClick={() => navigate('/contacts')}>联系人</TabButton>
             <TabButton active={isPathActive('/graph')} onClick={() => navigate('/graph')}>图谱</TabButton>
             <TabButton active={isPathActive('/import')} onClick={() => navigate('/import')}>导入</TabButton>
+            <TabButton active={isPathActive('/profile-qa')} onClick={() => navigate('/profile-qa')}>个人画像</TabButton>
             {isAdmin && (
               <TabButton active={isPathActive('/admin')} onClick={() => navigate('/admin')}>管理后台</TabButton>
             )}
@@ -243,6 +244,8 @@ function App() {
           <Route path="/profile-qa" element={
             <div className="h-full overflow-y-auto">
               <ProfileQA
+                initialProfileDoc={user?.profileDoc ?? null}
+                initialCompleted={user?.profileCompleted ?? false}
                 onComplete={() => {
                   // 完成后刷新用户信息，使 profileCompleted 状态生效
                   void refreshUser();
