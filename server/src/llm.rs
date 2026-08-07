@@ -593,7 +593,9 @@ async fn cloud_chat_stream(
 > {
     let client = cloud_client()?;
     let model_name = cloud_chat_model();
-    // 建连超时对齐聊天超时语义（默认 120s，RG_CLOUD_TIMEOUT_SECS 可覆盖）
+    // 超时对齐聊天超时语义（默认 120s，RG_CLOUD_TIMEOUT_SECS 可覆盖）：
+    // 同时覆盖建流阶段与流消费阶段每次 stream.next() 的兜底，
+    // 避免云端公网链路中途 stall 时 SSE 无限挂起
     let timeout = cloud_timeout();
     info!(
         target: "llm",
@@ -622,50 +624,64 @@ async fn cloud_chat_stream(
     };
 
     let stream = Box::pin(stream);
-    let mapped = futures::stream::try_unfold(stream, |mut stream| async move {
-        use futures::StreamExt;
-        loop {
-            match stream.next().await {
-                None => return Ok(None),
-                Some(Ok(StreamedAssistantContent::Reasoning(reasoning))) => {
-                    let text: String = reasoning
-                        .content
-                        .iter()
-                        .filter_map(|item| match item {
-                            rig_core::completion::message::ReasoningContent::Text { text, .. } => {
-                                Some(text.as_str())
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    if text.is_empty() {
-                        continue;
+    // 流消费阶段兜底：每次 stream.next() 包超时（公网链路中途 stall 时
+    // 终止流而非无限挂起）；错误文案预构造，闭包内每轮克隆供 async 块使用
+    let stall_error = format!(
+        "云端流式响应超时：模型 {} 在 {} 秒内未返回新内容。你可以稍后重试，或提高环境变量 RG_CLOUD_TIMEOUT_SECS。",
+        model_name,
+        timeout.as_secs()
+    );
+    let mapped = futures::stream::try_unfold(stream, move |mut stream| {
+        let stall_error = stall_error.clone();
+        async move {
+            use futures::StreamExt;
+            loop {
+                let next = match tokio::time::timeout(timeout, stream.next()).await {
+                    Ok(item) => item,
+                    Err(_) => return Err(stall_error),
+                };
+                match next {
+                    None => return Ok(None),
+                    Some(Ok(StreamedAssistantContent::Reasoning(reasoning))) => {
+                        let text: String = reasoning
+                            .content
+                            .iter()
+                            .filter_map(|item| match item {
+                                rig_core::completion::message::ReasoningContent::Text { text, .. } => {
+                                    Some(text.as_str())
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        return Ok(Some((ChatStreamEvent::Reasoning(text), stream)));
                     }
-                    return Ok(Some((ChatStreamEvent::Reasoning(text), stream)));
-                }
-                Some(Ok(StreamedAssistantContent::ReasoningDelta { reasoning, .. })) => {
-                    if reasoning.is_empty() {
-                        continue;
+                    Some(Ok(StreamedAssistantContent::ReasoningDelta { reasoning, .. })) => {
+                        if reasoning.is_empty() {
+                            continue;
+                        }
+                        return Ok(Some((ChatStreamEvent::Reasoning(reasoning), stream)));
                     }
-                    return Ok(Some((ChatStreamEvent::Reasoning(reasoning), stream)));
-                }
-                Some(Ok(StreamedAssistantContent::Text(text))) => {
-                    if text.text.is_empty() {
-                        continue;
+                    Some(Ok(StreamedAssistantContent::Text(text))) => {
+                        if text.text.is_empty() {
+                            continue;
+                        }
+                        return Ok(Some((ChatStreamEvent::Text(text.text), stream)));
                     }
-                    return Ok(Some((ChatStreamEvent::Text(text.text), stream)));
+                    Some(Ok(StreamedAssistantContent::Final(final_response))) => {
+                        // openai provider 的 Final 携带 Usage（prompt_tokens/completion_tokens）
+                        let usage = (
+                            final_response.usage.prompt_tokens,
+                            final_response.usage.completion_tokens.unwrap_or(0),
+                        );
+                        return Ok(Some((ChatStreamEvent::Done(Some(usage)), stream)));
+                    }
+                    // ToolCall / ToolCallDelta / Unknown 等与通用聊天无关，忽略
+                    Some(Ok(_)) => continue,
+                    Some(Err(e)) => return Err(format!("云端流式响应失败：{}", e)),
                 }
-                Some(Ok(StreamedAssistantContent::Final(final_response))) => {
-                    // openai provider 的 Final 携带 Usage（prompt_tokens/completion_tokens）
-                    let usage = (
-                        final_response.usage.prompt_tokens,
-                        final_response.usage.completion_tokens.unwrap_or(0),
-                    );
-                    return Ok(Some((ChatStreamEvent::Done(Some(usage)), stream)));
-                }
-                // ToolCall / ToolCallDelta / Unknown 等与通用聊天无关，忽略
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => return Err(format!("云端流式响应失败：{}", e)),
             }
         }
     });
