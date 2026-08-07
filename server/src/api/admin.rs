@@ -200,6 +200,9 @@ pub async fn create_agent_skill(
 ) -> Result<Json<AgentSkill>, ApiError> {
     // 强制使用路径中的 agent_id，覆盖请求体中的值
     req.agent_id = agent_id;
+    if let Some(md) = &req.skill_markdown {
+        agent_config::validate_skill_markdown(md).map_err(ApiError::bad_request)?;
+    }
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
     let skill = agent_config::create_agent_skill(conn, req)?;
@@ -213,6 +216,9 @@ pub async fn update_agent_skill(
     Path(id): Path<String>,
     Json(req): Json<CreateAgentSkillRequest>,
 ) -> Result<Json<()>, ApiError> {
+    if let Some(md) = &req.skill_markdown {
+        agent_config::validate_skill_markdown(md).map_err(ApiError::bad_request)?;
+    }
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
     agent_config::update_agent_skill(conn, &id, req)?;

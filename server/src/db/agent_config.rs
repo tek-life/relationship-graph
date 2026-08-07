@@ -65,6 +65,66 @@ pub fn delete_digital_agent(conn: &Connection, id: &str) -> Result<(), rusqlite:
 
 // === agent_skills ===
 
+/// 校验 SKILL Markdown 的 frontmatter 格式（轻量手写解析，不依赖 YAML 库）。
+///
+/// 规则：
+/// - 空白/空 Markdown 直接放行（skill_markdown 为可选字段）；
+/// - 必须以 `---` 开头的 frontmatter 起始行；
+/// - 必须存在闭合的 `---` 行；
+/// - frontmatter 必须包含非空值的 `name` 与 `description` 顶层键。
+/// 校验失败时 Err 携带中文原因，供 API 层转为 400 返回。
+pub fn validate_skill_markdown(markdown: &str) -> Result<(), String> {
+    let trimmed = markdown.trim_start();
+    // 空白内容视为未填写，直接放行（skill_markdown 为可选字段）
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let mut lines = trimmed.lines();
+
+    // frontmatter 起始行必须为 ---
+    match lines.next() {
+        Some(line) if line.trim() == "---" => {}
+        _ => return Err("技能 Markdown 必须以 --- 开头的 frontmatter".to_string()),
+    }
+
+    // 寻找闭合的 ---，收集 frontmatter 内容
+    let mut fm_lines: Vec<&str> = Vec::new();
+    let mut closed = false;
+    for line in lines {
+        if line.trim() == "---" {
+            closed = true;
+            break;
+        }
+        fm_lines.push(line);
+    }
+    if !closed {
+        return Err("技能 Markdown 的 frontmatter 缺少闭合的 ---".to_string());
+    }
+
+    // 解析顶层键（忽略缩进行与注释），要求 name/description 存在且非空
+    let mut name_value = String::new();
+    let mut description_value = String::new();
+    for line in fm_lines {
+        if line.starts_with(char::is_whitespace) || line.trim_start().starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            match key.trim() {
+                "name" => name_value = value.trim().to_string(),
+                "description" => description_value = value.trim().to_string(),
+                _ => {}
+            }
+        }
+    }
+    if name_value.is_empty() {
+        return Err("技能 Markdown 的 frontmatter 缺少非空的 name 键".to_string());
+    }
+    if description_value.is_empty() {
+        return Err("技能 Markdown 的 frontmatter 缺少非空的 description 键".to_string());
+    }
+    Ok(())
+}
+
 pub fn list_agent_skills(conn: &Connection, agent_id: &str) -> Result<Vec<AgentSkill>, rusqlite::Error> {
     let sql = SKILL_SELECT.to_owned() + " WHERE agent_id = ?1 ORDER BY created_at ASC";
     let mut stmt = conn.prepare(&sql)?;
