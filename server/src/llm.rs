@@ -44,16 +44,17 @@ struct OllamaResponse {
     response: Option<String>,
 }
 
-async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str) -> Result<String, String> {
+async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str, web_search: bool) -> Result<String, String> {
     // 三值通道分发：RG_LLM_BACKEND=rig/cloud 时全量走对应通道；legacy 模式下
     // 命中 RG_LLM_CLOUD_FNS / RG_LLM_RIG_FNS 白名单的函数分别走 cloud / rig
     //（函数级灰度，cloud 优先），其余走原 reqwest legacy 实现（默认行为与
     // 改造前完全一致）。详见 llm_channel_for 注释。
+    // web_search 仅 cloud 通道生效（百炼 enable_search），legacy/rig 忽略。
     match llm_channel(fn_name) {
         Channel::Rig => return call_rig(prompt, format, timeout).await,
         // Cloud 尊重调用方传入的 timeout（聊天类 120s、抽取类 45s），
         // 避免长调用（generate_profile_document / compress_context）被 60s 截断
-        Channel::Cloud => return call_cloud(prompt, format, timeout, fn_name).await,
+        Channel::Cloud => return call_cloud(prompt, format, timeout, fn_name, web_search).await,
         Channel::Legacy => {}
     }
 
@@ -386,15 +387,15 @@ mod general_chat_prompt_tests {
     #[test]
     fn empty_skills_prompt_matches_legacy_format_byte_for_byte() {
         let query = "帮我总结一下最近的关系维护情况";
-        assert_eq!(general_chat_prompt(query, ""), legacy_prompt(query));
+        assert_eq!(general_chat_prompt(query, "", false, ""), legacy_prompt(query));
         // 空 query 同样一致
-        assert_eq!(general_chat_prompt("", ""), legacy_prompt(""));
+        assert_eq!(general_chat_prompt("", "", false, ""), legacy_prompt(""));
     }
 
     #[test]
     fn non_empty_skills_insert_section_between_role_and_question() {
         let skills = "### 技能：演示\n技能正文\n\n";
-        let prompt = general_chat_prompt("你好", skills);
+        let prompt = general_chat_prompt("你好", skills, false, "");
         // 角色设定在前、技能段居中、用户问题殿后
         assert!(prompt.starts_with("你是您的个人 AI 平台的通用助理。"));
         assert!(prompt.contains("\n\n你当前具备以下技能，请在适用时遵循：\n### 技能：演示\n技能正文\n\n用户问题：你好"));
@@ -412,15 +413,47 @@ mod general_chat_prompt_tests {
         // 空画像 → 注入串为空 → 与现状逐字节一致
         let empty_skills = crate::db::agent_config::build_profile_skill_prompt("   ");
         assert_eq!(empty_skills, "");
-        assert_eq!(general_chat_prompt(query, &empty_skills), legacy_prompt(query));
+        assert_eq!(general_chat_prompt(query, &empty_skills, false, ""), legacy_prompt(query));
 
         // 画像段注入：与 build_profile_skill_prompt 产出格式对齐
         let skills = crate::db::agent_config::build_profile_skill_prompt("画像正文");
         assert_eq!(skills, "### 技能：用户画像\n画像正文\n\n");
-        let prompt = general_chat_prompt(query, &skills);
+        let prompt = general_chat_prompt(query, &skills, false, "");
         assert!(prompt.starts_with("你是您的个人 AI 平台的通用助理。"));
         assert!(prompt.contains("\n\n你当前具备以下技能，请在适用时遵循：\n### 技能：用户画像\n画像正文\n\n用户问题："));
         assert!(prompt.ends_with(&format!("用户问题：{}", query)));
+    }
+
+    /// 联网搜索开启态：“无法联网”句被替换为联网说明，其余结构与关闭态一致
+    #[test]
+    fn web_search_enabled_replaces_offline_sentence() {
+        let prompt = general_chat_prompt("今天有什么新闻", "", true, "");
+        assert!(prompt.starts_with(
+            "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。本次对话已启用联网搜索，可参考最新网络信息作答。"
+        ));
+        assert!(!prompt.contains("无法联网"));
+        assert!(prompt.ends_with("用户问题：今天有什么新闻"));
+    }
+
+    /// 文档段注入位置：角色设定 → 技能 → 文档段 → 用户问题；
+    /// 文档为空时与无文档现状逐字节一致
+    #[test]
+    fn documents_section_between_skills_and_question() {
+        let query = "总结这份报告";
+        let skills = "### 技能：演示\n技能正文\n\n";
+        let docs = "### 用户上传文档《报告.pdf》正文\n抽取文本";
+        // 空文档 → 与无文档现状（旧格式）逐字节一致
+        let legacy = format!(
+            "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。\n\n你当前具备以下技能，请在适用时遵循：\n{}\n\n用户问题：{}",
+            skills.trim_end(),
+            query
+        );
+        assert_eq!(general_chat_prompt(query, skills, false, ""), legacy);
+        let prompt = general_chat_prompt(query, skills, false, docs);
+        assert!(prompt.contains("\n\n你当前具备以下技能，请在适用时遵循：\n### 技能：演示\n技能正文\n\n### 用户上传文档《报告.pdf》正文\n抽取文本\n\n用户问题：总结这份报告"));
+        // 无技能仅有文档：文档段紧跟角色设定
+        let prompt_no_skills = general_chat_prompt(query, "", false, docs);
+        assert!(prompt_no_skills.contains("替代方案。\n\n### 用户上传文档《报告.pdf》正文\n抽取文本\n\n用户问题：总结这份报告"));
     }
 }
 
@@ -526,24 +559,28 @@ fn cloud_client() -> Result<openai::CompletionsClient, String> {
 /// 抽取/压缩类 → RG_CLOUD_EXTRACT_MODEL（默认 qwen-flash）。
 /// format=Some 时经 additional_params 注入 response_format=json_object
 ///（不用 output_schema 的 json_schema strict 模式，宽松 schema 可能被拒）。
-/// 日志仅记元数据（model/fn/prompt_len/elapsed），不落内容。
+/// web_search=true 时额外合入百炼 enable_search + search_strategy=turbo
+///（思考开关保持现状：非流式聊天类仍显式 enable_thinking=false）。
+/// 日志仅记元数据（model/fn/prompt_len/elapsed/web_search），不落内容。
 async fn call_cloud(
     prompt: &str,
     format: Option<&str>,
     timeout: Duration,
     fn_name: &str,
+    web_search: bool,
 ) -> Result<String, String> {
     let client = cloud_client()?;
     let model_name = cloud_model_for(fn_name);
     let started = Instant::now();
     info!(
         target: "llm",
-        "cloud_request url={} model={} fn={} prompt_len={} format={:?}",
+        "cloud_request url={} model={} fn={} prompt_len={} format={:?} web_search={}",
         cloud_base_url(),
         model_name,
         fn_name,
         prompt.len(),
-        format
+        format,
+        web_search
     );
 
     let model = client.completion_model(&model_name);
@@ -557,6 +594,14 @@ async fn call_cloud(
     if is_cloud_chat_fn(fn_name) {
         // 百炼思考模型开思考时要求 stream=true；非流式请求显式关闭思考避免 400
         params.insert("enable_thinking".to_string(), serde_json::json!(false));
+    }
+    if web_search {
+        // 百炼联网搜索（实测对 qwen3.7-plus 生效：prompt_tokens 注入搜索上下文）
+        params.insert("enable_search".to_string(), serde_json::json!(true));
+        params.insert(
+            "search_options".to_string(),
+            serde_json::json!({"search_strategy": "turbo"}),
+        );
     }
     let request_builder = model.completion_request(prompt);
     let request_builder = if params.is_empty() {
@@ -615,6 +660,7 @@ async fn call_cloud(
 /// 事件映射与 rig ollama 路径一致（Reasoning→thinking_delta 等由上层转换）。
 async fn cloud_chat_stream(
     prompt: &str,
+    web_search: bool,
 ) -> Result<
     std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
     String,
@@ -622,21 +668,32 @@ async fn cloud_chat_stream(
     let client = cloud_client()?;
     let model_name = cloud_chat_model();
     // 超时对齐聊天超时语义（默认 120s，RG_CLOUD_TIMEOUT_SECS 可覆盖）：
-    // 同时覆盖建流阶段与流消费阶段每次 stream.next() 的兜底，
+    // 同时覆盖建流阶段与流消费阶段每次 stream.next() 的兑底，
     // 避免云端公网链路中途 stall 时 SSE 无限挂起
     let timeout = cloud_timeout();
     info!(
         target: "llm",
-        "cloud_stream_request url={} model={} prompt_len={}",
+        "cloud_stream_request url={} model={} prompt_len={} web_search={}",
         cloud_base_url(),
         model_name,
-        prompt.len()
+        prompt.len(),
+        web_search
     );
 
     let model = client.completion_model(&model_name);
+    // 联网搜索开启时在思考参数基础上合入百炼 enable_search 私有参数
+    let additional = if web_search {
+        serde_json::json!({
+            "enable_thinking": true,
+            "enable_search": true,
+            "search_options": {"search_strategy": "turbo"}
+        })
+    } else {
+        serde_json::json!({"enable_thinking": true})
+    };
     let request = model
         .completion_request(prompt)
-        .additional_params(serde_json::json!({"enable_thinking": true}))
+        .additional_params(additional)
         .build();
 
     let stream = match tokio::time::timeout(timeout, model.stream(request)).await {
@@ -718,22 +775,32 @@ async fn cloud_chat_stream(
 }
 
 /// general_chat 的系统语（流式与非流式保持一致）。
-/// skills 为空时输出与无技能注入的旧格式逐字节一致；非空时在角色设定与
-/// “用户问题：”之间插入技能段（技能内容由 db::agent_config::build_skills_prompt
-/// 构建，已剥离 frontmatter 并按字符预算截断）。
-fn general_chat_prompt(query: &str, skills: &str) -> String {
-    let base = "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。\
-当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。";
-    if skills.is_empty() {
-        format!("{}\n\n用户问题：{}", base, query)
+/// skills/documents 为空且 web_search=false 时输出与无技能注入的旧格式
+/// 逐字节一致；非空时在角色设定与“用户问题：”之间依次插入技能段、文档段
+///（技能内容由 db::agent_config::build_skills_prompt 构建，已剥离
+/// frontmatter 并按字符预算截断；文档段由 document::build_documents_prompt
+/// 构建并按 RG_DOC_CONTEXT_CHARS 预算截断）。
+/// web_search=true 时将“无法联网”句替换为联网搜索已启用说明。
+fn general_chat_prompt(query: &str, skills: &str, web_search: bool, documents: &str) -> String {
+    let base = if web_search {
+        "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。\
+本次对话已启用联网搜索，可参考最新网络信息作答。"
     } else {
-        format!(
-            "{}\n\n你当前具备以下技能，请在适用时遵循：\n{}\n\n用户问题：{}",
-            base,
-            skills.trim_end(),
-            query
-        )
+        "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。\
+当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。"
+    };
+    let mut prompt = base.to_string();
+    if !skills.is_empty() {
+        prompt.push_str(&format!(
+            "\n\n你当前具备以下技能，请在适用时遵循：\n{}",
+            skills.trim_end()
+        ));
     }
+    if !documents.is_empty() {
+        prompt.push_str(&format!("\n\n{}", documents.trim_end()));
+    }
+    prompt.push_str(&format!("\n\n用户问题：{}", query));
+    prompt
 }
 
 /// 当前 general_chat 实际走的通道（"rig" / "cloud" / "legacy"），供 SSE 端点发 routing 事件
@@ -754,14 +821,15 @@ pub fn general_chat_model() -> String {
     }
 }
 
-pub async fn general_chat(query: &str, skills: &str) -> Result<String, String> {
-    let prompt = general_chat_prompt(query, skills);
+pub async fn general_chat(query: &str, skills: &str, web_search: bool, documents: &str) -> Result<String, String> {
+    let prompt = general_chat_prompt(query, skills, web_search, documents);
 
     call_ollama(
         &prompt,
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
         "general_chat",
+        web_search,
     )
     .await
 }
@@ -783,15 +851,18 @@ pub enum ChatStreamEvent {
 pub async fn general_chat_stream(
     query: &str,
     skills: &str,
+    web_search: bool,
+    documents: &str,
 ) -> Result<
     std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
     String,
 > {
-    let prompt = general_chat_prompt(query, skills);
+    let prompt = general_chat_prompt(query, skills, web_search, documents);
 
-    // cloud 通道：百炼聊天模型（开思考），SSE 事件契约与 rig ollama 路径一致
+    // cloud 通道：百炼聊天模型（开思考，web_search 时合入 enable_search），
+    // SSE 事件契约与 rig ollama 路径一致
     if llm_channel("general_chat") == Channel::Cloud {
-        return cloud_chat_stream(&prompt).await;
+        return cloud_chat_stream(&prompt, web_search).await;
     }
 
     let client = rig_client()?;
@@ -890,6 +961,7 @@ pub async fn profile_qa_chat(system_prompt: &str, user_message: &str) -> Result<
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
         "profile_qa_chat",
+        false,
     )
     .await
 }
@@ -906,6 +978,7 @@ pub async fn generate_profile_document(system_prompt: &str, conversation: &str) 
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
         "generate_profile_document",
+        false,
     )
     .await
 }
@@ -933,6 +1006,7 @@ pub async fn extract_person_fields(query: &str) -> PersonDraft {
         Some("json"),
         ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
         "extract_person_fields",
+        false,
     ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -979,6 +1053,7 @@ pub async fn extract_update_fields(query: &str) -> (String, Vec<FieldChange>) {
         Some("json"),
         ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
         "extract_update_fields",
+        false,
     ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -1030,6 +1105,7 @@ pub async fn extract_interaction_data(query: &str) -> InteractionDraft {
         Some("json"),
         ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
         "extract_interaction_data",
+        false,
     ).await {
         Ok(json_str) => {
             match serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -1070,6 +1146,7 @@ pub async fn extract_path_target(query: &str) -> String {
         Some("json"),
         ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
         "extract_path_target",
+        false,
     ).await {
         Ok(json_str) => {
             serde_json::from_str::<serde_json::Value>(&json_str)
@@ -1140,6 +1217,7 @@ pub async fn compress_context(
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
         "compress_context",
+        false,
     )
     .await
 }

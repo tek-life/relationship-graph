@@ -745,14 +745,70 @@ async fn chat_handler(
 
     let user_id = user.map(|u| (u.0).0);
     let skills = resolve_skills_prompt(&state, req.agent_id.as_deref(), user_id.as_deref());
+    // 联网搜索：请求开关 AND env 总闸 AND 云端通道；非 cloud 静默置 false 不阻断
+    let backend = crate::llm::general_chat_backend();
+    let (web_search, _) = resolve_web_search(req.web_search.unwrap_or(false), backend);
+    // 文档上下文注入（预算 RG_DOC_CONTEXT_CHARS）
+    let (documents_prompt, doc_count, doc_chars, doc_truncated) =
+        resolve_documents_prompt(req.documents);
     log::info!(
         target: "chat",
-        "chat_handler query_len={} skills_chars={}",
+        "chat_handler query_len={} skills_chars={} web_search={} doc_count={} doc_chars={} truncated={}",
         query.chars().count(),
-        skills.chars().count()
+        skills.chars().count(),
+        web_search,
+        doc_count,
+        doc_chars,
+        doc_truncated
     );
-    let reply = crate::llm::general_chat(query, &skills).await.map_err(ApiError::internal)?;
+    let reply = crate::llm::general_chat(query, &skills, web_search, &documents_prompt)
+        .await
+        .map_err(ApiError::internal)?;
     Ok(Json(ChatResponse { reply }))
+}
+
+/// 联网搜索全局总闸：env `RG_WEB_SEARCH` 未设置或 `on` = 允许，`off` = 关闭
+fn web_search_env_allowed() -> bool {
+    std::env::var("RG_WEB_SEARCH")
+        .map(|v| v.trim().to_lowercase() != "off")
+        .unwrap_or(true)
+}
+
+/// 解析生效的联网搜索开关与 SSE step 文案（纯函数，可单测）：
+/// 请求开关 AND env 总闸 AND backend==cloud 才生效；未请求/总闸关闭返回
+/// (false, None)；请求但非 cloud 返回 (false, Some(降级文案))，永不阻断。
+fn resolve_web_search(requested: bool, backend: &str) -> (bool, Option<&'static str>) {
+    if !requested || !web_search_env_allowed() {
+        return (false, None);
+    }
+    if backend == "cloud" {
+        (true, Some("已启用联网搜索"))
+    } else {
+        (false, Some("联网搜索仅云端通道可用，已按普通对话处理"))
+    }
+}
+
+/// 构建文档段 prompt 与日志元数据（文档内容不落日志）：
+/// 返回 (documents_prompt, doc_count, doc_chars, truncated)。
+/// doc_chars 统计全部文档正文总字符数（截断前）；truncated 由产物尾部
+/// 截断标记判定。空/None 输入返回全零元数据与空串（prompt 逐字节不变）。
+fn resolve_documents_prompt(
+    documents: Option<Vec<crate::types::ChatDocument>>,
+) -> (String, usize, usize, bool) {
+    let docs = documents.unwrap_or_default();
+    if docs.is_empty() {
+        return (String::new(), 0, 0, false);
+    }
+    let doc_count = docs.len();
+    let doc_chars: usize = docs.iter().map(|d| d.content.chars().count()).sum();
+    let pairs: Vec<(String, String)> = docs
+        .into_iter()
+        .map(|d| (d.file_name, d.content))
+        .collect();
+    let budget = crate::document::doc_context_budget_chars();
+    let prompt = crate::document::build_documents_prompt(&pairs, budget);
+    let truncated = prompt.ends_with("[文档内容超长已截断]");
+    (prompt, doc_count, doc_chars, truncated)
 }
 
 /// 解析聊天注入的技能 prompt（注入 /api/chat 与 /api/chat/stream 两条链路）：
@@ -876,8 +932,11 @@ type RigEventStream = Pin<Box<dyn Stream<Item = Result<crate::llm::ChatStreamEve
 
 /// 流式聊天状态机：保证 step(llm_call) 在模型调用之前发出，
 /// 每个 unfold 轮次恰产出一条 SSE 事件。
+/// WebSearchStep：仅当请求了联网搜索时发 step(web_search)（复用现有
+/// step 事件，stage="web_search"），未请求时直接跳到 llm_call，永不阻断。
 enum ChatStreamPhase {
     Routing,
+    WebSearchStep,
     LlmCallStep,
     Init,
     Rig(RigEventStream),
@@ -939,13 +998,24 @@ async fn chat_stream_handler(
 
     let backend = crate::llm::general_chat_backend();
     let model_name = crate::llm::general_chat_model();
+    // 联网搜索：请求开关 AND env 总闸 AND 云端通道；非 cloud 发降级
+    // step 后置 false 继续，永不阻断
+    let (web_search, web_search_step) =
+        resolve_web_search(req.web_search.unwrap_or(false), backend);
+    // 文档上下文注入（预算 RG_DOC_CONTEXT_CHARS）
+    let (documents_prompt, doc_count, doc_chars, doc_truncated) =
+        resolve_documents_prompt(req.documents);
     log::info!(
         target: "llm",
-        "chat_stream_start backend={} model={} query_len={} skills_chars={}",
+        "chat_stream_start backend={} model={} query_len={} skills_chars={} web_search={} doc_count={} doc_chars={} truncated={}",
         backend,
         model_name,
         query.chars().count(),
-        skills.chars().count()
+        skills.chars().count(),
+        web_search,
+        doc_count,
+        doc_chars,
+        doc_truncated
     );
 
     // 仅记元数据的事件计数（不落内容）
@@ -955,6 +1025,7 @@ async fn chat_stream_handler(
     let stream = futures::stream::unfold(ChatStreamPhase::Routing, move |phase| {
         let query = query.clone();
         let skills = skills.clone();
+        let documents_prompt = documents_prompt.clone();
         let model_name = model_name.clone();
         let thinking_count = thinking_count.clone();
         let text_count = text_count.clone();
@@ -962,8 +1033,19 @@ async fn chat_stream_handler(
             match phase {
                 ChatStreamPhase::Routing => Some((
                     Ok(sse_step("routing", &format!("backend={}", backend))),
-                    ChatStreamPhase::LlmCallStep,
+                    ChatStreamPhase::WebSearchStep,
                 )),
+                ChatStreamPhase::WebSearchStep => match web_search_step {
+                    // 仅当请求了联网搜索（含降级场景）才发 step(web_search)
+                    Some(detail) => Some((
+                        Ok(sse_step("web_search", detail)),
+                        ChatStreamPhase::LlmCallStep,
+                    )),
+                    None => Some((
+                        Ok(sse_step("llm_call", &format!("model={}", model_name))),
+                        ChatStreamPhase::Init,
+                    )),
+                },
                 ChatStreamPhase::LlmCallStep => Some((
                     Ok(sse_step("llm_call", &format!("model={}", model_name))),
                     ChatStreamPhase::Init,
@@ -972,14 +1054,14 @@ async fn chat_stream_handler(
                     // rig 与 cloud 均走流式（general_chat_stream 内部按通道分流）；
                     // 仅 legacy 降级为非流式一次性调用
                     if backend == "rig" || backend == "cloud" {
-                        match crate::llm::general_chat_stream(&query, &skills).await {
+                        match crate::llm::general_chat_stream(&query, &skills, web_search, &documents_prompt).await {
                             Ok(stream) => {
                                 poll_rig_event(stream, backend, &thinking_count, &text_count).await
                             }
                             Err(e) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
                         }
                     } else {
-                        match crate::llm::general_chat(&query, &skills).await {
+                        match crate::llm::general_chat(&query, &skills, web_search, &documents_prompt).await {
                             Ok(reply) => {
                                 text_count.fetch_add(1, Ordering::SeqCst);
                                 Some((Ok(sse_delta("text_delta", reply)), ChatStreamPhase::LegacyDone))
@@ -1119,5 +1201,57 @@ async fn nlq_confirm_handler(
             "Unknown intent_type: {}",
             req.intent_type
         ))),
+    }
+}
+
+#[cfg(test)]
+mod web_search_resolve_tests {
+    use super::*;
+
+    /// 联网搜索开关解析（仅在 env RG_WEB_SEARCH 未设置的测试环境下断言，
+    /// 避免与其它用例并发修改 env 的竞态）：cloud 生效、非 cloud 降级
+    /// 置 false 且携带文案、未请求静默关闭
+    #[test]
+    fn resolve_web_search_semantics() {
+        if std::env::var("RG_WEB_SEARCH").is_ok() {
+            return;
+        }
+        assert_eq!(
+            resolve_web_search(true, "cloud"),
+            (true, Some("已启用联网搜索"))
+        );
+        assert_eq!(
+            resolve_web_search(true, "legacy"),
+            (false, Some("联网搜索仅云端通道可用，已按普通对话处理"))
+        );
+        assert_eq!(
+            resolve_web_search(true, "rig"),
+            (false, Some("联网搜索仅云端通道可用，已按普通对话处理"))
+        );
+        assert_eq!(resolve_web_search(false, "cloud"), (false, None));
+    }
+
+    /// 空/None 文档 → 空串与全零元数据，prompt 逐字节不变前提
+    #[test]
+    fn resolve_documents_prompt_empty() {
+        assert_eq!(resolve_documents_prompt(None), (String::new(), 0, 0, false));
+        assert_eq!(
+            resolve_documents_prompt(Some(vec![])),
+            (String::new(), 0, 0, false)
+        );
+    }
+
+    /// 单文档注入与元数据统计（文档内容不落日志，仅统计字符数）
+    #[test]
+    fn resolve_documents_prompt_single_doc() {
+        let docs = vec![crate::types::ChatDocument {
+            file_name: "报告.pdf".to_string(),
+            content: "抽取文本".to_string(),
+        }];
+        let (prompt, count, chars, truncated) = resolve_documents_prompt(Some(docs));
+        assert_eq!(prompt, "### 用户上传文档《报告.pdf》正文\n抽取文本");
+        assert_eq!(count, 1);
+        assert_eq!(chars, 4);
+        assert!(!truncated);
     }
 }
