@@ -149,7 +149,9 @@ fn cloud_api_key_from(env_value: Option<String>, file_path: &std::path::Path) ->
     }
     match std::fs::read_to_string(file_path) {
         Ok(content) => {
-            let trimmed = content.trim();
+            // 剥离 UTF-8 BOM（U+FEFF，Windows 记事本保存的 Key 文件会携带），
+            // 否则 BOM 混入 Key 导致云端 401 且报错不直观
+            let trimmed = content.trim().trim_start_matches('\u{FEFF}').trim();
             if trimmed.is_empty() {
                 Err(MISSING_HINT.to_string())
             } else {
@@ -340,6 +342,12 @@ mod channel_tests {
         // 文件内容为空白 → 报错
         std::fs::write(&file, "  \n").unwrap();
         assert!(cloud_api_key_from(None, &file).is_err());
+        // Windows 记事本保存的 Key 文件携带 UTF-8 BOM（U+FEFF）→ 剥离后正常解析
+        std::fs::write(&file, "\u{FEFF}sk-bom\n").unwrap();
+        assert_eq!(cloud_api_key_from(None, &file).unwrap(), "sk-bom");
+        // BOM + 空白包裹同样剥离
+        std::fs::write(&file, "\u{FEFF}  sk-bom2  \n").unwrap();
+        assert_eq!(cloud_api_key_from(None, &file).unwrap(), "sk-bom2");
         let _ = std::fs::remove_file(&file);
     }
 
