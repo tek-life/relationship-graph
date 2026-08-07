@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::db::{person, schema};
-    use crate::types::CreatePersonRequest;
+    use crate::db::{agent_config, person, schema};
+    use crate::types::{CreateAgentSkillRequest, CreateDigitalAgentRequest, CreatePersonRequest};
     use rusqlite::Connection;
 
     fn in_memory_db() -> Connection {
@@ -140,5 +140,160 @@ mod tests {
             .query_row("SELECT user_id FROM sessions WHERE id = 's1'", [], |row| row.get(0))
             .expect("session still exists");
         assert_eq!(owner, "u-admin");
+    }
+
+    // === agent_skills: skill_markdown ===
+
+    fn create_test_agent(conn: &Connection, mention: &str) -> String {
+        let agent = agent_config::create_digital_agent(
+            conn,
+            CreateDigitalAgentRequest {
+                display_name: "测试数字人".to_string(),
+                mention: mention.to_string(),
+                aliases: vec![],
+                route_mode: None,
+                avatar_url: None,
+                description: None,
+                skill_description: None,
+                is_active: None,
+                sort_order: None,
+            },
+        )
+        .expect("create digital agent");
+        agent.id
+    }
+
+    fn skill_request(agent_id: &str, name: &str, markdown: Option<&str>, active: bool) -> CreateAgentSkillRequest {
+        CreateAgentSkillRequest {
+            agent_id: agent_id.to_string(),
+            skill_name: name.to_string(),
+            skill_config_json: None,
+            skill_markdown: markdown.map(|s| s.to_string()),
+            trigger_scenario: None,
+            is_active: Some(active),
+        }
+    }
+
+    /// skill_config_json 请求侧为 None 时落库 "{}"，skill_markdown 往返读写一致
+    #[test]
+    fn skill_defaults_config_json_and_roundtrips_markdown() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@测试一");
+        let md = "---\nname: demo\ndescription: 演示技能\n---\n正文内容";
+
+        let skill = agent_config::create_agent_skill(&conn, skill_request(&agent_id, "演示", Some(md), true))
+            .expect("create skill");
+        assert_eq!(skill.skill_config_json, "{}");
+        assert_eq!(skill.skill_markdown.as_deref(), Some(md));
+
+        // update 改写 markdown 并回读
+        let updated_md = "---\nname: demo2\ndescription: 更新后\n---\n新正文";
+        agent_config::update_agent_skill(&conn, &skill.id, skill_request(&agent_id, "演示", Some(updated_md), true))
+            .expect("update skill");
+        let skills = agent_config::list_agent_skills(&conn, &agent_id).expect("list skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].skill_markdown.as_deref(), Some(updated_md));
+        assert_eq!(skills[0].skill_config_json, "{}");
+    }
+
+    /// 老库升级：没有 skill_markdown 列的老 agent_skills 表，migrate 后应能补列并正常读写
+    #[test]
+    fn migrates_legacy_agent_skills_table_without_markdown_column() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE digital_agents (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                mention TEXT UNIQUE NOT NULL,
+                aliases TEXT NOT NULL DEFAULT '[]',
+                route_mode TEXT NOT NULL DEFAULT 'chat',
+                avatar_url TEXT,
+                description TEXT,
+                skill_description TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE agent_skills (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                skill_name TEXT NOT NULL,
+                skill_config_json TEXT NOT NULL,
+                trigger_scenario TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO digital_agents (id, display_name, mention, created_at, updated_at)
+            VALUES ('a1', '老数字人', '@老数字人', '2026-01-01', '2026-01-01');
+            INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, created_at, updated_at)
+            VALUES ('s1', 'a1', '老技能', '{}', '2026-01-01', '2026-01-01');",
+        )
+        .expect("legacy agent_skills table");
+
+        schema::migrate(&conn).expect("schema migration on legacy db");
+
+        let skills = agent_config::list_agent_skills(&conn, "a1").expect("list after migrate");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].skill_markdown, None);
+    }
+
+    // === validate_skill_markdown ===
+
+    #[test]
+    fn validate_skill_markdown_accepts_valid_frontmatter() {
+        let md = "---\nname: 联系人管家\ndescription: 管理联系人\n---\n# 正文\n内容";
+        assert!(agent_config::validate_skill_markdown(md).is_ok());
+        // 空白内容视为未填写，直接放行
+        assert!(agent_config::validate_skill_markdown("").is_ok());
+        assert!(agent_config::validate_skill_markdown("   \n ").is_ok());
+    }
+
+    #[test]
+    fn validate_skill_markdown_rejects_bad_frontmatter() {
+        // 不以 --- 开头
+        let err = agent_config::validate_skill_markdown("# 标题\n内容").unwrap_err();
+        assert!(err.contains("---"));
+        // 缺少闭合 ---
+        let err = agent_config::validate_skill_markdown("---\nname: a\ndescription: b").unwrap_err();
+        assert!(err.contains("闭合"));
+        // 缺 name 键
+        let err = agent_config::validate_skill_markdown("---\ndescription: b\n---\n正文").unwrap_err();
+        assert!(err.contains("name"));
+        // description 值为空
+        let err = agent_config::validate_skill_markdown("---\nname: a\ndescription:\n---\n正文").unwrap_err();
+        assert!(err.contains("description"));
+    }
+
+    // === build_skills_prompt ===
+
+    /// 无技能返回空串；skill_markdown 为空/空白的技能跳过；停用技能不参与
+    #[test]
+    fn build_skills_prompt_filters_and_orders_skills() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@测试二");
+
+        // 无技能
+        assert_eq!(agent_config::build_skills_prompt(&conn, &agent_id).unwrap(), "");
+
+        let md1 = "---\nname: s1\ndescription: d1\n---\n技能一正文";
+        let md2 = "---\nname: s2\ndescription: d2\n---\n技能二正文";
+        agent_config::create_agent_skill(&conn, skill_request(&agent_id, "技能一", Some(md1), true)).unwrap();
+        agent_config::create_agent_skill(&conn, skill_request(&agent_id, "无正文", None, true)).unwrap();
+        agent_config::create_agent_skill(&conn, skill_request(&agent_id, "空白正文", Some("   "), true)).unwrap();
+        agent_config::create_agent_skill(&conn, skill_request(&agent_id, "技能二", Some(md2), true)).unwrap();
+        agent_config::create_agent_skill(&conn, skill_request(&agent_id, "已停用", Some(md1), false)).unwrap();
+
+        let prompt = agent_config::build_skills_prompt(&conn, &agent_id).unwrap();
+        assert!(prompt.contains("### 技能：技能一"));
+        assert!(prompt.contains("### 技能：技能二"));
+        assert!(!prompt.contains("无正文"));
+        assert!(!prompt.contains("空白正文"));
+        assert!(!prompt.contains("已停用"));
+        // 按 created_at 排序：技能一在前
+        assert!(prompt.find("技能：技能一").unwrap() < prompt.find("技能：技能二").unwrap());
+        // 每条以空行分隔结尾
+        assert!(prompt.ends_with("\n\n"));
     }
 }

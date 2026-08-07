@@ -165,6 +165,40 @@ pub fn delete_agent_skill(conn: &Connection, id: &str) -> Result<(), rusqlite::E
     Ok(())
 }
 
+/// 构建指定数字人的技能 prompt（注入锚点，本期不接线）。
+///
+/// 取该 agent 下 is_active=1 的技能，按 created_at 升序排列，
+/// 每条拼为 `### 技能：<skill_name>\n<skill_markdown 全文>\n\n`；
+/// skill_markdown 为空/空白的技能跳过；无可用技能时返回空串。
+// 接线点在后续步骤的 system prompt 组装中，当前仅单测引用
+#[allow(dead_code)]
+pub fn build_skills_prompt(conn: &Connection, agent_id: &str) -> Result<String, rusqlite::Error> {
+    let sql = "SELECT skill_name, skill_markdown FROM agent_skills
+               WHERE agent_id = ?1 AND is_active = 1
+               ORDER BY created_at ASC";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![agent_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ))
+    })?;
+
+    let mut prompt = String::new();
+    let mut count = 0usize;
+    for row in rows {
+        let (skill_name, skill_markdown) = row?;
+        let markdown = match skill_markdown {
+            Some(md) if !md.trim().is_empty() => md,
+            _ => continue,
+        };
+        prompt.push_str(&format!("### 技能：{}\n{}\n\n", skill_name, markdown));
+        count += 1;
+    }
+    log::info!(target: "db", "build_skills_prompt agent_id={} count={}", agent_id, count);
+    Ok(prompt)
+}
+
 // === qa_instruction_modules ===
 
 pub fn list_qa_modules(conn: &Connection) -> Result<Vec<QaInstructionModule>, rusqlite::Error> {
