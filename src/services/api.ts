@@ -86,7 +86,16 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     }
     throw new Error(message);
   }
-  return response.json() as Promise<T>;
+  // 204 / 空响应体（如 DELETE /api/sessions/:id 删除成功）：直接返回 null，
+  // 避免 response.json() 解析空体抛错，中断调用方的成功分支
+  if (response.status === 204) {
+    return null as T;
+  }
+  const text = await response.text();
+  if (!text) {
+    return null as T;
+  }
+  return JSON.parse(text) as T;
 }
 
 export function apiGet<T>(path: string): Promise<T> {
