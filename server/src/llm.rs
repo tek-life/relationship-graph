@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use log::{info, warn};
 
 use rig_core::client::{CompletionClient, Nothing};
 use rig_core::completion::{AssistantContent, CompletionModel as _};
-use rig_core::providers::ollama;
+use rig_core::providers::{ollama, openai};
 use rig_core::streaming::StreamedAssistantContent;
 
 use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage};
@@ -51,8 +51,8 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
     // 改造前完全一致）。详见 llm_channel_for 注释。
     match llm_channel(fn_name) {
         Channel::Rig => return call_rig(prompt, format, timeout).await,
-        // Cloud 通道在下一步接线，暂回落 legacy
-        Channel::Cloud | Channel::Legacy => {}
+        Channel::Cloud => return call_cloud(prompt, format, cloud_timeout(), fn_name).await,
+        Channel::Legacy => {}
     }
 
     let client = reqwest::Client::builder()
@@ -463,6 +463,206 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
     }
 }
 
+// ---------- cloud 通道（阿里云百炼，OpenAI 兼容端点） ----------
+
+/// 缓存云端 CompletionsClient（必须用 CompletionsClient：默认 Client 走
+/// Responses API，百炼兼容端点会 404）。构建失败/Key 缺失不缓存，下次调用可重试。
+fn cloud_client() -> Result<openai::CompletionsClient, String> {
+    static CLIENT: Mutex<Option<openai::CompletionsClient>> = Mutex::new(None);
+    let mut guard = CLIENT
+        .lock()
+        .map_err(|e| format!("Cloud client lock failed: {}", e))?;
+    if let Some(client) = guard.as_ref() {
+        return Ok(client.clone());
+    }
+    let api_key = cloud_api_key()?;
+    let client = openai::CompletionsClient::builder()
+        .api_key(api_key)
+        .base_url(cloud_base_url())
+        .build()
+        .map_err(|e| format!("Cloud client build failed: {}", e))?;
+    *guard = Some(client.clone());
+    Ok(client)
+}
+
+/// 通过 rig openai CompletionsClient 调用百炼兼容端点（非流式）。
+/// 模型按 fn 类别选择：聊天类 → RG_CLOUD_CHAT_MODEL（默认 qwen3.7-plus），
+/// 抽取/压缩类 → RG_CLOUD_EXTRACT_MODEL（默认 qwen-flash）。
+/// format=Some 时经 additional_params 注入 response_format=json_object
+///（不用 output_schema 的 json_schema strict 模式，宽松 schema 可能被拒）。
+/// 日志仅记元数据（model/fn/prompt_len/elapsed），不落内容。
+async fn call_cloud(
+    prompt: &str,
+    format: Option<&str>,
+    timeout: Duration,
+    fn_name: &str,
+) -> Result<String, String> {
+    let client = cloud_client()?;
+    let model_name = cloud_model_for(fn_name);
+    let started = Instant::now();
+    info!(
+        target: "llm",
+        "cloud_request url={} model={} fn={} prompt_len={} format={:?}",
+        cloud_base_url(),
+        model_name,
+        fn_name,
+        prompt.len(),
+        format
+    );
+
+    let model = client.completion_model(&model_name);
+    let mut params = serde_json::Map::new();
+    if format.is_some() {
+        params.insert(
+            "response_format".to_string(),
+            serde_json::json!({"type": "json_object"}),
+        );
+    }
+    if is_cloud_chat_fn(fn_name) {
+        // 百炼思考模型开思考时要求 stream=true；非流式请求显式关闭思考避免 400
+        params.insert("enable_thinking".to_string(), serde_json::json!(false));
+    }
+    let request_builder = model.completion_request(prompt);
+    let request_builder = if params.is_empty() {
+        request_builder
+    } else {
+        request_builder.additional_params(serde_json::Value::Object(params))
+    };
+    let request = request_builder.build();
+
+    match tokio::time::timeout(timeout, model.completion(request)).await {
+        Ok(Ok(response)) => {
+            let text: String = response
+                .choice
+                .iter()
+                .filter_map(|item| match item {
+                    AssistantContent::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            info!(
+                target: "llm",
+                "cloud_response model={} fn={} elapsed_ms={} text_chars={}",
+                model_name,
+                fn_name,
+                started.elapsed().as_millis(),
+                text.chars().count()
+            );
+            if text.is_empty() {
+                Err("云端模型返回内容为空".to_string())
+            } else {
+                Ok(text)
+            }
+        }
+        Ok(Err(e)) => {
+            warn!(
+                target: "llm",
+                "cloud_request_failed model={} fn={} elapsed_ms={}",
+                model_name,
+                fn_name,
+                started.elapsed().as_millis()
+            );
+            Err(format!("云端请求失败（模型 {}）：{}", model_name, e))
+        }
+        Err(_) => Err(format!(
+            "云端请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_CLOUD_TIMEOUT_SECS。",
+            model_name,
+            timeout.as_secs()
+        )),
+    }
+}
+
+/// general_chat 的云端流式版本：百炼聊天模型开思考（enable_thinking=true），
+/// reasoning_content 增量由 rig openai provider 映射为 ReasoningDelta，
+/// include_usage 由 provider 自动注入，usage 随末尾独立 chunk 的 Final 到达。
+/// 事件映射与 rig ollama 路径一致（Reasoning→thinking_delta 等由上层转换）。
+async fn cloud_chat_stream(
+    prompt: &str,
+) -> Result<
+    std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
+    String,
+> {
+    let client = cloud_client()?;
+    let model_name = cloud_chat_model();
+    let timeout = cloud_timeout();
+    info!(
+        target: "llm",
+        "cloud_stream_request url={} model={} prompt_len={}",
+        cloud_base_url(),
+        model_name,
+        prompt.len()
+    );
+
+    let model = client.completion_model(&model_name);
+    let request = model
+        .completion_request(prompt)
+        .additional_params(serde_json::json!({"enable_thinking": true}))
+        .build();
+
+    let stream = match tokio::time::timeout(timeout, model.stream(request)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => return Err(format!("云端请求失败（模型 {}）：{}", model_name, e)),
+        Err(_) => {
+            return Err(format!(
+                "云端请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_CLOUD_TIMEOUT_SECS。",
+                model_name,
+                timeout.as_secs()
+            ))
+        }
+    };
+
+    let stream = Box::pin(stream);
+    let mapped = futures::stream::try_unfold(stream, |mut stream| async move {
+        use futures::StreamExt;
+        loop {
+            match stream.next().await {
+                None => return Ok(None),
+                Some(Ok(StreamedAssistantContent::Reasoning(reasoning))) => {
+                    let text: String = reasoning
+                        .content
+                        .iter()
+                        .filter_map(|item| match item {
+                            rig_core::completion::message::ReasoningContent::Text { text, .. } => {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    return Ok(Some((ChatStreamEvent::Reasoning(text), stream)));
+                }
+                Some(Ok(StreamedAssistantContent::ReasoningDelta { reasoning, .. })) => {
+                    if reasoning.is_empty() {
+                        continue;
+                    }
+                    return Ok(Some((ChatStreamEvent::Reasoning(reasoning), stream)));
+                }
+                Some(Ok(StreamedAssistantContent::Text(text))) => {
+                    if text.text.is_empty() {
+                        continue;
+                    }
+                    return Ok(Some((ChatStreamEvent::Text(text.text), stream)));
+                }
+                Some(Ok(StreamedAssistantContent::Final(final_response))) => {
+                    // openai provider 的 Final 携带 Usage（prompt_tokens/completion_tokens）
+                    let usage = (
+                        final_response.usage.prompt_tokens,
+                        final_response.usage.completion_tokens.unwrap_or(0),
+                    );
+                    return Ok(Some((ChatStreamEvent::Done(Some(usage)), stream)));
+                }
+                // ToolCall / ToolCallDelta / Unknown 等与通用聊天无关，忽略
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => return Err(format!("云端流式响应失败：{}", e)),
+            }
+        }
+    });
+    Ok(Box::pin(mapped))
+}
+
 /// general_chat 的系统语（流式与非流式保持一致）。
 /// skills 为空时输出与无技能注入的旧格式逐字节一致；非空时在角色设定与
 /// “用户问题：”之间插入技能段（技能内容由 db::agent_config::build_skills_prompt
@@ -533,10 +733,16 @@ pub async fn general_chat_stream(
     std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
     String,
 > {
+    let prompt = general_chat_prompt(query, skills);
+
+    // cloud 通道：百炼聊天模型（开思考），SSE 事件契约与 rig ollama 路径一致
+    if llm_channel("general_chat") == Channel::Cloud {
+        return cloud_chat_stream(&prompt).await;
+    }
+
     let client = rig_client()?;
     let model_name = ollama_model();
     let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
-    let prompt = general_chat_prompt(query, skills);
     info!(
         target: "llm",
         "rig_stream_request url={} model={} prompt_len={}",
