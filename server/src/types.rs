@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ChatRequest {
     pub query: String,
+    /// 指定数字人 id（可选）：非空时在聊天 prompt 中注入该数字人的 SKILL 文档
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
