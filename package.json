@@ -13,6 +13,8 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "cytoscape": "^3.30.3",
+    "mammoth": "^1.12.0",
+    "pdfjs-dist": "^5.6.205",
     "pinyin-pro": "^3.28.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
