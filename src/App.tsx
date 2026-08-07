@@ -151,7 +151,7 @@ function App() {
         )}
 
         <Routes>
-          <Route path="/" element={<ChatView onPersonClick={handleOpenDetail} />} />
+          <Route path="/" element={<ChatView onPersonClick={handleOpenDetail} userId={user?.id} />} />
 
           <Route path="/contacts" element={
             <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">

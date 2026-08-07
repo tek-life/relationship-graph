@@ -41,11 +41,13 @@ const NLQ_EXAMPLES = [
 
 interface ChatViewProps {
   onPersonClick?: (personId: string) => void;
+  /** 当前登录用户 ID，用于会话恢复记录按用户区分 */
+  userId?: string;
 }
 
 // === 主组件 ===
 
-export default function ChatView({ onPersonClick }: ChatViewProps) {
+export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
   const {
     sessions,
     currentSessionId,
@@ -56,11 +58,12 @@ export default function ChatView({ onPersonClick }: ChatViewProps) {
     createSession,
     switchSession,
     deleteSession,
+    updateSessionTitle,
     sendMessage,
     stopGeneration,
     retryLast,
     confirmDraft,
-  } = useChat();
+  } = useChat(userId);
 
   const [query, setQuery] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
@@ -184,6 +187,29 @@ export default function ChatView({ onPersonClick }: ChatViewProps) {
     [confirmDraft],
   );
 
+  // 会话重命名（侧边栏内联编辑提交）
+  const handleRenameSession = useCallback(
+    async (sessionId: string, title: string) => {
+      await updateSessionTitle(sessionId, title);
+    },
+    [updateSessionTitle],
+  );
+
+  // 会话删除（先确认，删除当前会话后由 useChat 自动切换/回到空态）
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      const target = sessions.find((s) => s.id === sessionId);
+      const label = target?.title || '新会话';
+      if (!window.confirm(`确定删除会话「${label}」吗？删除后不可恢复。`)) return;
+      try {
+        await deleteSession(sessionId);
+      } catch {
+        window.alert('删除失败，请重试');
+      }
+    },
+    [sessions, deleteSession],
+  );
+
   // 右侧面板操作
   const showPanel = useCallback((content: string, title: string) => {
     setPanelContent(content);
@@ -233,7 +259,8 @@ export default function ChatView({ onPersonClick }: ChatViewProps) {
         currentSessionId={currentSessionId}
         onSelectSession={switchSession}
         onNewSession={createSession}
-        onDeleteSession={deleteSession}
+        onRenameSession={handleRenameSession}
+        onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />

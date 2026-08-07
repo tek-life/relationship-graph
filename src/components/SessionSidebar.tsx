@@ -1,6 +1,6 @@
 /**
  * 会话侧边栏组件
- * 从左侧滑出的抽屉式面板，展示会话列表，支持新建、搜索、删除
+ * 从左侧滑出的抽屉式面板，展示会话列表，支持新建、搜索、重命名、删除
  */
 import { useState, useMemo } from 'react';
 import type { Session } from '../types';
@@ -10,6 +10,7 @@ interface SessionSidebarProps {
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: () => void;
+  onRenameSession: (sessionId: string, title: string) => Promise<void>;
   onDeleteSession: (sessionId: string) => void;
   isOpen: boolean;
   onClose: () => void;
@@ -20,11 +21,44 @@ export default function SessionSidebar({
   currentSessionId,
   onSelectSession,
   onNewSession,
+  onRenameSession,
   onDeleteSession,
   isOpen,
   onClose,
 }: SessionSidebarProps) {
   const [search, setSearch] = useState('');
+  /** 正在内联重命名的会话 ID */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  /** 重命名输入草稿 */
+  const [draft, setDraft] = useState('');
+  /** 防止 blur 与 Enter 重复提交 */
+  const [committing, setCommitting] = useState(false);
+
+  const startRename = (session: Session) => {
+    setEditingId(session.id);
+    setDraft(session.title || '');
+  };
+
+  const cancelRename = () => {
+    setEditingId(null);
+    setDraft('');
+    setCommitting(false);
+  };
+
+  const commitRename = async () => {
+    if (!editingId || committing) return;
+    const title = draft.trim();
+    setCommitting(true);
+    try {
+      if (title) {
+        await onRenameSession(editingId, title);
+      }
+    } catch {
+      window.alert('重命名失败，请重试');
+    } finally {
+      cancelRename();
+    }
+  };
 
   const filteredSessions = useMemo(
     () =>
@@ -145,40 +179,84 @@ export default function SessionSidebar({
                         : 'hover:bg-gray-50 border-l-2 border-transparent'
                     }`}
                   onClick={() => {
+                    if (editingId === session.id) return;
                     onSelectSession(session.id);
                     onClose();
                   }}
                 >
                   <div className="flex-1 min-w-0">
-                    <p
-                      className={`text-sm font-medium truncate ${
-                        session.id === currentSessionId
-                          ? 'text-indigo-700'
-                          : ''
-                      }`}
-                      style={
-                        session.id !== currentSessionId
-                          ? { color: 'var(--text-primary)' }
-                          : undefined
-                      }
-                    >
-                      {session.title || '新会话'}
-                    </p>
+                    {editingId === session.id ? (
+                      <input
+                        type="text"
+                        autoFocus
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={() => void commitRename()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void commitRename();
+                          } else if (e.key === 'Escape') {
+                            cancelRename();
+                          }
+                        }}
+                        className="w-full rounded border px-2 py-1 text-sm outline-none
+                                 focus:ring-2 focus:ring-indigo-500/20"
+                        style={{
+                          borderColor: 'var(--border-color)',
+                          backgroundColor: 'var(--bg-primary)',
+                          color: 'var(--text-primary)',
+                        }}
+                      />
+                    ) : (
+                      <p
+                        className={`text-sm font-medium truncate ${
+                          session.id === currentSessionId
+                            ? 'text-indigo-700'
+                            : ''
+                        }`}
+                        style={
+                          session.id !== currentSessionId
+                            ? { color: 'var(--text-primary)' }
+                            : undefined
+                        }
+                      >
+                        {session.title || '新会话'}
+                      </p>
+                    )}
                     <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted, #999)' }}>
                       {formatTime(session.updatedAt)}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteSession(session.id);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 
-                             text-xs ml-2 px-1.5 py-0.5 rounded transition-all shrink-0"
-                  >
-                    删除
-                  </button>
+                  {editingId !== session.id && (
+                    <>
+                      <button
+                        type="button"
+                        title="重命名"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRename(session);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 hover:text-indigo-600
+                                 text-xs ml-2 px-1.5 py-0.5 rounded transition-all shrink-0"
+                        style={{ color: 'var(--text-secondary)' }}
+                      >
+                        重命名
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteSession(session.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 
+                                 text-xs ml-1 px-1.5 py-0.5 rounded transition-all shrink-0"
+                      >
+                        删除
+                      </button>
+                    </>
+                  )}
                 </div>
               ))
             )}
