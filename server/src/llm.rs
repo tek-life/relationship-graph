@@ -44,8 +44,9 @@ struct OllamaResponse {
 }
 
 async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str) -> Result<String, String> {
-    // 双轨分发（Step 3）：RG_LLM_BACKEND=rig 且命中白名单时走 rig 通道，
-    // 否则走原 reqwest legacy 实现（默认行为与改造前完全一致）。
+    // 双轨分发：RG_LLM_BACKEND=rig 时全量走 rig；legacy 模式下命中
+    // RG_LLM_RIG_FNS 白名单的函数走 rig（函数级灰度），其余走原 reqwest
+    // legacy 实现（默认行为与改造前完全一致）。详见 use_rig 注释。
     if use_rig(fn_name) {
         return call_rig(prompt, format, timeout).await;
     }
@@ -92,15 +93,17 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
 
 // ---------- rig 通道（双轨改造 Step 2） ----------
 
-/// 读取双轨开关：RG_LLM_BACKEND = "legacy" | "rig"，默认 legacy
+/// 读取双轨开关：RG_LLM_BACKEND = "legacy" | "rig"，默认 legacy。
+/// trim 处理与 rig_fns_whitelist 保持对称，避免环境变量含首尾空白时静默回退 legacy。
 fn llm_backend() -> String {
     std::env::var("RG_LLM_BACKEND")
         .unwrap_or_else(|_| "legacy".to_string())
+        .trim()
         .to_lowercase()
 }
 
-/// 读取函数白名单：RG_LLM_RIG_FNS（逗号分隔）。
-/// 未设置返回 None；设置了但为空（或全为空白）视为全部启用。
+/// 读取函数白名单：RG_LLM_RIG_FNS（逗号分隔），仅在 RG_LLM_BACKEND=legacy 时生效。
+/// 未设置返回 None；设置了但为空（或全为空白）视为无函数启用灰度。
 fn rig_fns_whitelist() -> Option<Vec<String>> {
     std::env::var("RG_LLM_RIG_FNS").ok().map(|value| {
         value
@@ -111,16 +114,45 @@ fn rig_fns_whitelist() -> Option<Vec<String>> {
     })
 }
 
-/// 判断指定函数是否应走 rig 通道：
-/// RG_LLM_BACKEND=rig 且（白名单未设置 / 为空 或 白名单包含 fn_name）
-fn use_rig(fn_name: &str) -> bool {
-    if llm_backend() != "rig" {
-        return false;
+/// 判断指定函数是否应走 rig 通道。双轨开关语义：
+/// - RG_LLM_BACKEND=rig → 所有函数全量走 rig（忽略 RG_LLM_RIG_FNS 白名单）；
+/// - RG_LLM_BACKEND=legacy（默认）且 RG_LLM_RIG_FNS 白名单包含 fn_name
+///   → 该函数走 rig（函数级灰度发布）；
+/// - 其余情况走 legacy。
+/// 白名单未设置或为空列表时，legacy 模式下无函数走 rig。
+/// 双轨开关决策（纯函数，语义见 use_rig），抽出便于单元测试。
+fn should_use_rig(backend: &str, whitelist: Option<&[String]>, fn_name: &str) -> bool {
+    if backend == "rig" {
+        // backend=rig 时全量切换，白名单不再生效（避免白名单不含该函数时静默回退 legacy）
+        return true;
     }
-    match rig_fns_whitelist() {
-        None => true,
-        Some(list) if list.is_empty() => true,
+    match whitelist {
+        None => false,
+        Some(list) if list.is_empty() => false,
         Some(list) => list.iter().any(|f| f == fn_name),
+    }
+}
+
+fn use_rig(fn_name: &str) -> bool {
+    should_use_rig(&llm_backend(), rig_fns_whitelist().as_deref(), fn_name)
+}
+
+#[cfg(test)]
+mod dual_track_tests {
+    use super::*;
+
+    #[test]
+    fn dual_track_switch_semantics() {
+        // backend=rig → 全量走 rig，即使白名单不含该函数
+        assert!(should_use_rig("rig", None, "general_chat"));
+        assert!(should_use_rig("rig", Some(&["other_fn".to_string()]), "general_chat"));
+        // legacy + 白名单命中 → 函数级灰度走 rig
+        assert!(should_use_rig("legacy", Some(&["general_chat".to_string()]), "general_chat"));
+        // legacy + 白名单未命中 → legacy
+        assert!(!should_use_rig("legacy", Some(&["other_fn".to_string()]), "general_chat"));
+        // legacy + 未设置/空白名单 → legacy
+        assert!(!should_use_rig("legacy", None, "general_chat"));
+        assert!(!should_use_rig("legacy", Some(&[]), "general_chat"));
     }
 }
 
