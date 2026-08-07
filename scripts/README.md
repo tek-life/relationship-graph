@@ -114,7 +114,7 @@ RG_CLOUD_CHAT_MODEL=qwen-plus ./scripts/start-services.sh
 **约定（保持不变）**：后端端口 8790；数据目录 `~/.local/share/relationship-graph`（db.key 密钥文件启动即自动解锁，无主密码流程）。
 若 8790 已有进程在跑，脚本不会重复启动（先检测端口占用）。
 
-> **提示**：本机（WSL）与 ECS 的 8790 后端已改用 systemd 用户级服务托管（见[注意事项](#注意事项)第 2 条），日常启动建议直接 `systemctl --user start relationship-graph`；脚本检测到 unit 已安装时会给出提示。日志位置：systemd 托管时为 `server/server.log`，脚本裸跑时为 `/tmp/relationship-graph-server.log`。
+> **提示**：本机（WSL）与 ECS 的 8790 后端已改用 systemd 用户级服务托管（见[注意事项](#注意事项)第 2 条）。脚本检测到 unit 已安装时，**后端段自动委托 systemctl**（运行中不重复启动、未运行则 `systemctl --user start`），不再自行拉起，避免与 systemd 自动拉起竞争。日志位置：systemd 托管时为 `server/server.log`，脚本裸跑时为 `/tmp/relationship-graph-server.log`。
 
 ---
 
@@ -136,7 +136,7 @@ RG_CLOUD_CHAT_MODEL=qwen-plus ./scripts/start-services.sh
 - 数据库使用 db.key 密钥文件自动解锁，重启后无需人工解锁；
 - LLM 通道环境变量会继承当前 shell，如需回退：`RG_LLM_BACKEND=legacy RG_USE_OLLAMA=1 ./scripts/restart-services.sh --build`。
 
-> **提示**：后端已由 systemd 用户级服务托管时，日常重启请直接 `systemctl --user restart relationship-graph`（脚本检测到 unit 会给出提示）；本脚本按端口 kill 会被 systemd 立刻自动拉起、两者竞争，仅在需要 `--build` 换二进制等场景使用（systemd 会自动拉起新二进制，`--build` 后建议改走 `cargo build` + `systemctl --user restart`）。
+> **提示**：后端已由 systemd 用户级服务托管时，本脚本的后端段自动改走 `systemctl --user stop`（停止）+ `start-services.sh` 委托 `systemctl --user start`（拉起），不会与 systemd 自动拉起竞争；日常仅重启后端可直接 `systemctl --user restart relationship-graph`。`--build` 换二进制场景：脚本先 systemctl stop → 编译 → 再由 systemctl start 拉起新二进制。
 
 ---
 
@@ -281,12 +281,25 @@ HOST_IP=192.168.1.10 PROXY_PORT=7890 source ./scripts/setup-proxy.sh   # 自定�
 
 ### Caddyfile
 
-**用途**：生产前端服务 —— 静态资源（`dist/`）+ `/api/*` 反向代理到 8790 + SPA fallback + PWA Service Worker 禁缓存 + 静态资源 immutable 长缓存 + JSON 访问日志。
+**用途**：生产前端服务 —— 静态资源 + `/api/*` 反向代理到 8790 + SPA fallback + PWA Service Worker 禁缓存 + 静态资源 immutable 长缓存 + JSON 访问日志。
+
+**可移植性**（环境变量，均有默认值，本机可直接用）：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `RG_WEB_ROOT` | `/home/hfli/personal_ai_workspace/dist` | 静态资源根目录；ECS/迁移场景设为 `~/relationship-graph/web` 即可复用同一份 Caddyfile（与 server-init.sh 生成的 ECS 版 Caddyfile 语义一致：同端口、同反代、同缓存策略） |
+
+**实现细节**：
+
+- admin 端点固定 `localhost:2020`（Caddyfile 全局块）：与 apt 安装的系统级 caddy（占用默认 admin 2019）共存，否则启动失败；caddy 2.6 的 `run` 无 `--admin` flag，只能在全局块设置；
+- 访问日志路径由 `start-services.sh` 生成配置时替换：`/var/log/relationship-graph` 可写则用之，否则回退 `/tmp/relationship-graph-caddy-access.log`（不再依赖 sudo 建目录）；
+- 监听 `:8080`（即 0.0.0.0），后端 8790 同为 0.0.0.0，满足局域网访问前提（WSL2 NAT 可达性见[注意事项](#注意事项)）。
 
 ```bash
-sudo mkdir -p /var/log/relationship-graph
+# 由 start-services.sh 自动拉起（推荐）；手工运行：
 caddy run --config /home/hfli/personal_ai_workspace/scripts/Caddyfile
 caddy adapt --config scripts/Caddyfile       # 仅校验配置
+RG_WEB_ROOT=~/relationship-graph/web caddy run --config scripts/Caddyfile   # 覆盖静态根
 ```
 
 监听端口默认 8080（Caddyfile 内 `:8080`）；`start-services.sh` 生产模式会自动拉起。
@@ -380,3 +393,5 @@ RG_LLM_BACKEND=legacy ./scripts/dev.sh
 4. **先停后编译**：`restart-services.sh --build` 已遵循"先停服务再 cargo build"，手动操作时也请照此，避免旧进程运行已被覆盖删除的二进制。
 5. **沙箱/容器内启动陷阱**：在只读挂载的沙箱里启动服务会命中"数据库只读"错误，请在真实文件系统（沙箱外）启动常驻服务。
 6. **测试实例隔离**：`e2e-import-test.mjs` 默认打 8791 测试实例，请勿指向 8790 正式库。
+7. **WSL2 局域网访问**：后端 8790 与 Caddy 8080 均监听 0.0.0.0，但 WSL2 默认 NAT 模式下局域网其它设备无法直达 WSL 内端口，需在 Windows 宿主机做端口转发（`netsh interface portproxy`）或在 `.wslconfig` 开启 mirrored 网络；本机（Windows 浏览器）访问 `http://localhost:8080` 始终可用。
+8. **系统级 Caddy 共存**：若机器上另有 apt 安装的系统级 caddy（监听 :80、admin 2019），本项目 Caddyfile 已将 admin 错开到 2020，两者可共存；如确认不用系统级 caddy 可 `sudo systemctl disable --now caddy` 释放 80 端口。
