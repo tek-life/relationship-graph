@@ -1584,16 +1584,18 @@ async fn nlq_multi_handler(
             Ok(Json(NlqResponse::SearchPeople { results }))
         }
         "create_person" => {
-            let draft = crate::llm::extract_person_fields(&req.query).await;
+            // P1-6：抽取失败显性报错（不再静默降级为空草稿）
+            let draft = crate::llm::extract_person_fields(&req.query)
+                .await
+                .map_err(ApiError::internal)?;
             Ok(Json(NlqResponse::CreatePersonDraft { draft }))
         }
         "delete_person" => {
-            // 人名提取：LLM 优先，失败时规则兜底；空名由 handle_delete_person_sync 返回提示草稿
-            let target_name = crate::llm::extract_delete_target(&req.query).await;
-            let target_name = if target_name.trim().is_empty() {
-                nlq::extract_delete_name_fallback(&req.query)
-            } else {
-                target_name
+            // 人名提取：LLM 优先，失败/未识别时规则兜底（既有设计）；
+            // 空名由 handle_delete_person_sync 返回提示草稿
+            let target_name = match crate::llm::extract_delete_target(&req.query).await {
+                Ok(name) if !name.trim().is_empty() => name,
+                _ => nlq::extract_delete_name_fallback(&req.query),
             };
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
@@ -1601,21 +1603,30 @@ async fn nlq_multi_handler(
             Ok(Json(response))
         }
         "update_person" => {
-            let (target_name, changes) = crate::llm::extract_update_fields(&req.query).await;
+            // P1-6：抽取失败显性报错
+            let (target_name, changes) = crate::llm::extract_update_fields(&req.query)
+                .await
+                .map_err(ApiError::internal)?;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
             let response = nlq::handle_update_person_sync(conn, &owner_id, &target_name, changes)?;
             Ok(Json(response))
         }
         "add_interaction" => {
-            let draft = crate::llm::extract_interaction_data(&req.query).await;
+            // P1-6：抽取失败显性报错（不再静默降级为空草稿）
+            let draft = crate::llm::extract_interaction_data(&req.query)
+                .await
+                .map_err(ApiError::internal)?;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
             let response = nlq::handle_add_interaction_sync(conn, &owner_id, draft)?;
             Ok(Json(response))
         }
         "find_path" => {
-            let target_name = crate::llm::extract_path_target(&req.query).await;
+            // P1-6：未识别出目标人名时显性报错
+            let target_name = crate::llm::extract_path_target(&req.query)
+                .await
+                .map_err(ApiError::internal)?;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
             let conn = get_conn(&guard)?;
             let response = nlq::handle_find_path_sync(conn, &owner_id, &target_name)?;

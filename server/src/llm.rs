@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use log::{info, warn};
 
@@ -145,7 +145,236 @@ struct OllamaResponse {
     response: Option<String>,
 }
 
+// ---------- 重试退避基础设施（P1-6） ----------
+
+/// LLM 调用错误分类（P1-6）：Transient 可指数退避重试，Permanent 立即返回。
+/// 仅用于非流式调用；流式链路一旦开始产出内容不可重试（安全优先，宁可降级）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LlmError {
+    /// 瞬时错误：超时 / 连接失败 / HTTP 5xx / 429
+    Transient(String),
+    /// 持久错误：其他 4xx、配置缺失（如 API Key）、空响应、解析失败等
+    Permanent(String),
+}
+
+/// HTTP 状态码可重试判定（纯函数，可单测）：429（限流）与 5xx（服务端错误）
+fn is_retryable_status(status: u16) -> bool {
+    status == 429 || (500..=599).contains(&status)
+}
+
+/// 传输层错误分类（纯函数，可单测）：rig/cloud 通道的错误以字符串呈现，
+/// 按常见瞬时错误标记（超时/连接/429/5xx 文案）归类；无法识别一律视为
+/// Permanent（宁可少重试，不可重复产生副作用）。
+fn classify_transport_error(message: &str) -> LlmError {
+    const TRANSIENT_MARKERS: &[&str] = &[
+        "timeout",
+        "timed out",
+        "deadline",
+        "connection",
+        "error sending request",
+        "too many requests",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "internal server error",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+    ];
+    let lower = message.to_lowercase();
+    if TRANSIENT_MARKERS.iter().any(|m| lower.contains(m)) {
+        LlmError::Transient(message.to_string())
+    } else {
+        LlmError::Permanent(message.to_string())
+    }
+}
+
+/// 退避间隔表（P1-6）：最多重试 2 次，间隔 0.5s → 1.5s
+fn retry_backoffs() -> &'static [Duration] {
+    static BACKOFFS: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(1500)];
+    &BACKOFFS
+}
+
+/// 指数退避重试包装（P1-6）：仅对 Transient 错误按 retry_backoffs() 重试，
+/// Permanent 与重试耗尽后的最后一次错误原样返回。日志仅记元数据
+///（fn/attempt/elapsed/backoff），不落对话内容。
+async fn retry_transient<F, Fut>(fn_name: &str, mut op: F) -> Result<String, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, LlmError>>,
+{
+    let backoffs = retry_backoffs();
+    let mut attempt = 0usize;
+    loop {
+        let started = Instant::now();
+        match op().await {
+            Ok(text) => return Ok(text),
+            Err(LlmError::Permanent(msg)) => return Err(msg),
+            Err(LlmError::Transient(msg)) => {
+                if attempt >= backoffs.len() {
+                    return Err(msg);
+                }
+                warn!(
+                    target: "llm",
+                    "llm_retry fn={} attempt={}/{} elapsed_ms={} backoff_ms={}",
+                    fn_name,
+                    attempt + 1,
+                    backoffs.len(),
+                    started.elapsed().as_millis(),
+                    backoffs[attempt].as_millis()
+                );
+                tokio::time::sleep(backoffs[attempt]).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_policy_tests {
+    use super::*;
+
+    #[test]
+    fn retryable_status_codes_are_429_and_5xx() {
+        assert!(is_retryable_status(429));
+        for code in [500u16, 502, 503, 504, 599] {
+            assert!(is_retryable_status(code));
+        }
+    }
+
+    #[test]
+    fn non_retryable_status_codes() {
+        for code in [200u16, 301, 400, 401, 403, 404, 422, 499] {
+            assert!(!is_retryable_status(code));
+        }
+    }
+
+    #[test]
+    fn backoff_schedule_is_half_then_one_and_half_seconds() {
+        let backoffs = retry_backoffs();
+        assert_eq!(backoffs.len(), 2);
+        assert_eq!(backoffs[0], Duration::from_millis(500));
+        assert_eq!(backoffs[1], Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn transport_error_classification_transient_markers() {
+        for msg in [
+            "request timeout",
+            "error sending request for url (http://localhost:11434/api/generate)",
+            "connection refused",
+            "HTTP status 429 Too Many Requests",
+            "HTTP 503 Service Unavailable",
+            "upstream 502 Bad Gateway",
+        ] {
+            assert_eq!(
+                classify_transport_error(msg),
+                LlmError::Transient(msg.to_string()),
+                "应为瞬时错误：{}",
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn transport_error_classification_permanent_default() {
+        for msg in [
+            "model not found",
+            "invalid api key",
+            "context length exceeded",
+        ] {
+            assert_eq!(
+                classify_transport_error(msg),
+                LlmError::Permanent(msg.to_string()),
+                "应为持久错误：{}",
+                msg
+            );
+        }
+    }
+
+    /// 瞬时错误首次失败后退避重试 1 次即成功：总尝试 2 次
+    #[tokio::test]
+    async fn retry_transient_retries_then_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let result = retry_transient("test_fn", || {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    Err(LlmError::Transient("simulated timeout".to_string()))
+                } else {
+                    Ok("ok".to_string())
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), "ok");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    /// 持久错误立即返回，不重试：总尝试 1 次
+    #[tokio::test]
+    async fn retry_transient_does_not_retry_permanent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let result = retry_transient("test_fn", || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Err(LlmError::Permanent("bad request".to_string())) }
+        })
+        .await;
+        assert_eq!(result.unwrap_err(), "bad request");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    /// 瞬时错误重试耗尽（最多 2 次重试）后返回最后一次错误：总尝试 3 次
+    #[tokio::test]
+    async fn retry_transient_gives_up_after_max_retries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let result = retry_transient("test_fn", || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Err(LlmError::Transient("still failing".to_string())) }
+        })
+        .await;
+        assert_eq!(result.unwrap_err(), "still failing");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+}
+
+// ---------- legacy 通道 HTTP Client（P2-11 全局单例） ----------
+
+/// legacy 通道的 reqwest::Client 全局单例：复用连接池，避免每次调用
+/// 新建 TCP/TLS 连接。Client 本身不携带超时，每次调用经
+/// RequestBuilder::timeout 按场景指定（抽取类 45s / 聊天类 120s）。
+fn legacy_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
+#[cfg(test)]
+mod legacy_client_tests {
+    use super::*;
+
+    /// 单例性：多次获取返回同一 &'static 实例（指针相等）
+    #[test]
+    fn legacy_http_client_is_singleton() {
+        let first = legacy_http_client();
+        let second = legacy_http_client();
+        assert!(std::ptr::eq(first, second));
+    }
+}
+
 async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str, web_search: bool) -> Result<String, String> {
+    // P1-6：非流式调用统一套指数退避重试（超时 / 5xx / 429 最多重试 2 次，
+    // 0.5s → 1.5s）；流式链路不经过本函数，天然不重试。
+    retry_transient(fn_name, || call_ollama_once(prompt, format, timeout, fn_name, web_search)).await
+}
+
+/// 单次调用（不含重试）：三值通道分发 + legacy reqwest 实现。
+/// 错误按 LlmError 分类供 retry_transient 决策。
+async fn call_ollama_once(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str, web_search: bool) -> Result<String, LlmError> {
     // 三值通道分发：RG_LLM_BACKEND=rig/cloud 时全量走对应通道；legacy 模式下
     // 命中 RG_LLM_CLOUD_FNS / RG_LLM_RIG_FNS 白名单的函数分别走 cloud / rig
     //（函数级灰度，cloud 优先），其余走原 reqwest legacy 实现（默认行为与
@@ -159,13 +388,11 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
         Channel::Legacy => {}
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    let client = legacy_http_client();
+    let model = ollama_model();
 
     let req = OllamaRequest {
-        model: ollama_model(),
+        model: model.clone(),
         stream: false,
         format: format.map(str::to_string),
         prompt: prompt.to_string(),
@@ -177,27 +404,35 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
 
     let resp = client
         .post(&url)
+        .timeout(timeout)
         .json(&req)
         .send()
         .await
         .map_err(|e| {
             if e.is_timeout() {
-                format!(
+                LlmError::Transient(format!(
                     "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
-                    req.model,
+                    model,
                     timeout.as_secs()
-                )
+                ))
+            } else if e.is_connect() || e.is_request() {
+                LlmError::Transient(format!("Ollama request failed: {}", e))
             } else {
-                format!("Ollama request failed: {}", e)
+                LlmError::Permanent(format!("Ollama request failed: {}", e))
             }
         })?;
 
     if !resp.status().is_success() {
-        return Err(format!("Ollama returned status {}", resp.status()));
+        let msg = format!("Ollama returned status {}", resp.status());
+        return Err(if is_retryable_status(resp.status().as_u16()) {
+            LlmError::Transient(msg)
+        } else {
+            LlmError::Permanent(msg)
+        });
     }
 
-    let data: OllamaResponse = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
-    data.response.ok_or_else(|| "Empty response from Ollama".to_string())
+    let data: OllamaResponse = resp.json().await.map_err(|e| LlmError::Permanent(format!("Parse error: {}", e)))?;
+    data.response.ok_or_else(|| LlmError::Permanent("Empty response from Ollama".to_string()))
 }
 
 // ---------- 通道分发（legacy | rig | cloud 三值） ----------
@@ -648,8 +883,9 @@ fn rig_client() -> Result<ollama::Client, String> {
 /// 超时与错误文案与 legacy 通道保持一致。
 /// format 为 Some 时设置宽松 JSON Schema 约束（Ollama provider 会将
 /// output_schema 映射为请求体的 format 字段），等价于 legacy 的 format:"json"。
-async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, String> {
-    let client = rig_client()?;
+/// 错误按 LlmError 分类（P1-6）：超时/连接类为 Transient，其余 Permanent。
+async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, LlmError> {
+    let client = rig_client().map_err(LlmError::Permanent)?;
     let model_name = ollama_model();
     info!(
         target: "llm",
@@ -672,7 +908,7 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
         request_builder.additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}));
     let request = if format.is_some() {
         let schema: schemars::Schema = serde_json::from_value(serde_json::json!({"type": "object"}))
-            .map_err(|e| format!("Schema build error: {}", e))?;
+            .map_err(|e| LlmError::Permanent(format!("Schema build error: {}", e)))?;
         request_builder.output_schema(schema).build()
     } else {
         request_builder.build()
@@ -691,17 +927,17 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
                 .collect::<Vec<_>>()
                 .join("");
             if text.is_empty() {
-                Err("Empty response from Ollama".to_string())
+                Err(LlmError::Permanent("Empty response from Ollama".to_string()))
             } else {
                 Ok(text)
             }
         }
-        Ok(Err(e)) => Err(format!("Ollama request failed: {}", e)),
-        Err(_) => Err(format!(
+        Ok(Err(e)) => Err(classify_transport_error(&format!("Ollama request failed: {}", e))),
+        Err(_) => Err(LlmError::Transient(format!(
             "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
             model_name,
             timeout.as_secs()
-        )),
+        ))),
     }
 }
 
@@ -737,14 +973,15 @@ fn cloud_client() -> Result<openai::CompletionsClient, String> {
 /// web_search=true 时额外合入百炼 enable_search + search_strategy=turbo
 ///（思考开关保持现状：非流式聊天类仍显式 enable_thinking=false）。
 /// 日志仅记元数据（model/fn/prompt_len/elapsed/web_search），不落内容。
+/// 错误按 LlmError 分类（P1-6）：超时/传输层瞬时错误为 Transient。
 async fn call_cloud(
     prompt: &str,
     format: Option<&str>,
     timeout: Duration,
     fn_name: &str,
     web_search: bool,
-) -> Result<String, String> {
-    let client = cloud_client()?;
+) -> Result<String, LlmError> {
+    let client = cloud_client().map_err(LlmError::Permanent)?;
     // 聊天类函数开联网搜索时路由到搜索可用模型，其余按 fn 类别选模型
     let model_name = if web_search && is_cloud_chat_fn(fn_name) {
         cloud_search_model()
@@ -814,7 +1051,7 @@ async fn call_cloud(
                 text.chars().count()
             );
             if text.is_empty() {
-                Err("云端模型返回内容为空".to_string())
+                Err(LlmError::Permanent("云端模型返回内容为空".to_string()))
             } else {
                 Ok(text)
             }
@@ -827,13 +1064,16 @@ async fn call_cloud(
                 fn_name,
                 started.elapsed().as_millis()
             );
-            Err(format!("云端请求失败（模型 {}）：{}", model_name, e))
+            Err(classify_transport_error(&format!(
+                "云端请求失败（模型 {}）：{}",
+                model_name, e
+            )))
         }
-        Err(_) => Err(format!(
+        Err(_) => Err(LlmError::Transient(format!(
             "云端请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_CLOUD_TIMEOUT_SECS。",
             model_name,
             timeout.as_secs()
-        )),
+        ))),
     }
 }
 
@@ -1435,26 +1675,36 @@ pub async fn general_chat(
         return call_ollama(&prompt, None, timeout, "general_chat", web_search).await;
     }
     // 有历史：messages 数组化（system → 摘要 → 历史轮次 → 本轮问题），
-    // 按通道分发：cloud 百炼 / rig Ollama（经 rig）/ legacy Ollama /api/chat
+    // 按通道分发：cloud 百炼 / rig Ollama（经 rig）/ legacy Ollama /api/chat；
+    // 非流式调用同样套 P1-6 指数退避重试（仅瞬时错误）
     let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
     match llm_channel("general_chat") {
-        Channel::Cloud => cloud_chat_messages(&system, history, query, web_search, timeout).await,
-        Channel::Rig => rig_chat_messages(&system, history, query, timeout).await,
-        Channel::Legacy => ollama_chat_messages(&system, history, query, timeout).await,
+        Channel::Cloud => retry_transient("general_chat", || {
+            cloud_chat_messages(&system, history, query, web_search, timeout)
+        })
+        .await,
+        Channel::Rig => {
+            retry_transient("general_chat", || rig_chat_messages(&system, history, query, timeout)).await
+        }
+        Channel::Legacy => retry_transient("general_chat", || {
+            ollama_chat_messages(&system, history, query, timeout)
+        })
+        .await,
     }
 }
 
 /// messages 模式的非流式聊天（cloud 通道）：对齐 call_cloud 参数语义
 ///（聊天类 enable_thinking=false 避免 400；web_search 合入 enable_search），
 /// 消息序列 = system → 历史轮次 → 本轮问题。
+/// 错误按 LlmError 分类（P1-6）。
 async fn cloud_chat_messages(
     system: &str,
     history: &ChatHistory,
     query: &str,
     web_search: bool,
     timeout: Duration,
-) -> Result<String, String> {
-    let client = cloud_client()?;
+) -> Result<String, LlmError> {
+    let client = cloud_client().map_err(LlmError::Permanent)?;
     let model_name = if web_search { cloud_search_model() } else { cloud_chat_model() };
     let started = Instant::now();
     info!(
@@ -1507,29 +1757,33 @@ async fn cloud_chat_messages(
                 text.chars().count()
             );
             if text.is_empty() {
-                Err("云端模型返回内容为空".to_string())
+                Err(LlmError::Permanent("云端模型返回内容为空".to_string()))
             } else {
                 Ok(text)
             }
         }
-        Ok(Err(e)) => Err(format!("云端请求失败（模型 {}）：{}", model_name, e)),
-        Err(_) => Err(format!(
+        Ok(Err(e)) => Err(classify_transport_error(&format!(
+            "云端请求失败（模型 {}）：{}",
+            model_name, e
+        ))),
+        Err(_) => Err(LlmError::Transient(format!(
             "云端请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_CLOUD_TIMEOUT_SECS。",
             model_name,
             timeout.as_secs()
-        )),
+        ))),
     }
 }
 
 /// messages 模式的非流式聊天（rig 通道，Ollama）：与 call_rig 平行，
 /// 消息序列经 chat_history + prompt 重建，错误文案与 legacy 通道一致。
+/// 错误按 LlmError 分类（P1-6）。
 async fn rig_chat_messages(
     system: &str,
     history: &ChatHistory,
     query: &str,
     timeout: Duration,
-) -> Result<String, String> {
-    let client = rig_client()?;
+) -> Result<String, LlmError> {
+    let client = rig_client().map_err(LlmError::Permanent)?;
     let model_name = ollama_model();
     info!(
         target: "llm",
@@ -1564,22 +1818,23 @@ async fn rig_chat_messages(
                 .collect::<Vec<_>>()
                 .join("");
             if text.is_empty() {
-                Err("Empty response from Ollama".to_string())
+                Err(LlmError::Permanent("Empty response from Ollama".to_string()))
             } else {
                 Ok(text)
             }
         }
-        Ok(Err(e)) => Err(format!("Ollama request failed: {}", e)),
-        Err(_) => Err(format!(
+        Ok(Err(e)) => Err(classify_transport_error(&format!("Ollama request failed: {}", e))),
+        Err(_) => Err(LlmError::Transient(format!(
             "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
             model_name,
             timeout.as_secs()
-        )),
+        ))),
     }
 }
 
 /// Ollama /api/chat messages 格式（legacy 降级路径多轮支持）：
 /// 单 prompt 的 /api/generate 无法表达消息序列，多轮历史时改走 /api/chat。
+/// HTTP Client 复用 P2-11 全局单例，超时经 RequestBuilder::timeout 按请求指定。
 #[derive(Serialize, Deserialize)]
 struct OllamaChatMessage {
     role: String,
@@ -1605,11 +1860,8 @@ async fn ollama_chat_messages(
     history: &ChatHistory,
     query: &str,
     timeout: Duration,
-) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+) -> Result<String, LlmError> {
+    let client = legacy_http_client();
 
     let mut messages = vec![OllamaChatMessage {
         role: "system".to_string(),
@@ -1645,30 +1897,38 @@ async fn ollama_chat_messages(
 
     let resp = client
         .post(&url)
+        .timeout(timeout)
         .json(&req)
         .send()
         .await
         .map_err(|e| {
             if e.is_timeout() {
-                format!(
+                LlmError::Transient(format!(
                     "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
                     req.model,
                     timeout.as_secs()
-                )
+                ))
+            } else if e.is_connect() || e.is_request() {
+                LlmError::Transient(format!("Ollama request failed: {}", e))
             } else {
-                format!("Ollama request failed: {}", e)
+                LlmError::Permanent(format!("Ollama request failed: {}", e))
             }
         })?;
 
     if !resp.status().is_success() {
-        return Err(format!("Ollama returned status {}", resp.status()));
+        let msg = format!("Ollama returned status {}", resp.status());
+        return Err(if is_retryable_status(resp.status().as_u16()) {
+            LlmError::Transient(msg)
+        } else {
+            LlmError::Permanent(msg)
+        });
     }
 
-    let data: OllamaChatResponse = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+    let data: OllamaChatResponse = resp.json().await.map_err(|e| LlmError::Permanent(format!("Parse error: {}", e)))?;
     data.message
         .map(|m| m.content)
         .filter(|c| !c.is_empty())
-        .ok_or_else(|| "Empty response from Ollama".to_string())
+        .ok_or_else(|| LlmError::Permanent("Empty response from Ollama".to_string()))
 }
 
 /// general_chat_stream 的流式输出事件：
@@ -1848,8 +2108,74 @@ pub async fn generate_profile_document(system_prompt: &str, conversation: &str) 
     .await
 }
 
-/// 从自然语言中提取联系人字段（用于 create_person 意图）
-pub async fn extract_person_fields(query: &str) -> PersonDraft {
+// ---------- JSON 结构化抽取（P1-6：纠错重试 + 显性报错） ----------
+
+/// JSON 解析失败时的纠错重试 prompt（纯函数，可单测）：在原始提取 prompt
+/// 尾部追加解析错误信息与纠错指令；原始 prompt 逐字节保留，首次抽取的
+/// prompt 文本不受影响。
+fn build_json_fix_prompt(original_prompt: &str, parse_error: &str) -> String {
+    format!(
+        "{}\n\n你上一次的输出不是合法的 JSON，解析错误：{}。请重新只输出一个合法的 JSON 对象，不要输出任何多余文字。",
+        original_prompt, parse_error
+    )
+}
+
+/// JSON 结构化抽取通用调用（P1-6）：
+/// - 首次调用失败（超时/网络/HTTP 错误）由 call_ollama 内部退避重试后仍失败 → 显性报错；
+/// - 模型返回非法 JSON → 带解析错误信息拼入纠错 prompt 重试 1 次；
+/// - 纠错后仍非法 → 显性报错（不再静默降级为空草稿/默认值）。
+async fn call_json_extract(fn_name: &str, prompt: &str) -> Result<serde_json::Value, String> {
+    let timeout = ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS);
+    let raw = call_ollama(prompt, Some("json"), timeout, fn_name, false)
+        .await
+        .map_err(|e| format!("模型调用失败：{}", e))?;
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(v) => Ok(v),
+        Err(parse_err) => {
+            // 日志只记元数据；serde_json 错误文案仅含行列位置，不含对话内容
+            warn!(
+                target: "llm",
+                "json_extract_fix_retry fn={} reason=invalid_json",
+                fn_name
+            );
+            let fix_prompt = build_json_fix_prompt(prompt, &parse_err.to_string());
+            let raw = call_ollama(&fix_prompt, Some("json"), timeout, fn_name, false)
+                .await
+                .map_err(|e| format!("模型调用失败：{}", e))?;
+            serde_json::from_str::<serde_json::Value>(&raw)
+                .map_err(|e| format!("模型返回的内容不是合法 JSON，抽取失败：{}", e))
+        }
+    }
+}
+
+#[cfg(test)]
+mod json_fix_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn fix_prompt_preserves_original_and_appends_error() {
+        let original = "请从以下文字中提取联系人信息，只输出JSON：\n文字：张三在上海";
+        let fix = build_json_fix_prompt(original, "expected value at line 1 column 1");
+        // 原始 prompt 逐字节保留在前
+        assert!(fix.starts_with(original));
+        // 解析错误信息拼入
+        assert!(fix.contains("expected value at line 1 column 1"));
+        // 含纠错指令关键词
+        assert!(fix.contains("不是合法的 JSON"));
+        assert!(fix.contains("只输出一个合法的 JSON 对象"));
+    }
+
+    #[test]
+    fn fix_prompt_handles_empty_original() {
+        let fix = build_json_fix_prompt("", "EOF while parsing a value at line 1 column 0");
+        assert!(fix.starts_with("\n\n你上一次的输出不是合法的 JSON"));
+        assert!(fix.contains("EOF while parsing"));
+    }
+}
+
+/// 从自然语言中提取联系人字段（用于 create_person 意图）。
+/// 失败时显性返回错误（P1-6），不再静默降级为空草稿。
+pub async fn extract_person_fields(query: &str) -> Result<PersonDraft, String> {
     let prompt = format!(
         r#"请从以下文字中提取联系人信息，只输出JSON：
 {{
@@ -1866,40 +2192,25 @@ pub async fn extract_person_fields(query: &str) -> PersonDraft {
         query
     );
 
-    match call_ollama(
-        &prompt,
-        Some("json"),
-        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
-        "extract_person_fields",
-        false,
-    ).await {
-        Ok(json_str) => {
-            match serde_json::from_str::<serde_json::Value>(&json_str) {
-                Ok(v) => PersonDraft {
-                    name: v["name"].as_str().unwrap_or("").to_string(),
-                    company: v["company"].as_str().map(|s| s.to_string()),
-                    location: v["location"].as_str().map(|s| s.to_string()),
-                    title: v["title"].as_str().map(|s| s.to_string()),
-                    resource_tags: v["resource_tags"]
-                        .as_array()
-                        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-                        .unwrap_or_default(),
-                    background: v["background"].as_str().map(|s| s.to_string()),
-                    school: v["school"].as_str().map(|s| s.to_string()),
-                    confidence: 75,
-                },
-                Err(_) => empty_person_draft(),
-            }
-        }
-        Err(e) => {
-            warn!(target: "llm", "extract_person_fields failed: {}", e);
-            empty_person_draft()
-        }
-    }
+    let v = call_json_extract("extract_person_fields", &prompt).await?;
+    Ok(PersonDraft {
+        name: v["name"].as_str().unwrap_or("").to_string(),
+        company: v["company"].as_str().map(|s| s.to_string()),
+        location: v["location"].as_str().map(|s| s.to_string()),
+        title: v["title"].as_str().map(|s| s.to_string()),
+        resource_tags: v["resource_tags"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        background: v["background"].as_str().map(|s| s.to_string()),
+        school: v["school"].as_str().map(|s| s.to_string()),
+        confidence: 75,
+    })
 }
 
-/// 从自然语言中提取更新字段（用于 update_person 意图）
-pub async fn extract_update_fields(query: &str) -> (String, Vec<FieldChange>) {
+/// 从自然语言中提取更新字段（用于 update_person 意图）。
+/// 失败时显性返回错误（P1-6）。
+pub async fn extract_update_fields(query: &str) -> Result<(String, Vec<FieldChange>), String> {
     let prompt = format!(
         r#"请从以下文字中提取联系人更新信息，只输出JSON：
 {{
@@ -1913,45 +2224,28 @@ pub async fn extract_update_fields(query: &str) -> (String, Vec<FieldChange>) {
         query
     );
 
-    match call_ollama(
-        &prompt,
-        Some("json"),
-        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
-        "extract_update_fields",
-        false,
-    ).await {
-        Ok(json_str) => {
-            match serde_json::from_str::<serde_json::Value>(&json_str) {
-                Ok(v) => {
-                    let name = v["target_name"].as_str().unwrap_or("").to_string();
-                    let changes = v["changes"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|c| {
-                                    Some(FieldChange {
-                                        field: c["field"].as_str()?.to_string(),
-                                        old_value: None,
-                                        new_value: c["new_value"].as_str()?.to_string(),
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    (name, changes)
-                }
-                Err(_) => (String::new(), vec![]),
-            }
-        }
-        Err(e) => {
-            warn!(target: "llm", "extract_update_fields failed: {}", e);
-            (String::new(), vec![])
-        }
-    }
+    let v = call_json_extract("extract_update_fields", &prompt).await?;
+    let name = v["target_name"].as_str().unwrap_or("").to_string();
+    let changes = v["changes"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    Some(FieldChange {
+                        field: c["field"].as_str()?.to_string(),
+                        old_value: None,
+                        new_value: c["new_value"].as_str()?.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((name, changes))
 }
 
-/// 从自然语言中提取互动信息（用于 add_interaction 意图）
-pub async fn extract_interaction_data(query: &str) -> InteractionDraft {
+/// 从自然语言中提取互动信息（用于 add_interaction 意图）。
+/// 失败时显性返回错误（P1-6），不再静默降级为空草稿。
+pub async fn extract_interaction_data(query: &str) -> Result<InteractionDraft, String> {
     let prompt = format!(
         r#"请从以下文字中提取互动记录信息，只输出JSON：
 {{
@@ -1965,39 +2259,23 @@ pub async fn extract_interaction_data(query: &str) -> InteractionDraft {
         query
     );
 
-    match call_ollama(
-        &prompt,
-        Some("json"),
-        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
-        "extract_interaction_data",
-        false,
-    ).await {
-        Ok(json_str) => {
-            match serde_json::from_str::<serde_json::Value>(&json_str) {
-                Ok(v) => InteractionDraft {
-                    person_mention: v["person_mention"].as_str().unwrap_or("").to_string(),
-                    resolved_person: None,
-                    candidates: vec![],
-                    topic: v["topic"].as_str().map(|s| s.to_string()),
-                    summary: v["summary"].as_str().map(|s| s.to_string()),
-                    action_items: v["action_items"]
-                        .as_array()
-                        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-                        .unwrap_or_default(),
-                    confidence: 70,
-                },
-                Err(_) => empty_interaction_draft(),
-            }
-        }
-        Err(e) => {
-            warn!(target: "llm", "extract_interaction_data failed: {}", e);
-            empty_interaction_draft()
-        }
-    }
+    let v = call_json_extract("extract_interaction_data", &prompt).await?;
+    Ok(InteractionDraft {
+        person_mention: v["person_mention"].as_str().unwrap_or("").to_string(),
+        resolved_person: None,
+        candidates: vec![],
+        topic: v["topic"].as_str().map(|s| s.to_string()),
+        summary: v["summary"].as_str().map(|s| s.to_string()),
+        action_items: v["action_items"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        confidence: 70,
+    })
 }
 
-/// 从路径查询中提取目标人名
-pub async fn extract_path_target(query: &str) -> String {
+/// 从路径查询中提取目标人名。失败/未识别出人名时显性返回错误（P1-6）。
+pub async fn extract_path_target(query: &str) -> Result<String, String> {
     let prompt = format!(
         r#"请从以下文字中提取目标人名（用户想查找与谁的关系路径），只输出JSON：
 {{"target_name": "目标人名"}}
@@ -2006,28 +2284,18 @@ pub async fn extract_path_target(query: &str) -> String {
         query
     );
 
-    match call_ollama(
-        &prompt,
-        Some("json"),
-        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
-        "extract_path_target",
-        false,
-    ).await {
-        Ok(json_str) => {
-            serde_json::from_str::<serde_json::Value>(&json_str)
-                .ok()
-                .and_then(|v| v["target_name"].as_str().map(String::from))
-                .unwrap_or_default()
-        }
-        Err(e) => {
-            warn!(target: "llm", "extract_path_target failed: {}", e);
-            String::new()
-        }
-    }
+    let v = call_json_extract("extract_path_target", &prompt).await?;
+    v["target_name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .ok_or_else(|| "未能从输入中识别出目标人名，请更明确地说明你想查找谁的关系路径".to_string())
 }
 
-/// 从自然语言中提取要删除的联系人名（用于 delete_person 意图）
-pub async fn extract_delete_target(query: &str) -> String {
+/// 从自然语言中提取要删除的联系人名（用于 delete_person 意图）。
+/// 失败/未识别出人名时显性返回错误（P1-6），调用方决定是否规则兜底。
+pub async fn extract_delete_target(query: &str) -> Result<String, String> {
     let prompt = format!(
         r#"请从以下文字中提取要删除的联系人姓名，只输出JSON：
 {{"target_name": "人名"}}
@@ -2036,49 +2304,13 @@ pub async fn extract_delete_target(query: &str) -> String {
         query
     );
 
-    match call_ollama(
-        &prompt,
-        Some("json"),
-        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
-        "extract_delete_target",
-        false,
-    ).await {
-        Ok(json_str) => {
-            serde_json::from_str::<serde_json::Value>(&json_str)
-                .ok()
-                .and_then(|v| v["target_name"].as_str().map(String::from))
-                .unwrap_or_default()
-        }
-        Err(e) => {
-            warn!(target: "llm", "extract_delete_target failed: {}", e);
-            String::new()
-        }
-    }
-}
-
-fn empty_person_draft() -> PersonDraft {
-    PersonDraft {
-        name: String::new(),
-        company: None,
-        location: None,
-        title: None,
-        resource_tags: vec![],
-        background: None,
-        school: None,
-        confidence: 0,
-    }
-}
-
-fn empty_interaction_draft() -> InteractionDraft {
-    InteractionDraft {
-        person_mention: String::new(),
-        resolved_person: None,
-        candidates: vec![],
-        topic: None,
-        summary: None,
-        action_items: vec![],
-        confidence: 0,
-    }
+    let v = call_json_extract("extract_delete_target", &prompt).await?;
+    v["target_name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .ok_or_else(|| "未能从输入中识别出要删除的联系人姓名".to_string())
 }
 
 /// 将多条消息压缩为一段摘要文本
