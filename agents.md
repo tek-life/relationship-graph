@@ -306,6 +306,20 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 8. **同名歧义**：`get_person_detail` 按姓名搜索时取第一个候选人，同名时可能误选；未接入 entity_mentions 歧义确认机制。
 9. **工具描述回归基线**：工具 description 措辞直接影响 qwen 工具选择准确率，修改前需实测回归（spike 脚本已删，可用临时实例 + 报告类查询验证）。
 
+### 8.3 技能包系统风险与注意事项（2026-08-08）
+
+技能包（多文件技能）系统已落地（协议与规则见 §11.6），以下风险点需在后续迭代中持续关注：
+
+1. **导入安全**：
+   - 路径穿越防护：`normalize_rel_path` 拒绝 `..` 与绝对路径，相对路径统一规范化。
+   - 三重上限：文件数 ≤ 50、单文件 ≤ 200KB（按字符）、总字符 ≤ 1,000,000（`IMPORT_MAX_TOTAL_CHARS`，`server/src/api/admin.rs`）。
+   - 前端 `fflate` 解压时做解压炸弹防护；仅文本白名单扩展名（.md / .txt）参与注入索引，其余文件只存档。
+   - 技能内容本质是 prompt 注入面：写入仅限 admin（全部端点 `require_admin`），zip 导入需管理端审阅确认后才落库。
+2. **数据库性能**：全局单连接 Mutex 下，技能包读取耗时随包体量线性增长，且注入段在每个 chat 请求重建（`build_skills_prompt`）；超大技能包场景需观察锁持有时间。二期候选：索引/缓存注入段，或渐进披露工具 `get_skill_content`（模型按需取详情，替代一次性注入）。
+3. **注入预算**：单包超 `RG_SKILL_PACKAGE_BUDGET_CHARS`（默认 2000）时该包段被预裁剪；多包拼接超共享预算 `RG_SKILL_BUDGET_CHARS`（默认 3000）时按 `### 技能：` 段边界截断，**尾部技能会被整段丢弃**（不是半段截断）。超大包建议拆分为多个小包，或按需上调 env 预算。
+4. **向后兼容**：`legacy-*` 包与旧 `agent_skills` 单文档技能 1:1 同步（新增/更新/启停/删除/agent 移动语义均同步）；旧 JSON 形态技能（无 skill_markdown）只读保留、不迁移；存量迁移幂等可重跑（按 slug 查重）；单行迁移失败降级跳过、不阻断启动。
+5. **二期候选项**（尚未实现）：渐进披露 / 按需取详情工具（`get_skill_content`）、git 仓库导入技能包、注入段缓存。
+
 ---
 
 ## 9. 如何运行
@@ -371,6 +385,39 @@ NLQ / 互动记录 AI 提取需要：
 
 - 数字人 SKILL 注入仅作用于 `/api/chat` 与 `/api/chat/stream` 两条链路（请求携带 `agentId` 时注入该数字人的技能文档）。
 - 联系人管家（`routeMode=relationship`）走 NLQ 规则链路，其 `extract_*` JSON 抽取不注入技能。
+
+### 11.6 技能包（多文件技能）协议与绑定规则
+
+**技能包协议**：
+
+- 一个技能包 = 一组带相对路径的文本文件；根目录 `SKILL.md` 为入口（支持仓库风格嵌套一层目录，自动定位最浅层 SKILL.md 并去前缀）。
+- 入口 `SKILL.md` frontmatter 必须含非空 `name` / `description`（校验语义与旧单文档技能一致）。
+- 附属文档（.md / .txt）随包存储，注入时以「路径 + 首行摘要」索引形式附在段内；脚本类等非文本文件只存档、不注入、**永不执行**。
+
+**数据模型**（`server/src/db/schema.rs` + `server/src/db/skill_package.rs`）：
+
+- `skill_packages`：包元数据（slug UNIQUE、display_name、source_kind=`inline`/`imported`、manifest_json、is_active）。
+- `skill_package_files`：包内文件（rel_path + content，`UNIQUE(package_id, rel_path)`）。
+- `agent_skill_bindings`：数字人 × 技能包多对多绑定（`PRIMARY KEY(agent_id, package_id)`，含 sort_order），一个包可被多个数字人共享。
+- 存量单文档技能（`agent_skills`）在服务启动时幂等迁移为 `source_kind='inline'`、`slug='legacy-<技能id>'` 的技能包；旧 `agent_skills` 表与旧 4 端点保留，对旧技能的写入同步 upsert/删除对应 legacy 包。
+
+**注入规则**（`build_skills_prompt`，`server/src/db/agent_config.rs`）：
+
+- 每个技能包折叠为单个 `### 技能：<display_name>` 段：SKILL.md 正文（剥离 frontmatter）+ `#### 附属文档` 索引。
+- 按绑定 `sort_order ASC, created_at ASC` 排序拼接。
+- 单包预裁剪预算 `RG_SKILL_PACKAGE_BUDGET_CHARS`（默认 2000 字符）；多包共享预算 `RG_SKILL_BUDGET_CHARS`（默认 3000 字符），超预算按 `### 技能：` 段边界截断并附截断说明（段边界机制与改造前一致）。
+- 注入范围与 §11.5 一致：仅 `/api/chat` 与 `/api/chat/stream`，NLQ 链路（`extract_*` 抽取）不注入。
+
+**管理端点**（`server/src/api/admin.rs`，全部 `require_admin`）：
+
+- `GET /api/admin/skill-packages`、`POST /api/admin/skill-packages`（inline 创建）
+- `GET /api/admin/skill-packages/:id`、`DELETE /api/admin/skill-packages/:id`
+- `GET /api/admin/skill-packages/:id/files`
+- `POST /api/admin/skill-packages/import`（多文件 zip 导入，source_kind=`imported`）
+- `GET /api/admin/digital-agents/:id/skill-bindings`、`PUT /api/admin/digital-agents/:id/skill-bindings`（全量替换绑定）
+- 前端管理界面：`src/components/admin/SkillPackageManager.tsx`。
+
+风险与注意事项见 §8.3。
 
 ---
 
