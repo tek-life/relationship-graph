@@ -100,19 +100,24 @@ export async function streamChat(
   }
 
   if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error('当前服务端版本不支持流式接口 /api/chat/stream，请重启并升级后端服务。');
-    }
-    let message = `请求失败（${response.status}）`;
+    // 优先采用服务端业务错误（如会话归属校验 404「数据不存在或无权访问」）；
+    // 无响应体的 404 才是端点不存在（旧版本服务端不支持流式接口）
+    let bodyError: string | null = null;
     try {
       const body = await response.json();
       if (body && typeof body.error === 'string') {
-        message = body.error;
+        bodyError = body.error;
       }
     } catch {
-      // 忽略响应体解析失败，保留状态码信息
+      // 忽略响应体解析失败
     }
-    throw new Error(message);
+    if (bodyError) {
+      throw new Error(bodyError);
+    }
+    if (response.status === 404) {
+      throw new Error('当前服务端版本不支持流式接口 /api/chat/stream，请重启并升级后端服务。');
+    }
+    throw new Error(`请求失败（${response.status}）`);
   }
 
   if (!response.body) {

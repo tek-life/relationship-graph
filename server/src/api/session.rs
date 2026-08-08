@@ -82,14 +82,22 @@ pub async fn create_session(
     Ok(Json(session))
 }
 
-/// GET /api/sessions/:id/messages — 获取会话消息（支持分页）
+/// GET /api/sessions/:id/messages — 获取会话消息（支持分页）。
+/// 归属校验：跨用户读取一律 404「数据不存在或无权访问」，不泄露存在性。
 pub async fn list_messages(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Query(params): Query<MessageQuery>,
 ) -> Result<Json<Vec<ChatMessage>>, ApiError> {
+    let user_id = extract_user_id(&state, &headers)?;
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
+    let session = db_session::get_session(conn, &id)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if !matches!(session.as_ref(), Some(s) if s.user_id == user_id) {
+        return Err(ApiError::not_found("数据不存在或无权访问"));
+    }
     let limit = params.limit.unwrap_or(100);
     let offset = params.offset.unwrap_or(0);
     let messages = db_session::list_messages_by_session(conn, &id, limit, offset)?;

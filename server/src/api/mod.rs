@@ -2,7 +2,7 @@
 //! 日志遵循脱敏原则：不记录密码、token、姓名、电话及内容原文。
 
 use crate::db::{crypto::{derive_key, generate_db_key, open_encrypted_db, rekey_db, validate_encrypted_db},
-    agent_config, get_conn, interaction, person, relationship, schema, user as user_db};
+    agent_config, get_conn, interaction, person, relationship, schema, session as db_session, user as user_db};
 use crate::nlq::{self, NlqRequest, NlqResult};
 use crate::security::auth;
 use crate::security::sensitivity;
@@ -113,6 +113,29 @@ pub fn router(state: SharedState) -> Router {
         .route(
             "/api/admin/agent-skills/:id",
             put(admin::update_agent_skill).delete(admin::delete_agent_skill),
+        )
+        // 技能包管理（多文件技能 + 数字人绑定）
+        .route(
+            "/api/admin/skill-packages",
+            get(admin::list_skill_packages).post(admin::create_skill_package),
+        )
+        .route(
+            "/api/admin/skill-packages/import",
+            // 导入上限：总字符 1_000_000（中文 UTF-8 至多 3MB）+ JSON 转义开销
+            post(admin::import_skill_package).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
+            "/api/admin/skill-packages/:id",
+            get(admin::get_skill_package).delete(admin::delete_skill_package),
+        )
+        .route(
+            "/api/admin/skill-packages/:id/files",
+            get(admin::list_skill_package_files),
+        )
+        // 数字人↔技能包绑定
+        .route(
+            "/api/admin/digital-agents/:id/skill-bindings",
+            get(admin::list_skill_bindings).put(admin::update_skill_bindings),
         )
         // QA 指令模块管理
         .route(
@@ -812,6 +835,8 @@ async fn chat_handler(
     }
 
     let user_id = user.map(|u| (u.0).0);
+    // 归属校验前置：携带 sessionId 时必须属于当前用户，否则 404（不泄露存在性）
+    verify_chat_session_owned(&state, req.session_id.as_deref(), user_id.as_deref())?;
     let skills = resolve_skills_prompt(&state, req.agent_id.as_deref(), user_id.as_deref());
     // 联网搜索：请求开关 AND env 总闸 AND 云端通道；非 cloud 静默置 false 不阻断
     let backend = crate::llm::general_chat_backend();
@@ -857,6 +882,39 @@ async fn chat_handler(
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(ChatResponse { reply }))
+}
+
+/// 会话归属判定（纯函数，可单测）：会话存在且属于当前用户。
+/// 跨用户访问统一表现为「查无此数据」，不泄露存在性。
+fn session_owned_by(session: Option<&crate::types::Session>, user_id: &str) -> bool {
+    matches!(session, Some(s) if s.user_id == user_id)
+}
+
+/// 聊天请求携带 sessionId 时的归属校验（前置）：不匹配/不存在一律
+/// 404「数据不存在或无权访问」；未携带 sessionId 保持旧行为（单轮）；
+/// 未关联用户的会话（legacy token）无法主张任何会话，一律 401。
+/// DB 锁约定：锁内查数 → 立即 drop guard → 再做后续 LLM 调用。
+fn verify_chat_session_owned(
+    state: &SharedState,
+    session_id: Option<&str>,
+    user_id: Option<&str>,
+) -> Result<(), ApiError> {
+    let session_id = match session_id {
+        Some(id) if !id.trim().is_empty() => id,
+        _ => return Ok(()),
+    };
+    let user_id = user_id
+        .ok_or_else(|| ApiError::unauthorized("当前会话未关联用户，请重新登录"))?;
+    let session = {
+        let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+        let conn = get_conn(&guard)?;
+        db_session::get_session(conn, session_id).map_err(|e| ApiError::internal(e.to_string()))?
+    }; // guard 在此释放
+    if session_owned_by(session.as_ref(), user_id) {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("数据不存在或无权访问"))
+    }
 }
 
 /// 联网搜索全局总闸：env `RG_WEB_SEARCH` 未设置或 `on` = 允许，`off` = 关闭
@@ -1201,6 +1259,8 @@ async fn chat_stream_handler(
     // 技能 prompt 在 unfold 之前同步解析（锁内取数 → drop guard），
     // clone 进闭包后 rig / cloud / legacy 分支共用
     let user_id = user.map(|u| (u.0).0);
+    // 归属校验前置：携带 sessionId 时必须属于当前用户，否则 404（不泄露存在性）
+    verify_chat_session_owned(&state, req.session_id.as_deref(), user_id.as_deref())?;
     let skills = resolve_skills_prompt(&state, req.agent_id.as_deref(), user_id.as_deref());
 
     let backend = crate::llm::general_chat_backend();
@@ -1575,6 +1635,31 @@ async fn nlq_confirm_handler(
             "Unknown intent_type: {}",
             req.intent_type
         ))),
+    }
+}
+
+#[cfg(test)]
+mod session_ownership_tests {
+    use super::*;
+    use crate::types::Session;
+
+    fn session(user_id: &str) -> Session {
+        Session {
+            id: "s-1".to_string(),
+            user_id: user_id.to_string(),
+            title: None,
+            created_at: "t".to_string(),
+            updated_at: "t".to_string(),
+        }
+    }
+
+    /// 归属判定语义：本人通过；跨用户与不存在一律拒绝（handler 层映射为
+    /// 404「数据不存在或无权访问」，不泄露存在性）
+    #[test]
+    fn session_owned_by_semantics() {
+        assert!(session_owned_by(Some(&session("u1")), "u1"));
+        assert!(!session_owned_by(Some(&session("u2")), "u1"));
+        assert!(!session_owned_by(None, "u1"));
     }
 }
 
