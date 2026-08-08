@@ -8,6 +8,9 @@ import type {
   AgentSkill,
   CreateDigitalAgentRequest,
   DigitalAgent,
+  PutSkillBindingsRequest,
+  SkillBinding,
+  SkillPackage,
 } from './types';
 import { ROUTE_MODES } from './types';
 import { ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner, StatusBadge } from './shared';
@@ -557,6 +560,11 @@ function SkillPanel({ agentId, agentName }: { agentId: string; agentName: string
         </div>
       )}
 
+      {/* 技能包绑定区（与单文档技能列表并列） */}
+      <div className="border-t pt-3" style={{ borderColor: 'var(--border-color)' }}>
+        <SkillBindingsPanel agentId={agentId} />
+      </div>
+
       {/* 删除技能确认 */}
       {deleteSkillTarget && (
         <ConfirmDialog
@@ -567,6 +575,180 @@ function SkillPanel({ agentId, agentName }: { agentId: string; agentName: string
           onConfirm={handleSkillDelete}
           onCancel={() => setDeleteSkillTarget(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 技能包绑定子面板：展示该数字人已绑定的技能包（可解绑、可排序），
+ * 下拉选择未绑定的包新增绑定；每次变更即 PUT 全量替换。
+ */
+function SkillBindingsPanel({ agentId }: { agentId: string }) {
+  const [bindings, setBindings] = useState<SkillBinding[]>([]);
+  const [packages, setPackages] = useState<SkillPackage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [selectedPackageId, setSelectedPackageId] = useState('');
+
+  const sortBindings = (list: SkillBinding[]) =>
+    [...list].sort((a, b) => a.sortOrder - b.sortOrder);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const [bs, pkgs] = await Promise.all([
+        apiGet<SkillBinding[]>(`/api/admin/digital-agents/${agentId}/skill-bindings`),
+        apiGet<SkillPackage[]>('/api/admin/skill-packages'),
+      ]);
+      setBindings(sortBindings(bs));
+      setPackages(pkgs);
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  /** 全量替换提交：sortOrder 按当前顺序重新编号 */
+  const putBindings = async (next: SkillBinding[]) => {
+    setSaving(true);
+    setError('');
+    try {
+      const body: PutSkillBindingsRequest = {
+        bindings: next.map((b, i) => ({ packageId: b.packageId, sortOrder: i })),
+      };
+      const result = await apiPut<SkillBinding[]>(
+        `/api/admin/digital-agents/${agentId}/skill-bindings`,
+        body,
+      );
+      setBindings(sortBindings(result));
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+      await fetchAll();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const moveBinding = (index: number, delta: number) => {
+    const next = [...bindings];
+    const target = index + delta;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    putBindings(next);
+  };
+
+  const unbind = (packageId: string) => {
+    putBindings(bindings.filter((b) => b.packageId !== packageId));
+  };
+
+  const bind = () => {
+    if (!selectedPackageId) return;
+    const pkg = packages.find((p) => p.id === selectedPackageId);
+    setSelectedPackageId('');
+    if (!pkg) return;
+    putBindings([...bindings, { agentId, packageId: pkg.id, sortOrder: bindings.length, packageDisplayName: pkg.displayName }]);
+  };
+
+  const boundIds = new Set(bindings.map((b) => b.packageId));
+  const unboundPackages = packages.filter((p) => !boundIds.has(p.id));
+
+  if (loading) return <LoadingSpinner text="加载技能包绑定中…" />;
+
+  return (
+    <div className="space-y-2">
+      {error && <ErrorBanner message={error} />}
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+          绑定技能包（{bindings.length}）
+        </span>
+        <div className="flex items-center gap-2">
+          <select
+            className="input w-44 py-1 text-xs"
+            value={selectedPackageId}
+            onChange={(e) => setSelectedPackageId(e.target.value)}
+            disabled={saving || unboundPackages.length === 0}
+          >
+            <option value="">
+              {unboundPackages.length === 0 ? '无可绑定的技能包' : '选择技能包…'}
+            </option>
+            {unboundPackages.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.displayName}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="text-xs transition hover:underline disabled:cursor-not-allowed disabled:opacity-40 disabled:no-underline"
+            style={{ color: 'var(--accent-color)' }}
+            disabled={!selectedPackageId || saving}
+            onClick={bind}
+          >
+            + 绑定
+          </button>
+        </div>
+      </div>
+
+      {bindings.length === 0 ? (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          未绑定任何技能包；技能包在管理后台「技能包」页签导入。
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {bindings.map((b, i) => (
+            <div
+              key={b.packageId}
+              className="flex items-center justify-between rounded-lg border px-3 py-2"
+              style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {i + 1}.
+                </span>
+                <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                  {b.packageDisplayName}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="text-xs transition hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+                  style={{ color: 'var(--accent-color)' }}
+                  disabled={saving || i === 0}
+                  onClick={() => moveBinding(i, -1)}
+                >
+                  上移
+                </button>
+                <button
+                  type="button"
+                  className="text-xs transition hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+                  style={{ color: 'var(--accent-color)' }}
+                  disabled={saving || i === bindings.length - 1}
+                  onClick={() => moveBinding(i, 1)}
+                >
+                  下移
+                </button>
+                <button
+                  type="button"
+                  className="text-xs transition hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+                  style={{ color: 'var(--danger-color)' }}
+                  disabled={saving}
+                  onClick={() => unbind(b.packageId)}
+                >
+                  解绑
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

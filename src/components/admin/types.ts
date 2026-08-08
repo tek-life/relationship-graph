@@ -108,6 +108,63 @@ export interface AdminUser {
   updatedAt: string;
 }
 
+/** 技能包文件 */
+export interface SkillPackageFile {
+  id: string;
+  packageId: string;
+  relPath: string;
+  content: string;
+  sizeChars: number;
+}
+
+/** 技能包（多文件） */
+export interface SkillPackage {
+  id: string;
+  slug: string;
+  displayName: string;
+  description: string | null;
+  sourceKind: 'inline' | 'imported';
+  totalChars: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** GET /:id 时携带；列表接口不返回文件内容 */
+  files?: SkillPackageFile[];
+}
+
+/** 创建技能包请求体（内联） */
+export interface CreateSkillPackageRequest {
+  displayName: string;
+  description?: string;
+  files: { relPath: string; content: string }[];
+}
+
+/** 导入技能包请求体 */
+export interface ImportSkillPackageRequest {
+  name?: string;
+  /** relPath → content 的映射 */
+  files: Record<string, string>;
+}
+
+/** 导入技能包响应 */
+export interface ImportSkillPackageResponse {
+  package: SkillPackage;
+  report: { fileCount: number; totalChars: number; overBudget: boolean };
+}
+
+/** 数字人↔技能包绑定 */
+export interface SkillBinding {
+  agentId: string;
+  packageId: string;
+  sortOrder: number;
+  packageDisplayName: string;
+}
+
+/** 全量替换绑定请求体 */
+export interface PutSkillBindingsRequest {
+  bindings: { packageId: string; sortOrder: number }[];
+}
+
 /** 技能触发场景选项 */
 export const TRIGGER_SCENARIOS = ['always', 'on_mention', 'manual'] as const;
 export type TriggerScenario = (typeof TRIGGER_SCENARIOS)[number];
