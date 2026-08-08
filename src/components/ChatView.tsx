@@ -25,6 +25,7 @@ import ImageOcrButton, { type ImageOcrHandle } from './ImageOcrButton';
 import DocumentAttachButton, { type DocumentAttachment } from './DocumentAttachButton';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
+import { isLastAssistantMessage } from '../hooks/chatMessageOps';
 import { DIGITAL_AGENTS, CONTACT_MANAGER_AGENT_ID, type DigitalAgent } from '../services/digitalAgents';
 import { resolveTextDisplay } from '../services/contentPolicy';
 import type { NlqResponse } from '../types';
@@ -69,6 +70,8 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
     sendMessage,
     stopGeneration,
     retryLast,
+    regenerate,
+    editAndResend,
     confirmDraft,
   } = useChat(userId);
 
@@ -256,6 +259,22 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
     [updateSessionTitle],
   );
 
+  // 重新生成最后一条 assistant 回复（生成进行中禁用，由 ChatBubble 按钮展示）
+  const handleRegenerate = useCallback(
+    async (messageId: string) => {
+      await regenerate(messageId);
+    },
+    [regenerate],
+  );
+
+  // 编辑重发 user 消息（截断后续消息后用新文本重新发送）
+  const handleEditResend = useCallback(
+    async (messageId: string, newText: string) => {
+      await editAndResend(messageId, newText);
+    },
+    [editAndResend],
+  );
+
   // 会话删除（先确认，删除当前会话后由 useChat 自动切换/回到空态）
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
@@ -286,6 +305,7 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
   }, []);
 
   const busy = loading || voice.transcribing;
+  const generating = loading || streaming;
   const hasMessages = messages.length > 0;
   const panelIsVisible = Boolean(panelContent);
 
@@ -348,6 +368,14 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
                         onClosePanel={closePanel}
                         onConfirm={handleConfirm}
                         onRetry={retryLast}
+                        generating={generating}
+                        canRegenerate={
+                          !message.retryable &&
+                          !message.streaming &&
+                          isLastAssistantMessage(messages, message.id)
+                        }
+                        onRegenerate={handleRegenerate}
+                        onEditResend={handleEditResend}
                       />
                     ))}
                     <div ref={messagesEndRef} />
@@ -494,11 +522,54 @@ interface ChatBubbleProps {
   onClosePanel: () => void;
   onConfirm: (intentType: string, data: Record<string, unknown>) => Promise<void>;
   onRetry: () => Promise<void>;
+  /** 生成进行中（loading 或 streaming），期间禁用重新生成/编辑重发 */
+  generating: boolean;
+  /** 是否为最后一条 assistant 文本消息（仅此条展示「重新生成」） */
+  canRegenerate: boolean;
+  onRegenerate: (messageId: string) => Promise<void>;
+  onEditResend: (messageId: string, newText: string) => Promise<void>;
 }
 
-function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfirm, onRetry }: ChatBubbleProps) {
+function ChatBubble({
+  message,
+  onPersonClick,
+  onShowPanel,
+  onClosePanel,
+  onConfirm,
+  onRetry,
+  generating,
+  canRegenerate,
+  onRegenerate,
+  onEditResend,
+}: ChatBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+
+  // user 消息编辑态：进入后替换气泡内容为 textarea，提交后走编辑重发
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const startEdit = useCallback(() => {
+    setDraft(message.content);
+    setEditing(true);
+  }, [message.content]);
+
+  const submitEdit = useCallback(async () => {
+    const text = draft.trim();
+    if (!text) return;
+    setEditing(false);
+    await onEditResend(message.id, text);
+  }, [draft, message.id, onEditResend]);
+
+  const handleEditKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        void submitEdit();
+      }
+    },
+    [submitEdit],
+  );
 
   // 系统消息居中显示
   if (isSystem) {
@@ -553,6 +624,39 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
               }`}
               style={bubbleStyle}
             >
+              {/* user 消息编辑态：textarea + 取消/发送 */}
+              {isUser && editing ? (
+                <div className="space-y-2 text-left">
+                  <textarea
+                    autoFocus
+                    rows={3}
+                    className="w-full min-w-[18rem] resize-y rounded-xl border bg-transparent px-3 py-2 text-[15px] leading-7 outline-none focus:ring-1"
+                    style={{ borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onKeyDown={handleEditKeyDown}
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      className="rounded-full px-3 py-1 text-xs transition hover:bg-slate-100"
+                      style={{ color: 'var(--text-secondary)' }}
+                      onClick={() => setEditing(false)}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-full bg-slate-800 px-3 py-1 text-xs font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={!draft.trim()}
+                      onClick={() => void submitEdit()}
+                    >
+                      发送
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
               {/* 思考过程（流式中默认展开，结束后折叠） */}
               {!isUser && message.thinking && (
                 <ThinkingBlock thinking={message.thinking} streaming={Boolean(message.streaming)} />
@@ -648,14 +752,28 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
                   />
                 </div>
               )}
+                </>
+              )}
             </div>
 
-            {/* 助手文本消息工具条：复制原文 / 下载 .md / 在面板打开 */}
+            {/* user 消息悬停工具条：编辑重发入口 */}
+            {isUser && !editing && (
+              <div className="flex justify-end px-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                <ToolbarActionButton onClick={startEdit} disabled={generating}>
+                  编辑
+                </ToolbarActionButton>
+              </div>
+            )}
+
+            {/* 助手文本消息工具条：复制原文 / 下载 .md / 在面板打开 / 重新生成 */}
             {isAssistantText && (
               <MessageToolbar
                 content={fullContent}
                 title={message.attachment?.title ?? '回复内容.md'}
                 onShowPanel={onShowPanel}
+                canRegenerate={canRegenerate}
+                regenerateDisabled={generating}
+                onRegenerate={() => void onRegenerate(message.id)}
               />
             )}
           </div>
@@ -781,9 +899,21 @@ interface MessageToolbarProps {
   content: string;
   title: string;
   onShowPanel: (content: string, title: string) => void;
+  /** 是否为最后一条 assistant 回复（仅此条展示重新生成入口） */
+  canRegenerate: boolean;
+  /** 生成进行中时禁用重新生成 */
+  regenerateDisabled: boolean;
+  onRegenerate: () => void;
 }
 
-function MessageToolbar({ content, title, onShowPanel }: MessageToolbarProps) {
+function MessageToolbar({
+  content,
+  title,
+  onShowPanel,
+  canRegenerate,
+  regenerateDisabled,
+  onRegenerate,
+}: MessageToolbarProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
@@ -807,16 +937,30 @@ function MessageToolbar({ content, title, onShowPanel }: MessageToolbarProps) {
       <ToolbarActionButton onClick={() => onShowPanel(content, title)}>
         在面板打开
       </ToolbarActionButton>
+      {canRegenerate && (
+        <ToolbarActionButton onClick={onRegenerate} disabled={regenerateDisabled}>
+          重新生成
+        </ToolbarActionButton>
+      )}
     </div>
   );
 }
 
-function ToolbarActionButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function ToolbarActionButton({
+  children,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
-      className="rounded-full px-2 py-0.5 text-xs transition hover:bg-slate-100"
+      className="rounded-full px-2 py-0.5 text-xs transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       style={{ color: 'var(--text-secondary)' }}
+      disabled={disabled}
       onClick={onClick}
     >
       {children}
