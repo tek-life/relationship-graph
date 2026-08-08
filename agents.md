@@ -274,7 +274,7 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 
 **P1 — 对话体验核心（约 7-10 人天）**
 
-4. **流式输出全链路**：当前全部 `stream:false`，reqwest 未启用 stream feature；需后端 Axum SSE 端点 + 前端 ReadableStream 增量渲染 + 停止生成按钮（AbortController）。依赖 provider 层。估 3-5 天。
+4. **流式输出全链路**（✅ 已完成，2026-08-08 对账确认：SSE 端点、前端增量渲染、停止生成均已落地）：~~当前全部 `stream:false`，reqwest 未启用 stream feature~~——`/api/chat/stream` SSE 端点（step/thinking_delta/text_delta/done/error 事件）、前端 `stream.ts` ReadableStream 分帧渲染、ChatView 停止生成按钮均已实现。原估 3-5 天。
 5. **上下文窗口管理**：全服务端 `num_ctx` / `max_tokens` 零命中（Ollama 默认 4096），无输入截断（`profile_qa` 的 generate_profile 把全部历史一次性拼入，有超窗隐患）；需设置 `num_ctx` 8192-16384、`max_tokens` 上限、历史注入 token 预算。估 1 天。
 6. **重试退避与失败显性提示**：无 retry / backoff；抽取失败静默降级为 confidence=0 的空草稿；需指数退避重试（超时 / 5xx 重试 1-2 次）、JSON 解析失败带错误信息纠错重试 1 次、失败时明确报错、前端错误气泡加重试按钮。估 2-3 天。
 7. **按场景模型配置与 token 计量**：当前仅环境变量全局单一模型；需模型配置表 + 按场景绑定（chat / extract / summarize）+ admin 配置 + 记录 provider / model / 耗时 / token usage 元数据（不落内容）。依赖 provider 层与 API Key 存储。估 1-2 天。
@@ -282,7 +282,7 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 **P2 — 锦上添花（约 4-6 人天）**
 
 8. **消息重新生成与编辑重发**：依赖流式输出。估 2-3 天。
-9. **Markdown 渲染升级**：自研 `MarkdownContent.tsx` 不支持表格 / 图片 / 语法高亮，而大模型高频输出表格；换 react-markdown + remark-gfm。估 0.5 天。
+9. **Markdown 渲染升级**（✅ 已完成，2026-08-08 对账确认：react-markdown@10 + remark-gfm@4 已引入）：~~自研 `MarkdownContent.tsx` 不支持表格 / 图片 / 语法高亮~~——现 `MarkdownContent.tsx` 基于 react-markdown + remark-gfm，支持 GFM 表格与代码高亮。原估 0.5 天。
 10. **压缩竞态防护**（✅ 已实现 2026-08-08，见 §5.8）：~~两个并发请求同时越过 50 条压缩阈值会重复压缩~~——已加 `AppState.compressing_sessions` per-session 内存标记。
 11. **reqwest Client 单例化**：当前每次 LLM 调用新建 TCP 连接，应将 Client 放入 AppState 复用。估 0.5 天。
 
