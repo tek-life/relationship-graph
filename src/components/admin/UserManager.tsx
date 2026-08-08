@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiGet, apiPut } from '../../services/api';
 import type { AdminUser } from './types';
-import { ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner } from './shared';
+import { AdminPageHeader, ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner } from './shared';
 
 /** 角色徽标颜色 */
 function RoleBadge({ role }: { role: string }) {
@@ -84,9 +84,11 @@ export default function UserManager() {
     <div className="space-y-4">
       {error && <ErrorBanner message={error} />}
 
-      <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-        用户列表（{users.length}）
-      </h3>
+      {/* 统一页头范式：标题 + 描述（本页无主操作） */}
+      <AdminPageHeader
+        title="用户管理"
+        description={`查看用户列表并调整角色（当前 ${users.length} 位）`}
+      />
 
       {users.length === 0 ? (
         <EmptyState text="暂无用户。" />

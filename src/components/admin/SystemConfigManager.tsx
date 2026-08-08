@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiDelete, apiGet, apiPut } from '../../services/api';
 import { Badge, Card, ConfirmDialog, ToastProvider, useToast } from '../ui';
 import type { BadgeVariant } from '../ui';
-import { ErrorBanner, LoadingSpinner } from './shared';
+import { AdminPageHeader, ErrorBanner, LoadingSpinner } from './shared';
 import type { CloudApiKeySource, CloudApiKeyStatus, SystemConfig } from './types';
 
 /** 生效来源的展示文案与徽标语义 */
@@ -238,11 +238,11 @@ function SystemConfigInner() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-          系统设置
-        </h3>
-      </div>
+      {/* 统一页头范式：标题 + 描述（本页无页头主操作，保存入口在各配置卡片内） */}
+      <AdminPageHeader
+        title="系统设置"
+        description="云端大模型 API Key 等全局配置，保存后仅展示掩码"
+      />
 
       {error && <ErrorBanner message={error} />}
 

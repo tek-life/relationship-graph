@@ -16,7 +16,7 @@ import {
 } from '../../services/skillDoc';
 import type { SkillPackagePreview } from '../../services/skillDoc';
 import MarkdownContent from '../MarkdownContent';
-import { ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner, StatusBadge } from './shared';
+import { AdminPageHeader, ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner, StatusBadge } from './shared';
 import type { ImportSkillPackageResponse, SkillPackage, SkillPackageFile } from './types';
 
 /** 来源徽标 */
@@ -178,24 +178,26 @@ export default function SkillPackageManager() {
     <div className="space-y-4">
       {error && <ErrorBanner message={error} />}
 
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-          技能包列表（{packages.length}）
-        </h3>
-        <label className="btn-primary cursor-pointer">
-          导入 zip 技能包
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".zip"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleZipSelect(f);
-            }}
-          />
-        </label>
-      </div>
+      {/* 统一页头范式：标题 + 描述 + 主操作区（zip 导入入口） */}
+      <AdminPageHeader
+        title="技能包"
+        description={`导入与管理多文件技能包，可绑定到数字人（当前 ${packages.length} 个）`}
+        actions={
+          <label className="btn-primary cursor-pointer">
+            导入 zip 技能包
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".zip"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleZipSelect(f);
+              }}
+            />
+          </label>
+        }
+      />
 
       <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
         上限：文件数 ≤ {PACKAGE_LIMITS.maxFiles}、单文件 ≤ 200KB、总字符 ≤{' '}

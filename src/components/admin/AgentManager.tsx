@@ -13,7 +13,14 @@ import type {
   SkillPackage,
 } from './types';
 import { ROUTE_MODES } from './types';
-import { ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner, StatusBadge } from './shared';
+import {
+  AdminPageHeader,
+  ConfirmDialog,
+  EmptyState,
+  ErrorBanner,
+  LoadingSpinner,
+  StatusBadge,
+} from './shared';
 import SkillForm from './SkillForm';
 
 /** 逗号分隔 → 数组 */
@@ -181,16 +188,18 @@ export default function AgentManager() {
     <div className="space-y-4">
       {error && <ErrorBanner message={error} />}
 
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-          数字人列表（{agents.length}）
-        </h3>
-        {editingId === null && (
-          <button type="button" className="btn-primary" onClick={startCreate}>
-            + 新建数字人
-          </button>
-        )}
-      </div>
+      {/* 统一页头范式：标题 + 描述 + 主操作区（编辑表单展开时隐藏主操作） */}
+      <AdminPageHeader
+        title="数字人管理"
+        description={`配置数字人档案、路由模式与技能绑定（当前 ${agents.length} 个）`}
+        actions={
+          editingId === null ? (
+            <button type="button" className="btn-primary" onClick={startCreate}>
+              + 新建数字人
+            </button>
+          ) : undefined
+        }
+      />
 
       {/* 创建/编辑表单 */}
       {editingId !== null && (
@@ -699,7 +708,7 @@ function SkillBindingsPanel({ agentId }: { agentId: string }) {
 
       {bindings.length === 0 ? (
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          未绑定任何技能包；技能包在管理后台「技能包」页签导入。
+          未绑定任何技能包；技能包在管理后台「技能包」页导入。
         </p>
       ) : (
         <div className="space-y-2">

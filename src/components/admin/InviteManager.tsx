@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiGet, apiPost } from '../../services/api';
 import type { CreateInviteResponse, InviteToken } from './types';
-import { EmptyState, ErrorBanner, LoadingSpinner } from './shared';
+import { AdminPageHeader, EmptyState, ErrorBanner, LoadingSpinner } from './shared';
 
 /** 邀请状态判定 */
 function getInviteStatus(invite: InviteToken): { label: string; color: string } {
@@ -113,19 +113,21 @@ export default function InviteManager() {
     <div className="space-y-4">
       {error && <ErrorBanner message={error} />}
 
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-          邀请管理（{invites.length}）
-        </h3>
-        <button
-          type="button"
-          className="btn-primary"
-          onClick={handleCreate}
-          disabled={creating}
-        >
-          {creating ? '生成中…' : '+ 生成邀请链接'}
-        </button>
-      </div>
+      {/* 统一页头范式：标题 + 描述 + 主操作区 */}
+      <AdminPageHeader
+        title="邀请管理"
+        description={`生成邀请制注册链接并跟踪使用状态（当前 ${invites.length} 条）`}
+        actions={
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={handleCreate}
+            disabled={creating}
+          >
+            {creating ? '生成中…' : '+ 生成邀请链接'}
+          </button>
+        }
+      />
 
       {/* 新生成的邀请链接卡片 */}
       {newInvite && (

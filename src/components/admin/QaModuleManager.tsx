@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { apiDelete, apiGet, apiPost, apiPut } from '../../services/api';
 import type { CreateQaInstructionModuleRequest, QaInstructionModule } from './types';
-import { ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner, StatusBadge } from './shared';
+import { AdminPageHeader, ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner, StatusBadge } from './shared';
 
 /** 表单状态 */
 interface QaFormState {
@@ -172,16 +172,18 @@ export default function QaModuleManager() {
     <div className="space-y-4">
       {error && <ErrorBanner message={error} />}
 
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-          内观画像指令模块（{modules.length}）
-        </h3>
-        {editingId === null && (
-          <button type="button" className="btn-primary" onClick={startCreate}>
-            + 新建模块
-          </button>
-        )}
-      </div>
+      {/* 统一页头范式：标题 + 描述 + 主操作区（编辑表单展开时隐藏主操作） */}
+      <AdminPageHeader
+        title="内观画像指令"
+        description={`配置内观画像生成的指令模块与排序（当前 ${modules.length} 个）`}
+        actions={
+          editingId === null ? (
+            <button type="button" className="btn-primary" onClick={startCreate}>
+              + 新建模块
+            </button>
+          ) : undefined
+        }
+      />
 
       {/* 创建/编辑表单 */}
       {editingId !== null && (
