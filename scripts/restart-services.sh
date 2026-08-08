@@ -13,7 +13,8 @@ set -euo pipefail
 # 说明：
 #   - 生产默认 LLM 通道为阿里百炼云端（RG_LLM_BACKEND=cloud），无需 Ollama；
 #     回退本地模型可设 RG_LLM_BACKEND=legacy（配合 RG_USE_OLLAMA=1）
-#   - 停止逻辑按端口动态查持有 PID，不会误杀其它进程
+#   - 停止逻辑按命令行精确匹配本项目进程（pgrep -f）并以 ss 校验端口释放，
+#     非 root 下 lsof 无法列出 :80 等端口持有者，故不依赖 lsof
 #   - Ollama 默认不重启（本地模型常驻内存，重启会触发重新加载）
 #   - 停止后委托 start-services.sh 完成拉起与健康检查
 #   - 数据库使用 db.key 密钥文件自动解锁，重启后无需人工解锁
@@ -35,12 +36,18 @@ for arg in "$@"; do
   esac
 done
 
-# 按端口停止进程：stop_by_port <端口> <服务名>
-stop_by_port() {
-  local port="$1"
+# 按命令行精确匹配停止服务：stop_by_pattern <进程命令行匹配模式> <服务名> <监听端口>
+# 说明：非 root 下 lsof/ss 均可能无法列出 :80 等端口的持有 PID（实测 ss -tlnp
+# 对 caddy 的 :80 监听也不显示 pid），因此以 pgrep -f 精确匹配本项目进程的
+# 命令行作为主手段；模式均包含项目专有标识（Caddyfile 文件名 / 二进制全路径 /
+# 端口参数），不会误杀其它进程。停止后再用 ss 校验端口是否已释放。
+# 注意：模式均以 ^ 锚定命令行开头，避免 pgrep -f 误匹配包含模式文本的其它命令行。
+stop_by_pattern() {
+  local pattern="$1"
   local name="$2"
+  local port="$3"
   local pids
-  pids="$(lsof -t -i ":${port}" -sTCP:LISTEN 2>/dev/null || true)"
+  pids="$(pgrep -f "${pattern}" 2>/dev/null || true)"
   if [ -z "${pids}" ]; then
     echo "  ${name}（端口 ${port}）：未在运行"
     return
@@ -48,17 +55,21 @@ stop_by_port() {
   echo "  停止 ${name}（端口 ${port}，PID: ${pids//$'\n'/ }）"
   # shellcheck disable=SC2086
   kill ${pids} 2>/dev/null || true
-  # 最多等待 10 秒确认退出
+  # 最多等待 10 秒确认退出（进程全部消失且端口不再有可见持有者）
   for _ in {1..10}; do
-    if ! lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+    if ! pgrep -f "${pattern}" >/dev/null 2>&1 \
+      && ! ss -tlnp 2>/dev/null | grep -Eq "[:.]${port}[[:space:]]"; then
       echo "  ${name} 已停止"
       return
     fi
     sleep 1
   done
   echo "  [WARN] ${name} 未在 10 秒内退出，执行强制终止"
-  # shellcheck disable=SC2086
-  kill -9 ${pids} 2>/dev/null || true
+  pids="$(pgrep -f "${pattern}" 2>/dev/null || true)"
+  if [ -n "${pids}" ]; then
+    # shellcheck disable=SC2086
+    kill -9 ${pids} 2>/dev/null || true
+  fi
 }
 
 echo ""
@@ -88,13 +99,15 @@ if systemctl --user is-enabled relationship-graph >/dev/null 2>&1; then
   systemctl --user stop relationship-graph || true
   echo "  Axum 服务端已停止（将由 start-services.sh 通过 systemctl 拉起）"
 else
-  stop_by_port 8790 "Axum 服务端"
+  # 精确匹配本项目 release 二进制全路径（^ 锚定），不会误杀其它进程
+  stop_by_pattern "^${PROJECT_DIR}/server/target/release/relationship-graph-server" "Axum 服务端" 8790
 fi
 
-# 前端：开发模式 Vite（1420）/ 生产模式 Caddy（8080）或 http.server（8000）
-stop_by_port 1420 "Vite 开发服务器"
-stop_by_port 8080 "Caddy 反向代理"
-stop_by_port 8000 "Python http.server"
+# 前端：开发模式 Vite（1420）/ 生产模式 Caddy（RG_WEB_PORT，默认 80）或 http.server（8000）
+# Caddy 匹配 start-services.sh 生成的专有 Caddyfile 路径，只杀本项目的 caddy 实例
+stop_by_pattern "^node .*vite" "Vite 开发服务器" 1420
+stop_by_pattern "^caddy run --config /tmp/relationship-graph.Caddyfile" "Caddy 反向代理" "${RG_WEB_PORT:-80}"
+stop_by_pattern "^python3 -m http.server 8000" "Python http.server" 8000
 
 # Ollama（默认保留；云端模式下 Ollama 本就不参与 LLM 链路）
 if [ "${WITH_OLLAMA}" -eq 1 ]; then
