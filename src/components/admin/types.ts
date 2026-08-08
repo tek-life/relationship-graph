@@ -197,3 +197,49 @@ export interface SystemConfig {
 export interface UpdateCloudApiKeyRequest {
   apiKey: string;
 }
+
+// ---------- 按场景模型配置（P1-7） ----------
+
+/** 单场景模型配置项（GET /api/admin/model-configs 列表元素） */
+export interface ModelConfigItem {
+  /** 场景键：local / chat / chat_search / extract / summarize */
+  scenario: string;
+  /** 场景说明（展示用） */
+  description: string;
+  /** 硬编码默认模型 */
+  defaultModel: string;
+  /** 数据库配置值；未配置为 null */
+  model: string | null;
+  /** env 覆盖值（设置了 RG_*_MODEL 时）；未设置为 null */
+  envOverride: string | null;
+  /** 实际生效模型（env > DB > 默认） */
+  effectiveModel: string | null;
+}
+
+/** GET /api/admin/model-configs 响应 */
+export interface ModelConfigListResponse {
+  configs: ModelConfigItem[];
+}
+
+/** PUT /api/admin/model-configs/:scenario 请求体 */
+export interface UpdateModelConfigRequest {
+  model: string;
+}
+
+/** LLM 用量元数据行（只含 token 数/耗时等元数据，无对话内容） */
+export interface LlmUsageRow {
+  id: string;
+  scenario: string;
+  channel: string;
+  model: string;
+  fnName: string;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  elapsedMs: number;
+  createdAt: string;
+}
+
+/** GET /api/admin/llm-usages 响应 */
+export interface LlmUsageListResponse {
+  usages: LlmUsageRow[];
+}

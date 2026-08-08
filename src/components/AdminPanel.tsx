@@ -3,9 +3,10 @@
 // 各子页统一使用 AdminPageHeader 页头范式（标题 + 描述 + 主操作区）。
 
 import { useState } from 'react';
-import { Bot, Brain, Package, Settings, Ticket, Users } from 'lucide-react';
+import { Bot, Brain, Cpu, Package, Settings, Ticket, Users } from 'lucide-react';
 import AgentManager from './admin/AgentManager';
 import InviteManager from './admin/InviteManager';
+import ModelConfigManager from './admin/ModelConfigManager';
 import QaModuleManager from './admin/QaModuleManager';
 import SkillPackageManager from './admin/SkillPackageManager';
 import SystemConfigManager from './admin/SystemConfigManager';
@@ -13,7 +14,7 @@ import UserManager from './admin/UserManager';
 import { AdminSideNav } from './admin/shared';
 import type { AdminNavGroup } from './admin/shared';
 
-type AdminTab = 'agents' | 'skill-packages' | 'qa-modules' | 'users' | 'invites' | 'settings';
+type AdminTab = 'agents' | 'skill-packages' | 'qa-modules' | 'users' | 'invites' | 'model-configs' | 'settings';
 
 /** sidebar 分组结构：按功能域分为「智能配置」与「系统管理」两组 */
 const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
@@ -30,6 +31,7 @@ const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
     items: [
       { key: 'users', label: '用户管理', icon: Users },
       { key: 'invites', label: '邀请管理', icon: Ticket },
+      { key: 'model-configs', label: '模型配置', icon: Cpu },
       { key: 'settings', label: '系统设置', icon: Settings },
     ],
   },
@@ -58,6 +60,7 @@ export default function AdminPanel({ userId: _userId }: AdminPanelProps = {}) {
         {activeTab === 'qa-modules' && <QaModuleManager />}
         {activeTab === 'users' && <UserManager />}
         {activeTab === 'invites' && <InviteManager />}
+        {activeTab === 'model-configs' && <ModelConfigManager />}
         {activeTab === 'settings' && <SystemConfigManager />}
       </main>
     </div>
