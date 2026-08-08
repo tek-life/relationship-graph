@@ -11,8 +11,14 @@ import { routeQuery } from '../services/chatRouter';
 import { nlqConfirm } from '../services/db';
 import { getDigitalAgentById } from '../services/digitalAgents';
 import { resolveTextDisplay } from '../services/contentPolicy';
+import { parseAgentMention } from '../services/agentMention';
 import { streamChat, type StreamStep, type StreamChatOptions } from '../services/stream';
 import * as sessionApi from '../services/session';
+import {
+  truncateThroughMessage,
+  truncateBeforeMessage,
+  findPrecedingUserMessage,
+} from './chatMessageOps';
 import type {
   Session,
   ChatMessage,
@@ -92,6 +98,10 @@ export interface UseChatReturn {
   stopGeneration: () => void;
   /** 重试上一条失败的消息 */
   retryLast: () => Promise<void>;
+  /** 重新生成：移除目标 assistant 回复及其后续消息，用产生它的同一条 user 消息重新发起请求 */
+  regenerate: (assistantMessageId: string) => Promise<void>;
+  /** 编辑重发：截断目标 user 消息及其之后的所有消息，用新文本重新发起请求 */
+  editAndResend: (userMessageId: string, newText: string) => Promise<void>;
   /** 确认草稿 */
   confirmDraft: (intentType: string, data: Record<string, unknown>) => Promise<void>;
 }
@@ -502,7 +512,8 @@ export function useChat(userId?: string | null): UseChatReturn {
           },
           controller.signal,
           agentId ?? undefined,
-          options,
+          // 附带当前会话 id：后端据此校验归属并从 DB 组装历史（多轮对话）
+          { ...options, sessionId },
         );
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') {
@@ -719,6 +730,83 @@ export function useChat(userId?: string | null): UseChatReturn {
     }
   }, [loading, runNlqRequest, runStreamRequest]);
 
+  // 重新生成：删除目标 assistant 回复及其之后的消息，
+  // 以产生该回复的同一条 user 消息（不重复追加/持久化用户气泡）重新发起请求。
+  //
+  // 局限说明：后端暂无删除消息 API（server/src/api/session.rs 仅提供 list/add），
+  // 被移除的旧回复无法从服务端清除——本地截断后新回复照常 addMessage 落库；
+  // 重新加载该会话历史时旧回复仍会出现。待后端提供消息删除端点后补齐持久化清理。
+  const regenerate = useCallback(
+    async (assistantMessageId: string) => {
+      const sessionId = currentSessionRef.current;
+      if (!sessionId || loading || streaming) return;
+
+      // 取回产生该回复的原始 user 消息（持久化内容为含 @mention 前缀的原文）
+      const preceding = findPrecedingUserMessage(messages, assistantMessageId);
+      if (!preceding) return;
+      const { agentId, cleanedQuery } = parseAgentMention(preceding.content);
+      if (!cleanedQuery.trim()) return;
+
+      // 粘性 agentId 语义与普通发送保持一致（relationship 模式不参与粘性）
+      const sticky =
+        !agentId && stickyAgentId && isStickyEligible(stickyAgentId)
+          ? getDigitalAgentById(stickyAgentId)
+          : undefined;
+      const effectiveAgentId = agentId ?? sticky?.id;
+
+      setLoading(true);
+      setError('');
+      // 截断到该 user 消息为止（移除旧回复及其后的所有消息，仅本地状态）
+      setMessages((prev) => truncateThroughMessage(prev, preceding.id));
+
+      // 若与最近一次请求同源（重新生成最后一条回复的常见场景），沿用其联网搜索/文档选项
+      const last = lastRequestRef.current;
+      const options = last && last.text === cleanedQuery ? last.options : undefined;
+
+      try {
+        if (effectiveAgentId === 'contact_manager') {
+          await runNlqRequest(sessionId, cleanedQuery, effectiveAgentId, undefined);
+        } else {
+          await runStreamRequest(sessionId, cleanedQuery, effectiveAgentId, undefined, options);
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        setError(errMsg);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `assistant-error-${Date.now()}`,
+            role: 'assistant',
+            content: `抱歉，处理失败：${errMsg}`,
+            retryable: true,
+          },
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loading, streaming, messages, stickyAgentId, runNlqRequest, runStreamRequest],
+  );
+
+  // 编辑重发：截断目标 user 消息及其之后的所有消息，用新文本走标准发送链路
+  //（追加用户气泡 + 持久化 + @mention 路由），语义与在输入框重新发送一致。
+  //
+  // 局限说明：同 regenerate——后端暂无删除/更新消息 API，截断仅作用于本地状态；
+  // 新文本会以新消息落库，重新加载历史时被替换的旧消息仍会出现。
+  const editAndResend = useCallback(
+    async (userMessageId: string, newText: string) => {
+      const trimmed = newText.trim();
+      if (!trimmed || loading || streaming) return;
+      const { agentId, cleanedQuery } = parseAgentMention(trimmed);
+      if (!cleanedQuery) return;
+
+      // 仅本地状态截断（函数式更新保证先截断、后由 sendMessage 追加新气泡）
+      setMessages((prev) => truncateBeforeMessage(prev, userMessageId));
+      await sendMessage(cleanedQuery, agentId, undefined, trimmed);
+    },
+    [loading, streaming, sendMessage],
+  );
+
   // 确认草稿
   const confirmDraft = useCallback(
     async (intentType: string, data: Record<string, unknown>) => {
@@ -752,6 +840,8 @@ export function useChat(userId?: string | null): UseChatReturn {
     sendMessage,
     stopGeneration,
     retryLast,
+    regenerate,
+    editAndResend,
     confirmDraft,
   };
 }

@@ -37,6 +37,8 @@ export interface StreamChatOptions {
   webSearch?: boolean;
   /** 随请求提交的文档附件（已在前端抽取为纯文本） */
   documents?: StreamDocument[];
+  /** 当前会话 id：后端据此校验归属并从 DB 组装历史（多轮对话） */
+  sessionId?: string;
 }
 
 export interface StreamChatCallbacks {
@@ -72,9 +74,10 @@ export async function streamChat(
     headers.Authorization = `Bearer ${token}`;
   }
 
-  // 请求体按需附带 webSearch / documents（后端契约：均为可选字段）
+  // 请求体按需附带 webSearch / documents / sessionId（后端契约：均为可选字段）
   const payload: Record<string, unknown> = { query };
   if (agentId) payload.agentId = agentId;
+  if (options?.sessionId) payload.sessionId = options.sessionId;
   if (options?.webSearch) payload.webSearch = true;
   if (options?.documents && options.documents.length > 0) payload.documents = options.documents;
 

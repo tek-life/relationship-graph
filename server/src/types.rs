@@ -7,6 +7,10 @@ pub struct ChatRequest {
     /// 指定数字人 id（可选）：非空时在聊天 prompt 中注入该数字人的 SKILL 文档
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// 会话 id（可选）：非空时后端校验归属并从 DB 组装历史注入多轮对话；
+    /// 缺省（旧客户端仅传 query）保持单轮行为，向后兼容
+    #[serde(default)]
+    pub session_id: Option<String>,
     /// 是否启用联网搜索（可选）：仅云端通道生效，另受 env RG_WEB_SEARCH 总闸约束
     #[serde(default)]
     pub web_search: Option<bool>,
@@ -440,6 +444,100 @@ pub struct CreateAgentSkillRequest {
     pub is_active: Option<bool>,
 }
 
+// === 技能包（多文件技能 + 数字人多对多绑定） ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackage {
+    pub id: String,
+    pub slug: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub source_kind: String,
+    pub total_chars: usize,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    /// 仅详情接口携带文件内容，列表接口为 None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<SkillPackageFile>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackageFile {
+    pub id: String,
+    pub package_id: String,
+    pub rel_path: String,
+    pub content: String,
+    pub size_chars: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillBinding {
+    pub agent_id: String,
+    pub package_id: String,
+    pub sort_order: i32,
+    pub package_display_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSkillPackageRequest {
+    pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub files: Vec<SkillPackageFileInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPackageFileInput {
+    pub rel_path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSkillPackageRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub files: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSkillPackageReport {
+    pub file_count: usize,
+    pub total_chars: usize,
+    pub over_budget: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSkillPackageResponse {
+    #[serde(rename = "package")]
+    pub package: SkillPackage,
+    pub report: ImportSkillPackageReport,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSkillBindingsRequest {
+    #[serde(default)]
+    pub bindings: Vec<SkillBindingInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillBindingInput {
+    pub package_id: String,
+    pub sort_order: i32,
+}
+
 // === Profile QA 指令配置 ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -617,8 +715,20 @@ mod chat_request_tests {
             serde_json::from_str(r#"{"query":"你好"}"#).unwrap();
         assert_eq!(req.query, "你好");
         assert!(req.agent_id.is_none());
+        assert!(req.session_id.is_none());
         assert!(req.web_search.is_none());
         assert!(req.documents.is_none());
+    }
+
+    /// sessionId（camelCase）解析：显式传入与显式 null 均可
+    #[test]
+    fn chat_request_session_id_camel_case() {
+        let req: ChatRequest =
+            serde_json::from_str(r#"{"query":"继续","sessionId":"s-123"}"#).unwrap();
+        assert_eq!(req.session_id.as_deref(), Some("s-123"));
+        let req: ChatRequest =
+            serde_json::from_str(r#"{"query":"继续","sessionId":null}"#).unwrap();
+        assert!(req.session_id.is_none());
     }
 
     /// 新契约：webSearch + documents（camelCase 映射 fileName）
