@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { BoxSelect, Sparkles, X } from 'lucide-react';
 import cytoscape from 'cytoscape';
 import { pinyin } from 'pinyin-pro';
 import { inferRelationships, setRelationshipConfirmation } from '../services/db';
 import type { GraphData, GraphEdge, Person } from '../types';
+import GraphHelpPopover from './GraphHelpPopover';
+import GraphNodePopover, { type NodePopoverState } from './GraphNodePopover';
+import GraphPersonPicker from './GraphPersonPicker';
+import { Badge, Segmented } from './ui';
 
 interface Props {
   data: GraphData;
@@ -31,32 +35,27 @@ export default function GraphView({ data, personsById, onNodeClick, onRefresh, i
   }
 
   return (
-    <div>
+    <div className="flex h-full min-h-0 flex-col">
       <div className="mb-3 flex items-center justify-between">
-        <div className="flex gap-1 rounded-full bg-surface p-1">
-          <ViewButton active={view === 'directory'} onClick={() => setView('directory')}>通讯录</ViewButton>
-          <ViewButton active={view === 'network'} onClick={() => setView('network')}>关系网络</ViewButton>
-        </div>
+        <Segmented
+          ariaLabel="图谱视图切换"
+          value={view}
+          onChange={setView}
+          options={[
+            { label: '通讯录', value: 'directory' },
+            { label: '关系网络', value: 'network' },
+          ]}
+        />
         <span className="text-sm text-text-secondary">共 {persons.length} 人、{data.edges.length} 条关系</span>
       </div>
-      {view === 'directory' ? (
-        <ContactDirectory persons={persons} onSelect={onNodeClick} />
-      ) : (
-        <NetworkView data={data} personsById={personsById} onNodeClick={onNodeClick} onRefresh={onRefresh} initialFocusId={initialFocusId} />
-      )}
+      <div className="min-h-0 flex-1">
+        {view === 'directory' ? (
+          <ContactDirectory persons={persons} onSelect={onNodeClick} />
+        ) : (
+          <NetworkView data={data} personsById={personsById} onNodeClick={onNodeClick} onRefresh={onRefresh} initialFocusId={initialFocusId} />
+        )}
+      </div>
     </div>
-  );
-}
-
-function ViewButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-full px-4 py-1.5 text-sm font-medium ${active ? 'bg-card text-accent shadow' : 'text-text-secondary'}`}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -141,7 +140,7 @@ function ContactDirectory({ persons, onSelect }: { persons: Person[]; onSelect?:
   };
 
   return (
-    <div ref={wrapperRef} className="relative rounded-xl border bg-card shadow-sm">
+    <div ref={wrapperRef} className="relative flex h-full flex-col rounded-xl border bg-card shadow-sm">
       <div className="border-b p-4">
         <input
           type="search"
@@ -155,9 +154,10 @@ function ContactDirectory({ persons, onSelect }: { persons: Person[]; onSelect?:
         )}
       </div>
 
-      <div className="flex">
-        {/* 联系人分组网格 */}
-        <div className="h-[600px] flex-1 overflow-y-auto scroll-pt-2 p-4 pr-10">
+      {/* 通讯录主体：左侧分组网格 + 右侧字母索引，随视口撑满 */}
+      <div className="flex min-h-0 flex-1">
+        {/* 联系人分组网格：UX P1-9 去掉固定 h-[600px]，随视口撑满 */}
+        <div className="min-h-0 flex-1 overflow-y-auto scroll-pt-2 p-4 pr-10">
           {LETTERS.filter((letter) => groups.has(letter)).map((letter) => (
             <div
               key={letter}
@@ -303,6 +303,8 @@ const ME_EDGE_ID = '__me_edge__';
 function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
+  // UX P1-9：画布外层包裹容器，用于锚定节点单击浮层与悬停名片的坐标
+  const canvasWrapRef = useRef<HTMLDivElement>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [targetId, setTargetId] = useState<string | null>(null);
   const [focusInput, setFocusInput] = useState('');
@@ -320,6 +322,13 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
   /** notice 是否为错误（错误走 danger 语义色，普通提示走 accent） */
   const [noticeIsError, setNoticeIsError] = useState(false);
   const [tooltip, setTooltip] = useState<{ person: Person; x: number; y: number } | null>(null);
+  // UX P1-9：单击节点弹出的快捷浮层（查看详情 / 设为焦点）
+  const [nodePopover, setNodePopover] = useState<NodePopoverState | null>(null);
+  // cy 事件处理器在 effect 内闭包，用 ref 同步浮层开关状态避免重建实例
+  const nodePopoverOpenRef = useRef(false);
+  useEffect(() => {
+    nodePopoverOpenRef.current = nodePopover !== null;
+  }, [nodePopover]);
   // 外部初始焦点只应用一次，避免数据刷新后覆盖用户手动重置的焦点
   const appliedInitialFocusRef = useRef<string | null>(null);
 
@@ -448,6 +457,8 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
   useEffect(() => {
     if (!ref.current) return;
     boxModeRef.current = boxMode;
+    // 实例重建（数据/子图变化）时关闭旧浮层，避免坐标错位
+    setNodePopover(null);
 
     const baseNodes = visible ? data.nodes.filter((node) => visible.has(node.id)) : data.nodes;
     // 圈选过滤只在"我"为中心的全景模式下生效：仅保留选中节点
@@ -610,6 +621,10 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
     });
     cyRef.current = cy;
 
+    // UX P1-9：画布 flex-1 撑满后，容器尺寸变化（窗口缩放等）需同步 cy.resize()
+    const resizeObserver = new ResizeObserver(() => cy.resize());
+    resizeObserver.observe(ref.current);
+
     // UX P0-2：主题切换（data-theme）时重新套用画布样式，保持与 DOM 同主题
     const themeObserver = new MutationObserver(() => {
       cy.style(buildGraphStyle());
@@ -678,63 +693,67 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
           setSelection(new Set(ids));
           setBoxMode(false);
           boxModeRef.current = false;
+          setNodePopover(null);
         }
       }, 60);
     });
 
-    // 单击进入联系人详情；双击切换焦点。用定时器区分单击与双击
-    let tapTimer: ReturnType<typeof setTimeout> | null = null;
+    // UX P1-9：单击节点即弹快捷浮层（查看详情 / 设为焦点），
+    // 取消原 280ms 定时器区分单击/双击；单击“我”重置回全景
     cy.on('tap', 'node', (event) => {
       const id = event.target.id();
       setTooltip(null);
-      if (id === ME_ID || boxModeRef.current) return;
-      if (tapTimer) clearTimeout(tapTimer);
-      tapTimer = setTimeout(() => {
-        tapTimer = null;
-        onNodeClick?.(id);
-      }, 280);
-    });
-    cy.on('dbltap', 'node', (event) => {
-      if (tapTimer) {
-        clearTimeout(tapTimer);
-        tapTimer = null;
-      }
-      const id = event.target.id();
-      setTooltip(null);
+      if (boxModeRef.current) return;
       if (id === ME_ID) {
+        setNodePopover(null);
         setFocusId(null);
         setFocusInput('');
         return;
       }
-      setFocusId(id);
-      setFocusInput(labelById[id] ?? '');
-      setSelectedEdge(null);
-      setSelection(null);
+      const person = personsById[id];
+      if (!person) return;
+      const pos = event.target.renderedPosition();
+      setNodePopover({
+        person,
+        x: pos.x,
+        y: pos.y,
+        size: event.target.renderedWidth() || 40,
+      });
+    });
+    // 点击画布空白处收起节点浮层
+    cy.on('tap', (event) => {
+      if (event.target === cy) setNodePopover(null);
     });
     cy.on('tap', 'edge', (event) => {
       const id = event.target.id();
       if (id.startsWith('me-') || id === ME_EDGE_ID) return;
       const edge = data.edges.find((item) => item.id === id);
       setSelectedEdge(edge ?? null);
+      setNodePopover(null);
     });
     cy.on('mouseover', 'node', (event) => {
+      // 节点浮层打开时不再叠加悬停名片
+      if (nodePopoverOpenRef.current) return;
       const person = personsById[event.target.id()];
       if (!person) return;
       const pos = event.target.renderedPosition();
       setTooltip({ person, x: pos.x, y: pos.y });
     });
     cy.on('mouseout', 'node', () => setTooltip(null));
-    cy.on('pan zoom drag', () => setTooltip(null));
+    cy.on('pan zoom drag', () => {
+      setTooltip(null);
+      setNodePopover(null);
+    });
 
     return () => {
-      if (tapTimer) clearTimeout(tapTimer);
+      resizeObserver.disconnect();
       themeObserver.disconnect();
       // 保存视野，便于圈选模式切换重建实例后无缝恢复
       viewportRef.current = { sig, zoom: cy.zoom(), pan: cy.pan() };
       cyRef.current = null;
       cy.destroy();
     };
-  }, [data, personsById, onNodeClick, effectiveFocus, depthMap, visible, path, labelById, selection, boxMode]);
+  }, [data, personsById, effectiveFocus, depthMap, visible, path, selection, boxMode]);
 
   const handleInfer = async () => {
     setBusy(true);
@@ -774,83 +793,115 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
 
   const focusLabel = effectiveFocus ? labelById[effectiveFocus] : null;
 
+  // 工具栏选择器候选（替代原生 datalist）
+  const pickerOptions = useMemo(
+    () => data.nodes.map((node) => ({ id: node.id, label: node.label })),
+    [data.nodes],
+  );
+
+  /** 重置焦点回全景（与原“重置”按钮行为一致，额外收起节点浮层） */
+  const resetFocus = () => {
+    setFocusId(null);
+    setFocusInput('');
+    setTargetId(null);
+    setTargetInput('');
+    setNodePopover(null);
+  };
+
+  /** 浮层“设为焦点”：与原双击节点切焦点逻辑一致 */
+  const handleSetFocus = (id: string) => {
+    setFocusId(id);
+    setFocusInput(labelById[id] ?? '');
+    setSelectedEdge(null);
+    setSelection(null);
+    setNodePopover(null);
+  };
+
   return (
-    <div className="relative">
-      {/* 工具栏：焦点 / 路径目标 / AI 推断 */}
-      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border bg-card p-3 text-sm shadow-sm">
-        <label className="text-text-secondary">焦点</label>
-        <input
-          className="input !w-40 !py-1.5"
-          list="network-person-options"
-          placeholder="输入姓名聚焦"
-          value={focusInput}
-          onChange={(event) => {
-            setFocusInput(event.target.value);
-            resolveInput(event.target.value, setFocusId);
-          }}
-        />
-        {focusLabel && (
-          <>
-            <span className="rounded-full bg-accent-light px-3 py-1 text-accent">当前：{focusLabel}</span>
-            <button type="button" className="text-accent hover:underline" onClick={() => effectiveFocus && onNodeClick?.(effectiveFocus)}>
-              查看详情
-            </button>
-            <button
-              type="button"
-              className="text-text-secondary hover:underline"
-              onClick={() => { setFocusId(null); setFocusInput(''); setTargetId(null); setTargetInput(''); }}
-            >
-              重置
-            </button>
-          </>
-        )}
-        <span className="mx-1 h-5 w-px bg-line" />
-        <label className="text-text-secondary">找路径到</label>
-        <input
-          className="input !w-40 !py-1.5"
-          list="network-person-options"
-          placeholder="目标联系人"
-          value={targetInput}
-          disabled={!effectiveFocus}
-          onChange={(event) => {
-            setTargetInput(event.target.value);
-            resolveInput(event.target.value, setTargetId);
-          }}
-        />
-        <span className="mx-1 h-5 w-px bg-line" />
-        <button type="button" className="btn-secondary !py-1.5" onClick={handleInfer} disabled={busy}>
-          {busy ? '处理中...' : 'AI 推断关系'}
-        </button>
-        {pendingCount > 0 && <span className="rounded-full bg-warning-light px-3 py-1 text-warning">待确认 {pendingCount}</span>}
-        <span className="mx-1 h-5 w-px bg-line" />
-        <button
-          type="button"
-          className={`rounded px-3 py-1.5 text-sm font-medium ${boxMode ? 'bg-accent text-white' : 'bg-secondary text-text-secondary hover:bg-surface'}`}
-          disabled={!!effectiveFocus}
-          title={effectiveFocus ? '圈选仅在全景模式下可用，请先重置焦点' : '开启后按住左键拖拽框选联系人'}
-          onClick={() => setBoxMode((prev) => !prev)}
-        >
-          {boxMode ? '圈选中：拖拽框选' : '圈选'}
-        </button>
-        {selection && (
-          <>
-            <span className="rounded-full bg-success-light px-3 py-1 text-success">已圈选 {selection.size} 人</span>
-            <button type="button" className="text-text-secondary hover:underline" onClick={() => setSelection(null)}>
-              清除圈选
-            </button>
-          </>
-        )}
-        <datalist id="network-person-options">
-          {data.nodes.map((node) => <option key={node.id} value={node.label} />)}
-        </datalist>
+    <div className="relative flex h-full min-h-0 flex-col">
+      {/* 工具栏：UX P1-9 按功能分组——焦点与路径 / 操作工具 / 帮助 */}
+      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border bg-card p-3 text-sm shadow-sm">
+        {/* 组 1：焦点 */}
+        <div className="flex items-center gap-2">
+          <label className="shrink-0 text-text-secondary">焦点</label>
+          <GraphPersonPicker
+            ariaLabel="选择焦点联系人"
+            options={pickerOptions}
+            value={focusInput}
+            placeholder="输入姓名聚焦"
+            onChange={(text) => {
+              setFocusInput(text);
+              resolveInput(text, setFocusId);
+            }}
+          />
+          {focusLabel && (
+            <>
+              <Badge variant="info">当前：{focusLabel}</Badge>
+              <button type="button" className="text-accent hover:underline" onClick={() => effectiveFocus && onNodeClick?.(effectiveFocus)}>
+                查看详情
+              </button>
+              <button type="button" className="text-text-secondary hover:underline" onClick={resetFocus}>
+                重置
+              </button>
+            </>
+          )}
+        </div>
+        <span className="hidden h-5 w-px bg-line sm:block" aria-hidden="true" />
+        {/* 组 2：找路径 */}
+        <div className="flex items-center gap-2">
+          <label className="shrink-0 text-text-secondary">找路径到</label>
+          <GraphPersonPicker
+            ariaLabel="选择路径目标联系人"
+            options={pickerOptions}
+            value={targetInput}
+            placeholder="目标联系人"
+            disabled={!effectiveFocus}
+            onChange={(text) => {
+              setTargetInput(text);
+              resolveInput(text, setTargetId);
+            }}
+          />
+        </div>
+        <span className="hidden h-5 w-px bg-line sm:block" aria-hidden="true" />
+        {/* 组 3：操作工具 */}
+        <div className="flex items-center gap-2">
+          <button type="button" className="btn-secondary flex items-center gap-1.5 !py-1.5" onClick={handleInfer} disabled={busy}>
+            <Sparkles size={14} aria-hidden="true" />
+            {busy ? '处理中...' : 'AI 推断关系'}
+          </button>
+          {pendingCount > 0 && <Badge variant="warning">待确认 {pendingCount}</Badge>}
+          <button
+            type="button"
+            className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors ${boxMode ? 'bg-accent text-white' : 'bg-secondary text-text-secondary hover:bg-surface'}`}
+            disabled={!!effectiveFocus}
+            title={effectiveFocus ? '圈选仅在全景模式下可用，请先重置焦点' : '开启后按住左键拖拽框选联系人'}
+            onClick={() => setBoxMode((prev) => !prev)}
+          >
+            <BoxSelect size={14} aria-hidden="true" />
+            {boxMode ? '圈选中：拖拽框选' : '圈选'}
+          </button>
+          {selection && (
+            <>
+              <Badge variant="success">已圈选 {selection.size} 人</Badge>
+              <button type="button" className="text-text-secondary hover:underline" onClick={() => setSelection(null)}>
+                清除圈选
+              </button>
+            </>
+          )}
+        </div>
+        {/* 组 4：帮助（原底部长说明收纳于此） */}
+        <div className="ml-auto">
+          <GraphHelpPopover />
+        </div>
       </div>
 
       {notice && <div className={`mb-3 rounded p-2 text-sm ${noticeIsError ? 'bg-danger-light text-danger' : 'bg-accent-light text-accent'}`}>{notice}</div>}
 
-      <div className="relative">
+      {/* UX P1-9：画布 flex-1 撑满视口，去掉固定 h-[560px] */}
+      <div ref={canvasWrapRef} className="relative min-h-0 flex-1">
         <div
           ref={ref}
-          className="h-[560px] w-full rounded-xl border bg-card"
+          className="h-full w-full rounded-xl border bg-card"
           style={{ cursor: boxMode ? 'crosshair' : undefined }}
         />
         {building && (
@@ -861,16 +912,22 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
             </div>
           </div>
         )}
+        {tooltip && <PersonHoverCard person={tooltip.person} x={tooltip.x} y={tooltip.y} />}
+        {nodePopover && (
+          <GraphNodePopover
+            popover={nodePopover}
+            containerWidth={canvasWrapRef.current?.clientWidth ?? 0}
+            containerHeight={canvasWrapRef.current?.clientHeight ?? 0}
+            isFocus={nodePopover.person.id === effectiveFocus}
+            onViewDetail={(id) => {
+              setNodePopover(null);
+              onNodeClick?.(id);
+            }}
+            onSetFocus={handleSetFocus}
+            onClose={() => setNodePopover(null)}
+          />
+        )}
       </div>
-      <p className="mt-2 text-xs text-muted">
-        {boxMode
-          ? '圈选模式：按住鼠标左键拖拽出矩形框选联系人，松开后只显示选中的人及其与"我"的连线；再次点击"圈选"按钮可退出。'
-          : effectiveFocus
-            ? '正在展示焦点 2 跳内的人脉；单击节点进入联系人详情，双击节点切换焦点，点"重置"回到以我为中心的全景。'
-            : '以"我"为中心辐射展示：内圈=强关系、中圈=中等、外圈=弱关系；滚轮缩放视图，单击节点进入详情，双击节点聚焦其人脉圈，按住 Shift 拖拽可直接框选。'}
-        边上标注关系类型；实线=已确认关系，橙色虚线=AI 推断待确认（点击边可确认/否认），冷却联系人显示为半透明。
-        <span className="ml-2 select-none text-muted">v20260731-boxfix</span>
-      </p>
 
       {/* 路径结果面板 */}
       {targetId && effectiveFocus && (
@@ -938,8 +995,6 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
           )}
         </div>
       )}
-
-      {tooltip && <PersonHoverCard person={tooltip.person} x={tooltip.x} y={tooltip.y} />}
     </div>
   );
 }
