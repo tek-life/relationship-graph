@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::db::{agent_config, person, schema, user as user_db};
+    use crate::db::{agent_config, person, schema, skill_package, user as user_db};
     use crate::types::{CreateAgentSkillRequest, CreateDigitalAgentRequest, CreatePersonRequest, CreateUserRequest};
     use rusqlite::Connection;
 
@@ -677,5 +677,640 @@ mod tests {
         assert!(out.starts_with(&profile_section));
         assert!(!out.contains("技能：演示技能"));
         assert!(out.contains("（注：技能内容超出字符预算"));
+    }
+
+    // ============================================================
+    // 技能包（多文件）：纯函数 + 迁移 + 注入 + 绑定
+    // ============================================================
+
+    // === normalize_rel_path ===
+
+    #[test]
+    fn normalize_rel_path_accepts_valid_relative_paths() {
+        assert_eq!(skill_package::normalize_rel_path("SKILL.md").unwrap(), "SKILL.md");
+        assert_eq!(skill_package::normalize_rel_path("docs/guide.md").unwrap(), "docs/guide.md");
+        // 忽略 `.` 分量与重复分隔符
+        assert_eq!(skill_package::normalize_rel_path("./a/b.txt").unwrap(), "a/b.txt");
+        assert_eq!(skill_package::normalize_rel_path("a//b.md").unwrap(), "a/b.md");
+        assert_eq!(skill_package::normalize_rel_path("a/./b/c.txt").unwrap(), "a/b/c.txt");
+        // 首尾空白先 trim
+        assert_eq!(skill_package::normalize_rel_path("  docs/x.md  ").unwrap(), "docs/x.md");
+    }
+
+    #[test]
+    fn normalize_rel_path_rejects_invalid_paths() {
+        // 空路径
+        assert!(skill_package::normalize_rel_path("").is_err());
+        assert!(skill_package::normalize_rel_path("   ").is_err());
+        assert!(skill_package::normalize_rel_path("/").is_err());
+        assert!(skill_package::normalize_rel_path("./.").is_err());
+        // 绝对路径
+        assert!(skill_package::normalize_rel_path("/etc/passwd").is_err());
+        // 含 .. 分量
+        assert!(skill_package::normalize_rel_path("../x").is_err());
+        assert!(skill_package::normalize_rel_path("a/../b").is_err());
+        assert!(skill_package::normalize_rel_path("a/..").is_err());
+        // 反斜杠（Windows 风格路径不接受）
+        assert!(skill_package::normalize_rel_path("a\\b.md").is_err());
+    }
+
+    // === parse_skill_package ===
+
+    fn sample_skill_md() -> &'static str {
+        "---\nname: 示例技能包\ndescription: 演示用途\n---\n# 正文标题\n正文内容"
+    }
+
+    #[test]
+    fn parse_skill_package_normal_package() {
+        let files = vec![
+            ("SKILL.md".to_string(), sample_skill_md().to_string()),
+            ("docs/a.md".to_string(), "附属文档一\n详细说明".to_string()),
+            ("notes.txt".to_string(), "纯文本备注".to_string()),
+            ("scripts/run.sh".to_string(), "#!/bin/bash\necho hi".to_string()),
+        ];
+        let manifest = skill_package::parse_skill_package(&files).expect("parse package");
+        assert_eq!(manifest.name, "示例技能包");
+        assert_eq!(manifest.description, "演示用途");
+        assert_eq!(manifest.body, "# 正文标题\n正文内容");
+        assert_eq!(manifest.entry_path, "SKILL.md");
+
+        // 附属文档按 rel_path 升序；非文本文件标记不注入
+        assert_eq!(manifest.sub_docs.len(), 3);
+        assert_eq!(manifest.sub_docs[0].rel_path, "docs/a.md");
+        assert_eq!(manifest.sub_docs[0].summary, "附属文档一");
+        assert!(manifest.sub_docs[0].injectable);
+        assert_eq!(manifest.sub_docs[1].rel_path, "notes.txt");
+        assert!(manifest.sub_docs[1].injectable);
+        assert_eq!(manifest.sub_docs[2].rel_path, "scripts/run.sh");
+        assert!(!manifest.sub_docs[2].injectable);
+        assert_eq!(manifest.sub_docs[2].summary, "");
+    }
+
+    #[test]
+    fn parse_skill_package_summary_truncated_to_80_chars() {
+        let long_line = "长".repeat(120);
+        let files = vec![
+            ("SKILL.md".to_string(), sample_skill_md().to_string()),
+            ("long.md".to_string(), format!("\n\n{}尾部", long_line)),
+        ];
+        let manifest = skill_package::parse_skill_package(&files).expect("parse");
+        // 首行非空（跳过前导空行）且截断到 80 字符
+        assert_eq!(manifest.sub_docs[0].summary.chars().count(), 80);
+        assert!(manifest.sub_docs[0].summary.chars().all(|c| c == '长'));
+    }
+
+    #[test]
+    fn parse_skill_package_errors() {
+        // 空列表
+        let err = skill_package::parse_skill_package(&[]).unwrap_err();
+        assert!(err.contains("不能为空"));
+        // 无 SKILL.md
+        let files = vec![("docs/a.md".to_string(), "内容".to_string())];
+        let err = skill_package::parse_skill_package(&files).unwrap_err();
+        assert!(err.contains("SKILL.md"));
+        // frontmatter 不合法
+        let files = vec![("SKILL.md".to_string(), "# 无头部\n正文".to_string())];
+        let err = skill_package::parse_skill_package(&files).unwrap_err();
+        assert!(err.contains("SKILL.md 校验失败"));
+        // 重复路径
+        let files = vec![
+            ("SKILL.md".to_string(), sample_skill_md().to_string()),
+            ("a.md".to_string(), "一".to_string()),
+            ("./a.md".to_string(), "二".to_string()),
+        ];
+        let err = skill_package::parse_skill_package(&files).unwrap_err();
+        assert!(err.contains("重复"));
+    }
+
+    #[test]
+    fn parse_skill_package_nested_root_and_case_insensitive() {
+        // 嵌套一层目录的仓库风格：包根为 pkg/，路径去前缀
+        let files = vec![
+            ("pkg/SKILL.md".to_string(), sample_skill_md().to_string()),
+            ("pkg/docs/x.md".to_string(), "嵌套附属文档".to_string()),
+        ];
+        let manifest = skill_package::parse_skill_package(&files).expect("parse nested");
+        assert_eq!(manifest.entry_path, "SKILL.md");
+        assert_eq!(manifest.sub_docs.len(), 1);
+        assert_eq!(manifest.sub_docs[0].rel_path, "docs/x.md");
+
+        // 文件名大小写不敏感
+        let files = vec![("Skill.MD".to_string(), sample_skill_md().to_string())];
+        let manifest = skill_package::parse_skill_package(&files).expect("parse case-insensitive");
+        assert_eq!(manifest.name, "示例技能包");
+
+        // 多个同级 SKILL.md → 报歧义错误
+        let files = vec![
+            ("a/skill.md".to_string(), sample_skill_md().to_string()),
+            ("b/SKILL.md".to_string(), sample_skill_md().to_string()),
+        ];
+        let err = skill_package::parse_skill_package(&files).unwrap_err();
+        assert!(err.contains("多个"));
+    }
+
+    // === assemble_package_section ===
+
+    fn sample_manifest(sub_docs: Vec<skill_package::SubDocInfo>) -> skill_package::PackageManifest {
+        skill_package::PackageManifest {
+            name: "演示包".to_string(),
+            description: "描述".to_string(),
+            body: "正文内容".to_string(),
+            entry_prefix: String::new(),
+            entry_path: "SKILL.md".to_string(),
+            sub_docs,
+        }
+    }
+
+    #[test]
+    fn assemble_package_section_normal_and_empty_subdocs() {
+        // 无附属文档 → 仅标题 + 正文
+        let manifest = sample_manifest(vec![]);
+        let section = skill_package::assemble_package_section(&manifest, 2000);
+        assert_eq!(section, "### 技能：演示包\n正文内容\n\n");
+
+        // 含附属文档 → 附 `#### 附属文档` 索引；不注入的文件不出现
+        let manifest = sample_manifest(vec![
+            skill_package::SubDocInfo { rel_path: "docs/a.md".into(), summary: "摘要A".into(), injectable: true },
+            skill_package::SubDocInfo { rel_path: "run.sh".into(), summary: "".into(), injectable: false },
+        ]);
+        let section = skill_package::assemble_package_section(&manifest, 2000);
+        assert!(section.starts_with("### 技能：演示包\n正文内容\n\n#### 附属文档\n"));
+        assert!(section.contains("- docs/a.md: 摘要A\n"));
+        assert!(!section.contains("run.sh"));
+        assert!(section.ends_with("\n\n"));
+        assert!(!section.contains("已截断"));
+    }
+
+    #[test]
+    fn assemble_package_section_truncates_index_over_budget() {
+        let manifest = sample_manifest(vec![
+            skill_package::SubDocInfo { rel_path: "a.md".into(), summary: "摘要A".into(), injectable: true },
+            skill_package::SubDocInfo { rel_path: "b.md".into(), summary: "摘要B".into(), injectable: true },
+        ]);
+        let header = "### 技能：演示包\n正文内容\n\n#### 附属文档\n";
+        let line1 = "- a.md: 摘要A\n";
+        // 预算恰好容纳头部 + 第一行 → 第二行被截断
+        let budget = header.chars().count() + line1.chars().count();
+        let section = skill_package::assemble_package_section(&manifest, budget);
+        assert!(section.contains(line1));
+        assert!(!section.contains("b.md"));
+        assert!(section.contains("（注：附属文档索引超出单包预算，已截断）"));
+
+        // 预算充足 → 不截断
+        let full = skill_package::assemble_package_section(&manifest, 2000);
+        assert!(full.contains("b.md"));
+        assert!(!full.contains("已截断"));
+    }
+
+    /// 单包预算约束正文：SKILL.md 正文超预算时按字符截断并附截断说明，
+    /// 截断后仍拼附属文档索引；整段不超预算
+    #[test]
+    fn assemble_package_section_truncates_body_over_budget() {
+        let long_body = "长".repeat(5000);
+        let manifest = skill_package::PackageManifest {
+            name: "演示包".to_string(),
+            description: "描述".to_string(),
+            body: long_body.clone(),
+            entry_prefix: String::new(),
+            entry_path: "SKILL.md".to_string(),
+            sub_docs: vec![skill_package::SubDocInfo {
+                rel_path: "a.md".into(),
+                summary: "摘要A".into(),
+                injectable: true,
+            }],
+        };
+
+        // 正文未超预算：逐字节保持原格式（不引入截断说明）
+        let section = skill_package::assemble_package_section(&manifest, 10000);
+        assert!(section.starts_with(&format!("### 技能：演示包\n{}\n\n", long_body)));
+        assert!(section.contains("- a.md: 摘要A\n"));
+        assert!(!section.contains("正文超出单包预算"));
+
+        // 正文超预算：按字符截断 + 截断说明，整段（含附属文档索引）不超预算
+        let budget = 200;
+        let section = skill_package::assemble_package_section(&manifest, budget);
+        assert!(section.starts_with("### 技能：演示包\n"));
+        assert!(section.contains("（注：SKILL.md 正文超出单包预算，已截断）"));
+        assert!(section.chars().count() <= budget);
+        assert!(!section.contains(&long_body));
+
+        // 无附属文档时同样受正文预算约束
+        let no_docs = skill_package::PackageManifest {
+            sub_docs: vec![],
+            ..manifest.clone()
+        };
+        let section = skill_package::assemble_package_section(&no_docs, budget);
+        assert!(section.contains("（注：SKILL.md 正文超出单包预算，已截断）"));
+        assert!(section.chars().count() <= budget);
+    }
+
+    // === skill_package_budget_chars ===
+
+    #[test]
+    fn skill_package_budget_env_override() {
+        std::env::remove_var("RG_SKILL_PACKAGE_BUDGET_CHARS");
+        assert_eq!(skill_package::skill_package_budget_chars(), 2000);
+        std::env::set_var("RG_SKILL_PACKAGE_BUDGET_CHARS", "512");
+        assert_eq!(skill_package::skill_package_budget_chars(), 512);
+        // 非法值回退默认
+        std::env::set_var("RG_SKILL_PACKAGE_BUDGET_CHARS", "abc");
+        assert_eq!(skill_package::skill_package_budget_chars(), 2000);
+        std::env::remove_var("RG_SKILL_PACKAGE_BUDGET_CHARS");
+    }
+
+    // === 技能包 CRUD 与绑定 ===
+
+    fn package_files(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+        entries.iter().map(|(p, c)| (p.to_string(), c.to_string())).collect()
+    }
+
+    #[test]
+    fn create_get_list_delete_skill_package_roundtrip() {
+        let conn = in_memory_db();
+        let files = package_files(&[
+            ("SKILL.md", sample_skill_md()),
+            ("docs/a.md", "附属文档"),
+        ]);
+        let pkg = skill_package::create_skill_package(&conn, "演示包", Some("描述".into()), "imported", &files)
+            .expect("create package");
+        assert_eq!(pkg.display_name, "演示包");
+        assert_eq!(pkg.source_kind, "imported");
+        assert!(pkg.slug.starts_with("演示包-") || pkg.slug.starts_with("skill-"));
+        assert_eq!(pkg.total_chars, sample_skill_md().chars().count() + "附属文档".chars().count());
+        assert!(pkg.is_active);
+
+        // 列表不含文件内容；详情含文件
+        let list = skill_package::list_skill_packages(&conn).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].files.is_none());
+        let detail = skill_package::get_skill_package(&conn, &pkg.id).unwrap().expect("package exists");
+        let files = detail.files.expect("files loaded");
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|f| f.rel_path == "SKILL.md"));
+
+        // 删除后列表为空，重复删除不报错
+        skill_package::delete_skill_package(&conn, &pkg.id).unwrap();
+        assert!(skill_package::list_skill_packages(&conn).unwrap().is_empty());
+        assert!(skill_package::get_skill_package(&conn, &pkg.id).unwrap().is_none());
+        skill_package::delete_skill_package(&conn, &pkg.id).unwrap();
+    }
+
+    #[test]
+    fn replace_bindings_full_replacement_semantics() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@绑定测试");
+        let p1 = skill_package::create_skill_package(&conn, "包一", None, "inline", &package_files(&[("SKILL.md", sample_skill_md())])).unwrap();
+        let p2 = skill_package::create_skill_package(&conn, "包二", None, "inline", &package_files(&[("SKILL.md", sample_skill_md())])).unwrap();
+
+        // 初始绑定两个（JOIN 取到 display_name）
+        skill_package::replace_bindings(&conn, &agent_id, vec![(p1.id.clone(), 0), (p2.id.clone(), 1)]).unwrap();
+        let bindings = skill_package::list_bindings(&conn, &agent_id).unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].package_display_name, "包一");
+        assert_eq!(bindings[1].package_display_name, "包二");
+
+        // 全量替换为单个 → 旧绑定被删
+        skill_package::replace_bindings(&conn, &agent_id, vec![(p2.id.clone(), 5)]).unwrap();
+        let bindings = skill_package::list_bindings(&conn, &agent_id).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].package_id, p2.id);
+        assert_eq!(bindings[0].sort_order, 5);
+
+        // 重复 package_id 去重（以最后一次为准）
+        skill_package::replace_bindings(&conn, &agent_id, vec![(p1.id.clone(), 1), (p1.id.clone(), 9)]).unwrap();
+        let bindings = skill_package::list_bindings(&conn, &agent_id).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].sort_order, 9);
+
+        // 替换为空 → 清空全部绑定
+        skill_package::replace_bindings(&conn, &agent_id, vec![]).unwrap();
+        assert!(skill_package::list_bindings(&conn, &agent_id).unwrap().is_empty());
+    }
+
+    // === build_skills_prompt（技能包注入） ===
+
+    #[test]
+    fn build_skills_prompt_package_binding_section_format() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@包注入");
+
+        // 无绑定 → 空串
+        assert_eq!(agent_config::build_skills_prompt(&conn, &agent_id).unwrap(), "");
+
+        let files = package_files(&[
+            ("SKILL.md", sample_skill_md()),
+            ("docs/a.md", "附属文档一"),
+        ]);
+        let pkg = skill_package::create_skill_package(&conn, "展示名", None, "imported", &files).unwrap();
+        skill_package::replace_bindings(&conn, &agent_id, vec![(pkg.id.clone(), 0)]).unwrap();
+
+        let prompt = agent_config::build_skills_prompt(&conn, &agent_id).unwrap();
+        // 段标题用包展示名；正文剥离 frontmatter；附属文档索引来自 manifest
+        assert!(prompt.starts_with("### 技能：展示名\n# 正文标题\n正文内容\n\n"));
+        assert!(prompt.contains("#### 附属文档\n- docs/a.md: 附属文档一\n"));
+        assert!(!prompt.contains("name: 示例技能包"));
+        assert!(prompt.ends_with("\n\n"));
+
+        // is_active=0 的包不注入
+        conn.execute("UPDATE skill_packages SET is_active = 0 WHERE id = ?1", [&pkg.id]).unwrap();
+        assert_eq!(agent_config::build_skills_prompt(&conn, &agent_id).unwrap(), "");
+        conn.execute("UPDATE skill_packages SET is_active = 1 WHERE id = ?1", [&pkg.id]).unwrap();
+
+        // 入口正文仅剩 frontmatter（剥离后为空）的包跳过
+        let only_fm = package_files(&[("SKILL.md", "---\nname: x\ndescription: d\n---")]);
+        let empty_pkg = skill_package::create_skill_package(&conn, "空正文包", None, "inline", &only_fm).unwrap();
+        skill_package::replace_bindings(&conn, &agent_id, vec![(pkg.id.clone(), 0), (empty_pkg.id, 1)]).unwrap();
+        let prompt = agent_config::build_skills_prompt(&conn, &agent_id).unwrap();
+        assert!(prompt.contains("技能：展示名"));
+        assert!(!prompt.contains("空正文包"));
+    }
+
+    #[test]
+    fn build_skills_prompt_multi_package_sort_order() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@多包排序");
+        let p1 = skill_package::create_skill_package(&conn, "甲包", None, "inline", &package_files(&[("SKILL.md", "---\nname: a\ndescription: d\n---\n甲正文")])).unwrap();
+        let p2 = skill_package::create_skill_package(&conn, "乙包", None, "inline", &package_files(&[("SKILL.md", "---\nname: b\ndescription: d\n---\n乙正文")])).unwrap();
+
+        // 绑定顺序与创建顺序相反：sort_order 小者在前
+        skill_package::replace_bindings(&conn, &agent_id, vec![(p1.id, 2), (p2.id, 1)]).unwrap();
+        let prompt = agent_config::build_skills_prompt(&conn, &agent_id).unwrap();
+        assert!(prompt.contains("### 技能：甲包"));
+        assert!(prompt.contains("### 技能：乙包"));
+        assert!(prompt.find("技能：乙包").unwrap() < prompt.find("技能：甲包").unwrap());
+    }
+
+    // === migrate_legacy_skills ===
+
+    #[test]
+    fn migrate_legacy_skills_idempotent_and_skips_json_form() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@存量迁移");
+        // 手工插入存量技能（绕过数据层同步），模拟老库数据：
+        // 两条 markdown 技能 + 一条 JSON 形态（skill_markdown NULL）+ 一条空白 markdown
+        conn.execute_batch(&format!(
+            "INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, skill_markdown, is_active, created_at, updated_at)
+             VALUES ('ls1', '{a}', '存量一', '{{}}', '---\nname: l1\ndescription: d\n---\n正文一', 1, '2026-01-01', '2026-01-01');
+             INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, skill_markdown, is_active, created_at, updated_at)
+             VALUES ('ls2', '{a}', '存量二', '{{}}', '---\nname: l2\ndescription: d\n---\n正文二', 1, '2026-01-02', '2026-01-02');
+             INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, skill_markdown, is_active, created_at, updated_at)
+             VALUES ('ls3', '{a}', 'JSON形态', '{{\"prompt\":\"x\"}}', NULL, 1, '2026-01-03', '2026-01-03');
+             INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, skill_markdown, is_active, created_at, updated_at)
+             VALUES ('ls4', '{a}', '空白', '{{}}', '   ', 1, '2026-01-04', '2026-01-04');",
+            a = agent_id
+        )).expect("insert legacy skills");
+
+        // 首次迁移：仅两条 markdown 技能转包
+        schema::migrate(&conn).expect("migrate with legacy skills");
+        let packages = skill_package::list_skill_packages(&conn).unwrap();
+        assert_eq!(packages.len(), 2);
+        assert!(packages.iter().all(|p| p.source_kind == "inline"));
+        assert_eq!(packages[0].slug, "legacy-ls1");
+        assert_eq!(packages[1].slug, "legacy-ls2");
+
+        // 单文件 SKILL.md，内容为原 skill_markdown
+        let files = skill_package::list_package_files(&conn, &packages[0].id).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].rel_path, "SKILL.md");
+        assert!(files[0].content.contains("正文一"));
+
+        // 绑定：sort_order 按 created_at 顺序递增
+        let bindings = skill_package::list_bindings(&conn, &agent_id).unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].package_display_name, "存量一");
+        assert_eq!(bindings[0].sort_order, 0);
+        assert_eq!(bindings[1].package_display_name, "存量二");
+        assert_eq!(bindings[1].sort_order, 1);
+
+        // 幂等：重复执行零副作用（无重复行）
+        schema::migrate(&conn).expect("second migrate");
+        schema::migrate(&conn).expect("third migrate");
+        assert_eq!(skill_package::list_skill_packages(&conn).unwrap().len(), 2);
+        assert_eq!(skill_package::list_bindings(&conn, &agent_id).unwrap().len(), 2);
+        let file_count: i64 = conn.query_row("SELECT COUNT(*) FROM skill_package_files", [], |r| r.get(0)).unwrap();
+        assert_eq!(file_count, 2);
+
+        // 迁移后注入生效：两个存量技能按序拼接
+        let prompt = agent_config::build_skills_prompt(&conn, &agent_id).unwrap();
+        assert!(prompt.contains("### 技能：存量一"));
+        assert!(prompt.contains("### 技能：存量二"));
+        assert!(!prompt.contains("JSON形态"));
+        assert!(!prompt.contains("空白"));
+        assert!(prompt.find("技能：存量一").unwrap() < prompt.find("技能：存量二").unwrap());
+    }
+
+    // === 旧技能写入路径的 legacy 包同步 ===
+
+    #[test]
+    fn legacy_skill_write_path_syncs_package_and_binding() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@旧技能同步");
+
+        // 创建带 markdown 的技能 → 同步出 legacy 包 + 绑定
+        let skill = agent_config::create_agent_skill(&conn, skill_request(&agent_id, "同步技能", Some(sample_skill_md()), true)).unwrap();
+        let slug = format!("legacy-{}", skill.id);
+        let package_id: String = conn.query_row("SELECT id FROM skill_packages WHERE slug = ?1", [&slug], |r| r.get(0)).unwrap();
+        assert_eq!(skill_package::list_bindings(&conn, &agent_id).unwrap().len(), 1);
+
+        // 更新内容 → 包文件同步更新
+        let updated_md = "---\nname: n2\ndescription: d2\n---\n更新后正文";
+        agent_config::update_agent_skill(&conn, &skill.id, skill_request(&agent_id, "同步技能", Some(updated_md), true)).unwrap();
+        let files = skill_package::list_package_files(&conn, &package_id).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].content.contains("更新后正文"));
+
+        // 停用技能 → 包 is_active=0，不再注入
+        agent_config::update_agent_skill(&conn, &skill.id, skill_request(&agent_id, "同步技能", Some(updated_md), false)).unwrap();
+        assert_eq!(agent_config::build_skills_prompt(&conn, &agent_id).unwrap(), "");
+
+        // 删除技能 → legacy 包与绑定同步删除
+        agent_config::delete_agent_skill(&conn, &skill.id).unwrap();
+        assert!(skill_package::get_skill_package(&conn, &package_id).unwrap().is_none());
+        assert!(skill_package::list_bindings(&conn, &agent_id).unwrap().is_empty());
+
+        // 创建无 markdown 的技能 → 不产生包
+        agent_config::create_agent_skill(&conn, skill_request(&agent_id, "JSON技能", None, true)).unwrap();
+        assert!(skill_package::list_skill_packages(&conn).unwrap().is_empty());
+    }
+
+    // === M4：嵌套入口包落库归一化 + 注入 e2e ===
+
+    /// 嵌套入口包（pkg/SKILL.md 风格）create 落库时按 manifest 归一化路径
+    /// （rel_path 以 SKILL.md 为根），build_skills_prompt 能正常注入
+    #[test]
+    fn nested_package_files_normalized_and_injected() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@嵌套包");
+        let files = package_files(&[
+            ("pkg/SKILL.md", sample_skill_md()),
+            ("pkg/docs/x.md", "嵌套附属文档"),
+            ("pkg/scripts/run.sh", "#!/bin/bash"),
+        ]);
+
+        // parse 阶段：entry_prefix 带目录前缀，清单内路径已归一
+        let manifest = skill_package::parse_skill_package(&files).unwrap();
+        assert_eq!(manifest.entry_prefix, "pkg/");
+        assert_eq!(manifest.entry_path, "SKILL.md");
+
+        let pkg = skill_package::create_skill_package(&conn, "嵌套包", None, "imported", &files).unwrap();
+        // 落库文件路径已去前缀：根级 SKILL.md（注入 JOIN 命中）+ 附属文档
+        let stored = skill_package::list_package_files(&conn, &pkg.id).unwrap();
+        let paths: Vec<&str> = stored.iter().map(|f| f.rel_path.as_str()).collect();
+        assert!(paths.contains(&"SKILL.md"));
+        assert!(paths.contains(&"docs/x.md"));
+        assert!(paths.contains(&"scripts/run.sh"));
+        assert!(!paths.iter().any(|p| p.starts_with("pkg/")));
+
+        // 端到端：绑定后 build_skills_prompt 正常注入（正文 + 附属文档索引）
+        skill_package::replace_bindings(&conn, &agent_id, vec![(pkg.id.clone(), 0)]).unwrap();
+        let prompt = agent_config::build_skills_prompt(&conn, &agent_id).unwrap();
+        assert!(prompt.contains("### 技能：嵌套包"));
+        assert!(prompt.contains("# 正文标题\n正文内容"));
+        assert!(prompt.contains("#### 附属文档\n- docs/x.md: 嵌套附属文档\n"));
+    }
+
+    /// slug 冲突重试：同名展示名重复创建均成功且 slug 互不相同
+    #[test]
+    fn create_skill_package_generates_unique_slugs_with_retry() {
+        let conn = in_memory_db();
+        let files = package_files(&[("SKILL.md", sample_skill_md())]);
+        let mut slugs = std::collections::HashSet::new();
+        for _ in 0..10 {
+            let pkg = skill_package::create_skill_package(&conn, "同名包", None, "inline", &files).unwrap();
+            assert!(slugs.insert(pkg.slug.clone()), "slug 冲突：{}", pkg.slug);
+        }
+        assert_eq!(skill_package::list_skill_packages(&conn).unwrap().len(), 10);
+    }
+
+    /// create 层 parse 失败错误携带中文原因（不吞原因）
+    #[test]
+    fn create_skill_package_parse_error_carries_reason() {
+        let conn = in_memory_db();
+        // 缺 SKILL.md
+        let err = skill_package::create_skill_package(
+            &conn,
+            "坏包",
+            None,
+            "inline",
+            &package_files(&[("docs/a.md", "内容")]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("SKILL.md"), "错误应携带中文原因：{}", err);
+        // frontmatter 不合法
+        let err = skill_package::create_skill_package(
+            &conn,
+            "坏包",
+            None,
+            "inline",
+            &package_files(&[("SKILL.md", "# 无头部\n正文")]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("SKILL.md 校验失败"), "错误应携带中文原因：{}", err);
+    }
+
+    // === M2：legacy 包绑定严格跟随技能的 agent_id ===
+
+    /// PUT 移动技能 agent_id 后：绑定跟随迁移，旧数字人不再注入（无双份）
+    #[test]
+    fn legacy_binding_follows_agent_move() {
+        let conn = in_memory_db();
+        let a1 = create_test_agent(&conn, "@移动源");
+        let a2 = create_test_agent(&conn, "@移动目标");
+        let skill = agent_config::create_agent_skill(&conn, skill_request(&a1, "移动技能", Some(sample_skill_md()), true)).unwrap();
+        assert_eq!(skill_package::list_bindings(&conn, &a1).unwrap().len(), 1);
+
+        // 移动到 a2 → 绑定只剩 a2，a1 注入为空
+        agent_config::update_agent_skill(&conn, &skill.id, skill_request(&a2, "移动技能", Some(sample_skill_md()), true)).unwrap();
+        assert!(skill_package::list_bindings(&conn, &a1).unwrap().is_empty());
+        let b2 = skill_package::list_bindings(&conn, &a2).unwrap();
+        assert_eq!(b2.len(), 1);
+        assert_eq!(agent_config::build_skills_prompt(&conn, &a1).unwrap(), "");
+        assert!(agent_config::build_skills_prompt(&conn, &a2).unwrap().contains("### 技能：移动技能"));
+
+        // 再次编辑保存 → 不产生双份绑定
+        agent_config::update_agent_skill(&conn, &skill.id, skill_request(&a2, "移动技能", Some(sample_skill_md()), true)).unwrap();
+        assert_eq!(skill_package::list_bindings(&conn, &a2).unwrap().len(), 1);
+    }
+
+    /// 管理员主动解绑（包无任何绑定）后，旧技能编辑保存不得复活绑定
+    #[test]
+    fn legacy_edit_does_not_resurrect_admin_unbound_package() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@解绑复活");
+        let skill = agent_config::create_agent_skill(&conn, skill_request(&agent_id, "复活测试", Some(sample_skill_md()), true)).unwrap();
+
+        // 管理员通过全量替换清空绑定
+        skill_package::replace_bindings(&conn, &agent_id, vec![]).unwrap();
+        assert!(skill_package::list_bindings(&conn, &agent_id).unwrap().is_empty());
+
+        // 编辑保存同一技能 → 包内容更新但绑定不复活
+        agent_config::update_agent_skill(&conn, &skill.id, skill_request(&agent_id, "复活测试", Some(sample_skill_md()), true)).unwrap();
+        assert!(skill_package::list_bindings(&conn, &agent_id).unwrap().is_empty());
+        let package_id: String = conn
+            .query_row("SELECT id FROM skill_packages WHERE slug = ?1", [format!("legacy-{}", skill.id)], |r| r.get(0))
+            .unwrap();
+        assert!(skill_package::get_skill_package(&conn, &package_id).unwrap().is_some());
+    }
+
+    // === M1：存量迁移孤儿 agent_id 不阻断启动 ===
+
+    /// 孤儿 agent_id（数字人已不存在）的存量技能在 foreign_keys=ON 下
+    /// 被跳过并告警，不阻断其余行迁移，也不阻断 migrate（重跑幂等）
+    #[test]
+    fn migrate_legacy_skills_skips_orphan_agent_without_blocking() {
+        let conn = in_memory_db();
+        let agent_id = create_test_agent(&conn, "@孤儿迁移");
+        // 模拟历史脏数据：暂时关闭 FK 插入孤儿技能行（旧版本连接未强制外键）
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute_batch(&format!(
+            "INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, skill_markdown, is_active, created_at, updated_at)
+             VALUES ('ok1', '{a}', '正常技能', '{{}}', '---\nname: ok\ndescription: d\n---\n正文', 1, '2026-01-01', '2026-01-01');
+             INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, skill_markdown, is_active, created_at, updated_at)
+             VALUES ('orphan1', 'ghost-agent', '孤儿技能', '{{}}', '---\nname: o\ndescription: d\n---\n孤儿正文', 1, '2026-01-02', '2026-01-02');",
+            a = agent_id
+        )).expect("insert legacy rows");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        // migrate 不得报错（不阻断启动）；正常行迁移成功，孤儿行跳过
+        schema::migrate(&conn).expect("migrate must not fail on orphan agent");
+        let packages = skill_package::list_skill_packages(&conn).unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].slug, "legacy-ok1");
+        let bindings = skill_package::list_bindings(&conn, &agent_id).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].sort_order, 0);
+        assert!(agent_config::build_skills_prompt(&conn, &agent_id).unwrap().contains("### 技能：正常技能"));
+
+        // 重跑幂等：孤儿行仍被跳过，无重复包
+        schema::migrate(&conn).expect("second migrate");
+        assert_eq!(skill_package::list_skill_packages(&conn).unwrap().len(), 1);
+    }
+
+    // === m4：删除数字人后清理孤儿 legacy 包 ===
+
+    #[test]
+    fn delete_digital_agent_cleans_orphan_legacy_packages() {
+        let conn = in_memory_db();
+        let a1 = create_test_agent(&conn, "@待删除");
+        let a2 = create_test_agent(&conn, "@保留");
+        let skill = agent_config::create_agent_skill(&conn, skill_request(&a1, "随主技能", Some(sample_skill_md()), true)).unwrap();
+        // imported 包也绑定到 a1（非 legacy，不应被孤儿清理误删）
+        let imported = skill_package::create_skill_package(&conn, "导入包", None, "imported", &package_files(&[("SKILL.md", sample_skill_md())])).unwrap();
+        skill_package::replace_bindings(&conn, &a1, vec![(imported.id.clone(), 1)]).unwrap();
+
+        agent_config::delete_digital_agent(&conn, &a1).unwrap();
+
+        // legacy 包已无绑定 → 被清理（包与文件一并）
+        let packages = skill_package::list_skill_packages(&conn).unwrap();
+        assert!(packages.iter().all(|p| p.slug != format!("legacy-{}", skill.id)));
+        let file_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM skill_package_files WHERE package_id NOT IN (SELECT id FROM skill_packages)", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(file_count, 0);
+        // imported 包不是 legacy，即便无绑定也保留
+        assert!(packages.iter().any(|p| p.id == imported.id));
+        // a2 不受影响
+        assert_eq!(skill_package::list_bindings(&conn, &a2).unwrap().len(), 0);
+        assert!(agent_config::get_digital_agent(&conn, &a1).unwrap().is_none());
     }
 }

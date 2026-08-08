@@ -1,12 +1,14 @@
 //! Admin 管理 API：用户列表、角色变更、邀请令牌管理、数字人/技能/QA 模块 CRUD。
 //! Admin 路由由 require_admin 中间件保护；list_active_digital_agents 为公开接口。
 
-use crate::db::{agent_config, get_conn, user as user_db};
+use crate::db::{agent_config, get_conn, skill_package, user as user_db};
 use crate::state::SharedState;
 use crate::types::{
     AgentSkill, CreateAgentSkillRequest, CreateDigitalAgentRequest,
-    CreateInviteTokenRequest, CreateQaInstructionModuleRequest, DigitalAgent,
-    InviteToken, QaInstructionModule, UpdateRoleRequest, User,
+    CreateInviteTokenRequest, CreateQaInstructionModuleRequest, CreateSkillPackageRequest,
+    DigitalAgent, ImportSkillPackageReport, ImportSkillPackageRequest, ImportSkillPackageResponse,
+    InviteToken, QaInstructionModule, SkillBinding, SkillPackage, SkillPackageFile,
+    UpdateRoleRequest, UpdateSkillBindingsRequest, User,
 };
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -204,6 +206,7 @@ pub async fn list_agent_skills(
 }
 
 /// POST /api/admin/digital-agents/:id/skills — 为数字人创建技能
+/// （写入 agent_skills 后由数据层同步 legacy 技能包，与新注入视图保持一致）
 pub async fn create_agent_skill(
     State(state): State<SharedState>,
     Path(agent_id): Path<String>,
@@ -221,7 +224,7 @@ pub async fn create_agent_skill(
     Ok(Json(skill))
 }
 
-/// PUT /api/admin/agent-skills/:id — 更新技能
+/// PUT /api/admin/agent-skills/:id — 更新技能（同步 legacy 技能包内容）
 pub async fn update_agent_skill(
     State(state): State<SharedState>,
     Path(id): Path<String>,
@@ -237,7 +240,7 @@ pub async fn update_agent_skill(
     Ok(Json(()))
 }
 
-/// DELETE /api/admin/agent-skills/:id — 删除技能
+/// DELETE /api/admin/agent-skills/:id — 删除技能（同步删除 legacy 技能包与绑定）
 pub async fn delete_agent_skill(
     State(state): State<SharedState>,
     Path(id): Path<String>,
@@ -302,6 +305,227 @@ pub async fn delete_qa_module(
 }
 
 // ============================================================
+// 技能包管理 (Admin CRUD + 数字人绑定)
+// ============================================================
+
+/// 导入/创建硬性限制：文件数 ≤ 50、单文件 ≤ 200KB（按字符）、总字符 ≤ 1_000_000
+const IMPORT_MAX_FILES: usize = 50;
+const IMPORT_MAX_FILE_CHARS: usize = 200_000;
+const IMPORT_MAX_TOTAL_CHARS: usize = 1_000_000;
+
+/// 技能包三项限额校验（导入与 inline 创建共用）：路径规范化 +
+/// 文件数/单文件/总字符上限，失败 400 携带中文原因。
+fn check_package_limits(files: &[(String, String)]) -> Result<(), ApiError> {
+    if files.len() > IMPORT_MAX_FILES {
+        return Err(ApiError::bad_request(format!(
+            "导入文件数超限（最多 {} 个，当前 {} 个）",
+            IMPORT_MAX_FILES,
+            files.len()
+        )));
+    }
+    let mut total_chars = 0usize;
+    for (rel_path, content) in files {
+        skill_package::normalize_rel_path(rel_path).map_err(ApiError::bad_request)?;
+        let chars = content.chars().count();
+        if chars > IMPORT_MAX_FILE_CHARS {
+            return Err(ApiError::bad_request(format!(
+                "单文件超出大小限制（{}，当前 {} 字符，上限 {}）",
+                rel_path, chars, IMPORT_MAX_FILE_CHARS
+            )));
+        }
+        total_chars += chars;
+    }
+    if total_chars > IMPORT_MAX_TOTAL_CHARS {
+        return Err(ApiError::bad_request(format!(
+            "技能包总字符超限（当前 {}，上限 {}）",
+            total_chars, IMPORT_MAX_TOTAL_CHARS
+        )));
+    }
+    Ok(())
+}
+
+/// GET /api/admin/skill-packages — 列出全部技能包（不含文件内容）
+pub async fn list_skill_packages(
+    State(state): State<SharedState>,
+) -> Result<Json<Vec<SkillPackage>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let packages = skill_package::list_skill_packages(conn)?;
+    log::info!(target: "admin", "list_skill_packages count={}", packages.len());
+    Ok(Json(packages))
+}
+
+/// POST /api/admin/skill-packages — 创建技能包（inline）
+pub async fn create_skill_package(
+    State(state): State<SharedState>,
+    Json(req): Json<CreateSkillPackageRequest>,
+) -> Result<Json<SkillPackage>, ApiError> {
+    let display_name = req.display_name.trim().to_string();
+    if display_name.is_empty() {
+        return Err(ApiError::bad_request("displayName 不能为空"));
+    }
+    let files: Vec<(String, String)> = req
+        .files
+        .iter()
+        .map(|f| (f.rel_path.clone(), f.content.clone()))
+        .collect();
+    // 与导入同款的三项限额校验（文件数/单文件/总字符）
+    check_package_limits(&files)?;
+    // 硬校验：路径规范化 + 定位 SKILL.md 入口 + frontmatter 合法（失败 400 带中文原因）
+    skill_package::parse_skill_package(&files).map_err(ApiError::bad_request)?;
+
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let package = skill_package::create_skill_package(conn, &display_name, req.description, "inline", &files)?;
+    log::info!(target: "admin", "create_skill_package id={} files={}", package.id, files.len());
+    Ok(Json(package))
+}
+
+/// POST /api/admin/skill-packages/import — 从多文件导入技能包（imported）
+pub async fn import_skill_package(
+    State(state): State<SharedState>,
+    Json(req): Json<ImportSkillPackageRequest>,
+) -> Result<Json<ImportSkillPackageResponse>, ApiError> {
+    if req.files.is_empty() {
+        return Err(ApiError::bad_request("技能包不能为空（至少需要 SKILL.md）"));
+    }
+    let mut files: Vec<(String, String)> = Vec::with_capacity(req.files.len());
+    for (rel_path, content) in &req.files {
+        files.push((rel_path.clone(), content.clone()));
+    }
+    // 三项限额校验（与 inline 创建共用）
+    check_package_limits(&files)?;
+    // 必须能 parse 出根 SKILL.md 且 frontmatter 合法（失败 400 带中文原因）
+    let manifest = skill_package::parse_skill_package(&files).map_err(ApiError::bad_request)?;
+
+    // displayName 优先取请求 name，缺省取 frontmatter name
+    let display_name = req
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .unwrap_or(manifest.name.clone());
+
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let package = skill_package::create_skill_package(conn, &display_name, None, "imported", &files)?;
+    drop(guard);
+
+    // overBudget 对照全局技能注入预算（RG_SKILL_BUDGET_CHARS 当前值）
+    let budget = agent_config::skill_budget_chars();
+    let report = ImportSkillPackageReport {
+        file_count: package.files.as_ref().map(|fs| fs.len()).unwrap_or(files.len()),
+        total_chars: package.total_chars,
+        over_budget: package.total_chars > budget,
+    };
+    log::info!(
+        target: "admin",
+        "import_skill_package id={} files={} total_chars={} over_budget={}",
+        package.id,
+        report.file_count,
+        report.total_chars,
+        report.over_budget
+    );
+    Ok(Json(ImportSkillPackageResponse { package, report }))
+}
+
+/// GET /api/admin/skill-packages/:id — 技能包详情（含文件内容）
+pub async fn get_skill_package(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<Json<SkillPackage>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let package = skill_package::get_skill_package(conn, &id)?
+        .ok_or_else(|| ApiError::not_found("技能包不存在"))?;
+    log::info!(target: "admin", "get_skill_package id={}", id);
+    Ok(Json(package))
+}
+
+/// DELETE /api/admin/skill-packages/:id — 删除技能包（级联删文件与绑定）；
+/// legacy 包（slug 形如 legacy-%）拒绝经此端点删除，引导回数字人技能面板
+pub async fn delete_skill_package(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let package = skill_package::get_skill_package(conn, &id)?
+        .ok_or_else(|| ApiError::not_found("技能包不存在"))?;
+    if skill_package::is_legacy_package_slug(&package.slug) {
+        return Err(ApiError::bad_request("内联技能包请在数字人技能面板中删除对应技能"));
+    }
+    // 先删绑定（显式删除，不依赖外键级联）再删包与文件
+    conn.execute("DELETE FROM agent_skill_bindings WHERE package_id = ?1", rusqlite::params![id])
+        .map_err(ApiError::from)?;
+    skill_package::delete_skill_package(conn, &id)?;
+    log::info!(target: "admin", "delete_skill_package id={}", id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// GET /api/admin/skill-packages/:id/files — 技能包文件列表（含内容）
+pub async fn list_skill_package_files(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<SkillPackageFile>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    if skill_package::get_skill_package(conn, &id)?.is_none() {
+        return Err(ApiError::not_found("技能包不存在"));
+    }
+    let files = skill_package::list_package_files(conn, &id)?;
+    log::info!(target: "admin", "list_skill_package_files id={} count={}", id, files.len());
+    Ok(Json(files))
+}
+
+/// GET /api/admin/digital-agents/:id/skill-bindings — 数字人的技能包绑定列表
+pub async fn list_skill_bindings(
+    State(state): State<SharedState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Vec<SkillBinding>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    if agent_config::get_digital_agent(conn, &agent_id)?.is_none() {
+        return Err(ApiError::not_found("数字人不存在"));
+    }
+    let bindings = skill_package::list_bindings(conn, &agent_id)?;
+    log::info!(target: "admin", "list_skill_bindings agent_id={} count={}", agent_id, bindings.len());
+    Ok(Json(bindings))
+}
+
+/// PUT /api/admin/digital-agents/:id/skill-bindings — 全量替换技能包绑定
+pub async fn update_skill_bindings(
+    State(state): State<SharedState>,
+    Path(agent_id): Path<String>,
+    Json(req): Json<UpdateSkillBindingsRequest>,
+) -> Result<Json<Vec<SkillBinding>>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    if agent_config::get_digital_agent(conn, &agent_id)?.is_none() {
+        return Err(ApiError::not_found("数字人不存在"));
+    }
+    // 先校验引用的技能包存在，避免外键约束错误退化为 500
+    for binding in &req.bindings {
+        if skill_package::get_skill_package(conn, &binding.package_id)?.is_none() {
+            return Err(ApiError::bad_request(format!(
+                "技能包不存在：{}",
+                binding.package_id
+            )));
+        }
+    }
+    let bindings = req
+        .bindings
+        .into_iter()
+        .map(|b| (b.package_id, b.sort_order))
+        .collect();
+    skill_package::replace_bindings(conn, &agent_id, bindings)?;
+    let result = skill_package::list_bindings(conn, &agent_id)?;
+    log::info!(target: "admin", "update_skill_bindings agent_id={} count={}", agent_id, result.len());
+    Ok(Json(result))
+}
+
+// ============================================================
 // 公开接口：前端获取已激活的数字人列表（需要登录，但不需要 admin）
 // ============================================================
 
@@ -315,4 +539,56 @@ pub async fn list_active_digital_agents(
     let active: Vec<_> = agents.into_iter().filter(|a| a.is_active).collect();
     log::info!(target: "agent_config", "list_active_digital_agents count={}", active.len());
     Ok(Json(active))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files_of(count: usize, content: &str) -> Vec<(String, String)> {
+        (0..count)
+            .map(|i| (format!("f{}.md", i), content.to_string()))
+            .collect()
+    }
+
+    /// 三项限额：正常包放行；文件数/单文件/总字符超限分别拒绝（携带中文原因）
+    #[test]
+    fn check_package_limits_enforces_three_caps() {
+        // 正常包放行
+        assert!(check_package_limits(&files_of(2, "内容")).is_ok());
+
+        // 文件数超限
+        let err = check_package_limits(&files_of(IMPORT_MAX_FILES + 1, "x")).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("文件数超限"));
+
+        // 恰好等于上限不算超限
+        assert!(check_package_limits(&files_of(IMPORT_MAX_FILES, "x")).is_ok());
+
+        // 单文件超限
+        let big = vec![("SKILL.md".to_string(), "字".repeat(IMPORT_MAX_FILE_CHARS + 1))];
+        let err = check_package_limits(&big).unwrap_err();
+        assert!(err.message.contains("单文件超出大小限制"));
+        assert!(err.message.contains("SKILL.md"));
+
+        // 总字符超限（单文件不超、合计超）
+        let many_big: Vec<(String, String)> = (0..6)
+            .map(|i| (format!("f{}.md", i), "字".repeat(180_000)))
+            .collect();
+        let err = check_package_limits(&many_big).unwrap_err();
+        assert!(err.message.contains("总字符超限"));
+
+        // 非法路径拒绝（携带中文原因）
+        let bad_path = vec![("../etc/passwd".to_string(), "x".to_string())];
+        let err = check_package_limits(&bad_path).unwrap_err();
+        assert!(err.message.contains(".."));
+    }
+
+    /// legacy 包 slug 识别：legacy- 前缀命中，其余不命中
+    #[test]
+    fn legacy_slug_detection() {
+        assert!(skill_package::is_legacy_package_slug("legacy-abc"));
+        assert!(!skill_package::is_legacy_package_slug("my-skill-1a2b"));
+        assert!(!skill_package::is_legacy_package_slug(""));
+    }
 }

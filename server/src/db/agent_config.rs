@@ -58,7 +58,12 @@ pub fn update_digital_agent(conn: &Connection, id: &str, req: CreateDigitalAgent
 }
 
 pub fn delete_digital_agent(conn: &Connection, id: &str) -> Result<(), rusqlite::Error> {
-    conn.execute("DELETE FROM digital_agents WHERE id = ?1", params![id])?;
+    // 事务内：显式删绑定（不依赖外键级联）→ 删数字人 → 清理已无绑定的孤儿 legacy 包
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM agent_skill_bindings WHERE agent_id = ?1", params![id])?;
+    tx.execute("DELETE FROM digital_agents WHERE id = ?1", params![id])?;
+    crate::db::skill_package::cleanup_orphan_legacy_packages(&tx)?;
+    tx.commit()?;
     log::info!(target: "db", "delete_digital_agent id={}", id);
     Ok(())
 }
@@ -147,11 +152,24 @@ pub fn create_agent_skill(conn: &Connection, req: CreateAgentSkillRequest) -> Re
     let is_active: i32 = req.is_active.unwrap_or(true).into();
     let skill_config_json = req.skill_config_json.unwrap_or_else(|| "{}".to_string());
 
-    conn.execute(
+    // 技能行写入 + legacy 同步包在同一事务内，消除半提交（先例：
+    // skill_package::create_skill_package 的 unchecked_transaction）
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "INSERT INTO agent_skills (id, agent_id, skill_name, skill_config_json, skill_markdown, trigger_scenario, is_active, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![id, req.agent_id, req.skill_name, skill_config_json, req.skill_markdown, req.trigger_scenario, is_active, now, now],
     )?;
+    // 与新注入视图保持一致：非空 markdown 同步为 legacy inline 包 + 绑定
+    sync_legacy_package_for_skill(
+        &tx,
+        &id,
+        &req.agent_id,
+        &req.skill_name,
+        req.skill_markdown.as_deref(),
+        is_active != 0,
+    )?;
+    tx.commit()?;
     log::info!(target: "db", "create_agent_skill id={} agent_id={}", id, req.agent_id);
     get_agent_skill(conn, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
@@ -160,18 +178,58 @@ pub fn update_agent_skill(conn: &Connection, id: &str, req: CreateAgentSkillRequ
     let now = Utc::now().to_rfc3339();
     let is_active: i32 = req.is_active.unwrap_or(true).into();
     let skill_config_json = req.skill_config_json.unwrap_or_else(|| "{}".to_string());
-    conn.execute(
+    // 技能行更新 + legacy 同步包在同一事务内，消除半提交
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE agent_skills SET agent_id=?1, skill_name=?2, skill_config_json=?3, skill_markdown=?4, trigger_scenario=?5, is_active=?6, updated_at=?7 WHERE id=?8",
         params![req.agent_id, req.skill_name, skill_config_json, req.skill_markdown, req.trigger_scenario, is_active, now, id],
     )?;
+    // 同步 legacy 包内容与绑定（update 全量覆盖字段，以新状态为准）
+    sync_legacy_package_for_skill(
+        &tx,
+        id,
+        &req.agent_id,
+        &req.skill_name,
+        req.skill_markdown.as_deref(),
+        is_active != 0,
+    )?;
+    tx.commit()?;
     log::info!(target: "db", "update_agent_skill id={}", id);
     Ok(())
 }
 
 pub fn delete_agent_skill(conn: &Connection, id: &str) -> Result<(), rusqlite::Error> {
     conn.execute("DELETE FROM agent_skills WHERE id = ?1", params![id])?;
+    // 同步删除对应 legacy 包与绑定（不存在则忽略）
+    crate::db::skill_package::delete_legacy_package(conn, &format!("legacy-{}", id))?;
     log::info!(target: "db", "delete_agent_skill id={}", id);
     Ok(())
+}
+
+/// 旧单文档技能与技能包注入视图的同步（幂等）：skill_markdown 非空（trim 后）
+/// 时 upsert slug=`legacy-<skill_id>` 的 inline 包（单文件 SKILL.md）+ 绑定，
+/// 包 is_active 跟随技能启停；为空时删除对应 legacy 包（不存在则忽略），
+/// 避免旧包残留继续注入。
+fn sync_legacy_package_for_skill(
+    conn: &Connection,
+    skill_id: &str,
+    agent_id: &str,
+    skill_name: &str,
+    skill_markdown: Option<&str>,
+    is_active: bool,
+) -> Result<(), rusqlite::Error> {
+    let slug = format!("legacy-{}", skill_id);
+    match skill_markdown {
+        Some(md) if !md.trim().is_empty() => crate::db::skill_package::upsert_legacy_package(
+            conn,
+            &slug,
+            agent_id,
+            skill_name,
+            md,
+            is_active,
+        ),
+        _ => crate::db::skill_package::delete_legacy_package(conn, &slug),
+    }
 }
 
 /// 构建指定数字人的技能 prompt（运行时注入点）。
@@ -180,39 +238,61 @@ pub fn delete_agent_skill(conn: &Connection, id: &str) -> Result<(), rusqlite::E
 /// 经 `llm::general_chat_prompt` 注入 /api/chat 与 /api/chat/stream 两条链路。
 /// 决策：NLQ 链路（routeMode=relationship 的 extract_* JSON 抽取）不接线技能注入。
 ///
-/// 取该 agent 下 is_active=1 的技能，按 created_at 升序排列，
-/// 每条先剥离 skill_markdown 的 frontmatter（`---` 开闭块）再拼为
-/// `### 技能：<skill_name>\n<正文>\n\n`；skill_markdown 为空/空白（含仅剩
-/// frontmatter）的技能跳过；无可用技能时返回空串。
+/// 按 `agent_skill_bindings.sort_order ASC, created_at ASC` 遍历该 agent
+/// 绑定的 is_active=1 技能包，每包取其 SKILL.md 入口文件折叠为一段
+/// `### 技能：<frontmatter name>\n<正文>\n\n`（正文先剥离 frontmatter；
+/// 有附属文档时附 `#### 附属文档` 索引，单包预算
+/// `RG_SKILL_PACKAGE_BUDGET_CHARS` 默认 2000）；无绑定时返回空串。
 ///
-/// 拼接结果超过字符预算（默认 3000，env `RG_SKILL_BUDGET_CHARS` 可覆盖）时，
+/// 拼接结果超过共享字符预算（默认 3000，env `RG_SKILL_BUDGET_CHARS` 可覆盖）时，
 /// 截断到最近一个 `### 技能：` 边界并追加一行截断说明；日志仅记元数据，不落内容。
 pub fn build_skills_prompt(conn: &Connection, agent_id: &str) -> Result<String, rusqlite::Error> {
-    let sql = "SELECT skill_name, skill_markdown FROM agent_skills
-               WHERE agent_id = ?1 AND is_active = 1
-               ORDER BY created_at ASC";
+    let sql = "SELECT p.display_name, p.manifest_json, f.content
+               FROM agent_skill_bindings b
+               JOIN skill_packages p ON p.id = b.package_id
+               JOIN skill_package_files f ON f.package_id = p.id AND lower(f.rel_path) = 'skill.md'
+               WHERE b.agent_id = ?1 AND p.is_active = 1
+               ORDER BY b.sort_order ASC, b.created_at ASC";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![agent_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
         ))
     })?;
 
+    let package_budget = crate::db::skill_package::skill_package_budget_chars();
     let mut prompt = String::new();
     let mut count = 0usize;
     for row in rows {
-        let (skill_name, skill_markdown) = row?;
-        let markdown = match skill_markdown {
-            Some(md) if !md.trim().is_empty() => md,
-            _ => continue,
-        };
-        let body = strip_skill_frontmatter(&markdown);
+        let (display_name, manifest_json, content) = row?;
+        let body = strip_skill_frontmatter(&content);
         let body = body.trim();
         if body.is_empty() {
             continue;
         }
-        prompt.push_str(&format!("### 技能：{}\n{}\n\n", skill_name, body));
+        // 段标题用包展示名（legacy 包 = 原 skill_name，imported 包缺省
+        // 为 frontmatter name），与旧单文档注入格式保持一致
+        // 附属文档索引取自创建时落库的 manifest_json（legacy/inline 包无
+        // manifest 时为空，无需重走完整 parse）；正文以文件表为准
+        let sub_docs = manifest_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<crate::db::skill_package::PackageManifest>(json).ok())
+            .map(|m| m.sub_docs)
+            .unwrap_or_default();
+        let manifest = crate::db::skill_package::PackageManifest {
+            name: display_name,
+            description: String::new(),
+            body: body.to_string(),
+            entry_prefix: String::new(),
+            entry_path: "SKILL.md".to_string(),
+            sub_docs,
+        };
+        prompt.push_str(&crate::db::skill_package::assemble_package_section(
+            &manifest,
+            package_budget,
+        ));
         count += 1;
     }
 

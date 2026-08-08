@@ -5,6 +5,7 @@ pub mod person;
 pub mod relationship;
 pub mod schema;
 pub mod session;
+pub mod skill_package;
 pub mod user;
 
 #[cfg(test)]

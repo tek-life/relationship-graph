@@ -1,4 +1,4 @@
-use crate::db::agent_config;
+use crate::db::{agent_config, skill_package};
 use rusqlite::Connection;
 use std::time::Instant;
 
@@ -160,6 +160,39 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             FOREIGN KEY (agent_id) REFERENCES digital_agents(id) ON DELETE CASCADE
         );
 
+        -- 技能包（多文件技能）与数字人多对多绑定
+        CREATE TABLE IF NOT EXISTS skill_packages (
+            id TEXT PRIMARY KEY,
+            slug TEXT UNIQUE NOT NULL,
+            display_name TEXT NOT NULL,
+            description TEXT,
+            source_kind TEXT NOT NULL DEFAULT 'inline',
+            manifest_json TEXT,
+            total_chars INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS skill_package_files (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            rel_path TEXT NOT NULL,
+            content TEXT NOT NULL,
+            size_chars INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (package_id) REFERENCES skill_packages(id) ON DELETE CASCADE,
+            UNIQUE(package_id, rel_path)
+        );
+        CREATE TABLE IF NOT EXISTS agent_skill_bindings (
+            agent_id TEXT NOT NULL,
+            package_id TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(agent_id, package_id),
+            FOREIGN KEY (agent_id) REFERENCES digital_agents(id) ON DELETE CASCADE,
+            FOREIGN KEY (package_id) REFERENCES skill_packages(id) ON DELETE CASCADE
+        );
+
         -- Profile QA 指令配置
         CREATE TABLE IF NOT EXISTS qa_instruction_modules (
             id TEXT PRIMARY KEY,
@@ -183,6 +216,8 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
         CREATE INDEX IF NOT EXISTS idx_digital_agents_active ON digital_agents(is_active);
         CREATE INDEX IF NOT EXISTS idx_agent_skills_agent ON agent_skills(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_skill_files_package ON skill_package_files(package_id);
+        CREATE INDEX IF NOT EXISTS idx_skill_bindings_package ON agent_skill_bindings(package_id);
         CREATE INDEX IF NOT EXISTS idx_qa_modules_active ON qa_instruction_modules(is_active);
         "
     );
@@ -198,7 +233,126 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     ensure_relationship_columns(conn)?;
     ensure_agent_skills_columns(conn)?;
     repair_orphan_sessions(conn)?;
+    // 存量技能迁移失败不得阻断服务启动：记日志后继续，
+    // 事务回滚保证下次启动可整体重跑
+    if let Err(error) = migrate_legacy_skills(conn) {
+        log::warn!(
+            target: "db",
+            "migrate_legacy_skills_failed error={}（下次启动重试）",
+            error
+        );
+    }
     agent_config::seed_defaults(conn)
+}
+
+/// 存量单文档技能迁移：将 agent_skills 中 skill_markdown 非空（trim 后）的行
+/// 转为 source_kind='inline' 的技能包（slug = `legacy-<原 skill id>`）+
+/// 单文件（rel_path='SKILL.md'，content=原 skill_markdown）+ 绑定
+/// （sort_order 按 created_at 顺序递增）。
+///
+/// 幂等：以 slug 存在性查重，重复执行零副作用；skill_config_json 旧 JSON
+/// 形态（skill_markdown 为空）不迁移；agent_skills 旧表保留不删。
+///
+/// 健壮性：整体用事务包裹（整段失败回滚、下次重跑），但行级失败降级：
+/// 单行 upsert 失败记 log::warn（仅记 skill_id 与错误，不落内容）后跳过，
+/// 不阻断其余行迁移；孤儿 agent_id（数字人已不存在）在 PRAGMA foreign_keys=ON
+/// 下会触发绑定 FK 错误，预检跳过化解；sort_order 取当前绑定计数，
+/// 重入（部分成功后重跑）不会产生重复序号。
+fn migrate_legacy_skills(conn: &Connection) -> Result<(), rusqlite::Error> {
+    // 先把待迁移行收集完（释放 statement）再开事务
+    let rows: Vec<(String, String, String, String, i32)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, skill_name, skill_markdown, is_active FROM agent_skills
+             WHERE skill_markdown IS NOT NULL
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i32>(4)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let tx = conn.unchecked_transaction()?;
+    let mut migrated = 0usize;
+    for (skill_id, agent_id, skill_name, skill_markdown, is_active_int) in rows {
+        if skill_markdown.trim().is_empty() {
+            continue;
+        }
+        let slug = format!("legacy-{}", skill_id);
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM skill_packages WHERE slug = ?1)",
+            [&slug],
+            |row| row.get(0),
+        )?;
+        if exists {
+            continue;
+        }
+        // 孤儿 agent_id 预检：foreign_keys=ON 下绑定插入会触发 FK 错误
+        // （INSERT OR IGNORE 不豁免 FK），提前跳过并告警
+        let agent_exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM digital_agents WHERE id = ?1)",
+            [&agent_id],
+            |row| row.get(0),
+        )?;
+        if !agent_exists {
+            log::warn!(
+                target: "db",
+                "migrate_legacy_skills_skip_orphan_agent skill_id={} agent_id={}",
+                skill_id,
+                agent_id
+            );
+            continue;
+        }
+        // sort_order 取当前绑定计数：事务内逐行插入自然递增，
+        // 部分成功后重跑也不会与已有绑定撞号
+        let sort_order: i32 = tx.query_row(
+            "SELECT COUNT(*) FROM agent_skill_bindings WHERE agent_id = ?1",
+            [&agent_id],
+            |row| row.get(0),
+        )?;
+        let row_result = skill_package::upsert_legacy_package(
+            &tx,
+            &slug,
+            &agent_id,
+            &skill_name,
+            &skill_markdown,
+            is_active_int != 0,
+        )
+        .and_then(|()| {
+            // upsert 默认 sort_order=0，存量迁移需按 created_at 顺序递增
+            tx.execute(
+                "UPDATE agent_skill_bindings SET sort_order = ?1 WHERE agent_id = ?2 AND package_id = (SELECT id FROM skill_packages WHERE slug = ?3)",
+                rusqlite::params![sort_order, agent_id, slug],
+            )
+            .map(|_| ())
+        });
+        match row_result {
+            Ok(()) => migrated += 1,
+            Err(error) => {
+                // 行级降级：清理本行可能残留的包/文件/绑定（保持事务可用），
+                // 仅记 skill_id 与错误（不落内容）后继续
+                let _ = skill_package::delete_legacy_package(&tx, &slug);
+                log::warn!(
+                    target: "db",
+                    "migrate_legacy_skills_row_failed skill_id={} error={}",
+                    skill_id,
+                    error
+                );
+                continue;
+            }
+        }
+    }
+    tx.commit()?;
+    if migrated > 0 {
+        log::info!(target: "db", "migrate_legacy_skills count={}", migrated);
+    }
+    Ok(())
 }
 
 /// 数据完整性修复：早期版本曾用不存在的占位 user_id（如 'default'）创建会话，
