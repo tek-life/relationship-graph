@@ -181,7 +181,7 @@ export interface AgentDraftArtifact {
   kind: 'draft';
   title: string;
   summary: string;
-  response: Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }>;
+  response: Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'deletePersonDraft' | 'addInteractionDraft' }>;
 }
 
 export interface AgentPathArtifact {
@@ -219,6 +219,7 @@ export type NlqResponse =
   | { intentType: 'searchPeople'; results: NlqResult[] }
   | { intentType: 'createPersonDraft'; draft: PersonDraft }
   | { intentType: 'updatePersonDraft'; draft: UpdateDraft }
+  | { intentType: 'deletePersonDraft'; draft: DeleteDraft }
   | { intentType: 'addInteractionDraft'; draft: InteractionDraft }
   | { intentType: 'findPath'; path: PathData };
 
@@ -237,6 +238,13 @@ export interface UpdateDraft {
   targetPerson?: Person;
   candidates: Person[];
   changes: FieldChange[];
+  confidence: number;
+  errorHint?: string;
+}
+
+export interface DeleteDraft {
+  targetPerson?: Person;
+  candidates: Person[];
   confidence: number;
   errorHint?: string;
 }

@@ -61,6 +61,14 @@ function formatNlqResponse(resp: NlqResponse): ChatRouterResponse {
       return { type: 'nlq', nlqResponse: resp, reply };
     }
 
+    case 'deletePersonDraft': {
+      const d = resp.draft;
+      const reply = d.targetPerson
+        ? `确认要删除联系人 **${d.targetPerson.name}** 吗？其互动记录与关系也会一并删除，且不可恢复。`
+        : d.errorHint ?? '识别到删除请求，请选择要删除的联系人。';
+      return { type: 'nlq', nlqResponse: resp, reply };
+    }
+
     case 'addInteractionDraft': {
       const d = resp.draft;
       const reply = `识别到互动记录草稿：与 **${d.personMention}** 的沟通${d.summary ? `——${d.summary}` : ''}，请确认。`;

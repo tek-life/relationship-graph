@@ -640,7 +640,7 @@ function ChatBubble({ message, onPersonClick, onShowPanel, onClosePanel, onConfi
                     response={
                       message.response as Extract<
                         NlqResponse,
-                        { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }
+                        { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'deletePersonDraft' | 'addInteractionDraft' }
                       >
                     }
                     onConfirm={onConfirm}

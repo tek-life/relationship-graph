@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import type { InteractionDraft, NlqResponse, Person, PersonDraft, UpdateDraft } from '../types';
+import type { DeleteDraft, InteractionDraft, NlqResponse, Person, PersonDraft, UpdateDraft } from '../types';
 
-type DraftResponse = Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'addInteractionDraft' }>;
+type DraftResponse = Extract<NlqResponse, { intentType: 'createPersonDraft' | 'updatePersonDraft' | 'deletePersonDraft' | 'addInteractionDraft' }>;
 
 interface DraftConfirmationProps {
   response: DraftResponse;
@@ -15,6 +15,9 @@ export default function DraftConfirmation({ response, onConfirm, onCancel }: Dra
   }
   if (response.intentType === 'updatePersonDraft') {
     return <UpdatePersonDraftForm draft={response.draft} onConfirm={onConfirm} onCancel={onCancel} />;
+  }
+  if (response.intentType === 'deletePersonDraft') {
+    return <DeletePersonDraftForm draft={response.draft} onConfirm={onConfirm} onCancel={onCancel} />;
   }
   if (response.intentType === 'addInteractionDraft') {
     return <AddInteractionDraftForm draft={response.draft} onConfirm={onConfirm} onCancel={onCancel} />;
@@ -264,6 +267,74 @@ function AddInteractionDraftForm({
         </button>
         <button type="button" className="btn-primary rounded px-4 py-2 text-sm" disabled={!selectedPerson} onClick={handleSubmit}>
           确认新增互动
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// === 删除联系人草稿表单 ===
+function DeletePersonDraftForm({
+  draft,
+  onConfirm,
+  onCancel,
+}: {
+  draft: DeleteDraft;
+  onConfirm: (intentType: string, data: Record<string, unknown>) => void;
+  onCancel: () => void;
+}) {
+  const [selectedPerson, setSelectedPerson] = useState<Person | undefined>(draft.targetPerson);
+
+  const handleSubmit = () => {
+    if (!selectedPerson) return;
+    onConfirm('deletePersonDraft', { personId: selectedPerson.id });
+  };
+
+  return (
+    <div className="rounded-xl border p-4 space-y-3" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
+      <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>删除联系人确认</h3>
+      {draft.errorHint && (
+        <p className="text-sm text-amber-700 bg-amber-50 rounded p-2">{draft.errorHint}</p>
+      )}
+      {!selectedPerson && draft.candidates.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>请选择要删除的联系人：</p>
+          <div className="flex flex-wrap gap-2">
+            {draft.candidates.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="rounded border px-3 py-1 text-sm transition hover:opacity-80"
+                style={{ borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
+                onClick={() => setSelectedPerson(p)}
+              >
+                {p.name}{p.company ? ` (${p.company})` : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {selectedPerson && (
+        <>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            目标：<span className="font-medium" style={{ color: 'var(--text-primary)' }}>{selectedPerson.name}</span>
+            {selectedPerson.company ? `（${selectedPerson.company}）` : ''}
+          </p>
+          <p className="text-sm text-red-600 bg-red-50 rounded p-2">删除后其互动记录与关系也会一并删除，且不可恢复。</p>
+        </>
+      )}
+      <div className="flex justify-end gap-2 pt-2">
+        <button type="button" className="rounded px-4 py-2 text-sm" style={{ backgroundColor: 'var(--surface-hover)', color: 'var(--text-secondary)' }} onClick={onCancel}>
+          取消
+        </button>
+        <button
+          type="button"
+          className="rounded px-4 py-2 text-sm text-white"
+          style={{ backgroundColor: '#dc2626' }}
+          disabled={!selectedPerson}
+          onClick={handleSubmit}
+        >
+          确认删除
         </button>
       </div>
     </div>

@@ -1508,6 +1508,36 @@ pub async fn extract_path_target(query: &str) -> String {
     }
 }
 
+/// 从自然语言中提取要删除的联系人名（用于 delete_person 意图）
+pub async fn extract_delete_target(query: &str) -> String {
+    let prompt = format!(
+        r#"请从以下文字中提取要删除的联系人姓名，只输出JSON：
+{{"target_name": "人名"}}
+
+文字：{}"#,
+        query
+    );
+
+    match call_ollama(
+        &prompt,
+        Some("json"),
+        ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS),
+        "extract_delete_target",
+        false,
+    ).await {
+        Ok(json_str) => {
+            serde_json::from_str::<serde_json::Value>(&json_str)
+                .ok()
+                .and_then(|v| v["target_name"].as_str().map(String::from))
+                .unwrap_or_default()
+        }
+        Err(e) => {
+            warn!(target: "llm", "extract_delete_target failed: {}", e);
+            String::new()
+        }
+    }
+}
+
 fn empty_person_draft() -> PersonDraft {
     PersonDraft {
         name: String::new(),

@@ -583,6 +583,9 @@ async fn delete_person(
     let owner_id = require_user_id(user)?;
     let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
     let conn = get_conn(&guard)?;
+    // 先校验存在与归属，避免删除不存在的 id 仍返回 deleted:true
+    person::get_by_id(conn, &owner_id, &id)?
+        .ok_or_else(|| ApiError::not_found("数据不存在或无权访问"))?;
     person::delete(conn, &owner_id, &id)?;
     log::info!(target: "person_cmd", "delete_person_success");
     Ok(Json(serde_json::json!({ "deleted": true })))
@@ -1336,6 +1339,19 @@ async fn nlq_multi_handler(
             let draft = crate::llm::extract_person_fields(&req.query).await;
             Ok(Json(NlqResponse::CreatePersonDraft { draft }))
         }
+        "delete_person" => {
+            // 人名提取：LLM 优先，失败时规则兜底；空名由 handle_delete_person_sync 返回提示草稿
+            let target_name = crate::llm::extract_delete_target(&req.query).await;
+            let target_name = if target_name.trim().is_empty() {
+                nlq::extract_delete_name_fallback(&req.query)
+            } else {
+                target_name
+            };
+            let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+            let conn = get_conn(&guard)?;
+            let response = nlq::handle_delete_person_sync(conn, &owner_id, &target_name)?;
+            Ok(Json(response))
+        }
         "update_person" => {
             let (target_name, changes) = crate::llm::extract_update_fields(&req.query).await;
             let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
@@ -1392,6 +1408,19 @@ async fn nlq_confirm_handler(
                 .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?;
             let created = person::create(conn, &owner_id, create_req)?;
             Ok(Json(serde_json::to_value(created).unwrap()))
+        }
+        "delete_person" | "deletePersonDraft" => {
+            // 前端草稿确认契约：{personId}；删除为不可逆操作，先校验存在与归属
+            let id = req.data["personId"]
+                .as_str()
+                .or_else(|| req.data["id"].as_str())
+                .ok_or_else(|| ApiError::bad_request("Missing person id"))?
+                .to_string();
+            person::get_by_id(conn, &owner_id, &id)?
+                .ok_or_else(|| ApiError::not_found("数据不存在或无权访问"))?;
+            person::delete(conn, &owner_id, &id)?;
+            log::info!(target: "nlq", "delete_person_confirmed");
+            Ok(Json(serde_json::json!({ "deleted": true })))
         }
         "update_person" | "updatePersonDraft" => {
             if req.data.get("changes").is_some() {

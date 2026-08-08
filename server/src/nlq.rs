@@ -1,6 +1,6 @@
 use crate::security::sensitivity;
 use crate::types::{
-    FieldChange, InteractionDraft, NlqResponse, PathData, PathEdge, PathNode, Person, UpdateDraft,
+    DeleteDraft, FieldChange, InteractionDraft, NlqResponse, PathData, PathEdge, PathNode, Person, UpdateDraft,
 };
 use chrono::{DateTime, Duration, Utc};
 use log::{debug, info};
@@ -460,9 +460,13 @@ fn is_older_than(value: Option<&str>, days: i64) -> bool {
 // === 多意图分类（规则式，不使用 LLM） ===
 
 pub fn classify_intent(query: &str) -> &'static str {
-    // 优先级：find_path > add_interaction > update_person > create_person > search_people
+    // 优先级：find_path > delete_person > add_interaction > update_person > create_person > search_people
+    // delete 置于 update/create 之前：如“他离职了，把他删了”同时命中 update 关键词时删除意图优先
     if contains_any(query, &["怎么认识", "通过谁", "什么关系", "联系到", "认识路径", "关系链"]) {
         return "find_path";
+    }
+    if contains_any(query, &["删除", "删掉", "移除", "删了"]) {
+        return "delete_person";
     }
     if contains_any(query, &["聊了", "谈了", "讨论了", "沟通了", "见了面", "吃饭", "开会", "打了电话", "发了消息"]) {
         return "add_interaction";
@@ -551,6 +555,52 @@ pub fn handle_update_person_sync(
             error_hint,
         },
     })
+}
+
+/// delete_person 意图：人名消歧 + 组装删除草稿（实际删除需用户确认）
+pub fn handle_delete_person_sync(
+    conn: &Connection,
+    owner_id: &str,
+    target_name: &str,
+) -> Result<NlqResponse, String> {
+    let name = target_name.trim();
+    if name.is_empty() {
+        return Ok(NlqResponse::DeletePersonDraft {
+            draft: DeleteDraft {
+                target_person: None,
+                candidates: vec![],
+                confidence: 0,
+                error_hint: Some("无法识别要删除的联系人姓名，请直接告诉我姓名".to_string()),
+            },
+        });
+    }
+    let candidates = search_persons_by_name(conn, owner_id, name)?;
+    let (target_person, error_hint, confidence) = if candidates.len() == 1 {
+        (Some(candidates[0].clone()), None, 90u8)
+    } else if candidates.is_empty() {
+        (None, Some("未找到匹配的联系人".to_string()), 20)
+    } else {
+        (None, None, 40)
+    };
+
+    Ok(NlqResponse::DeletePersonDraft {
+        draft: DeleteDraft {
+            target_person,
+            candidates,
+            confidence,
+            error_hint,
+        },
+    })
+}
+
+/// delete_person 人名提取兜底：LLM 不可用/抽取失败时按关键词剥离
+pub fn extract_delete_name_fallback(query: &str) -> String {
+    let mut s = query.to_string();
+    for kw in ["删除联系人", "删除", "删掉", "移除", "删了", "帮我", "帮忙", "请", "把", "吧", "一下", "联系人"] {
+        s = s.replace(kw, "");
+    }
+    let s: String = s.chars().filter(|c| !"，,。!！?？、 \t".contains(*c)).collect();
+    if s.chars().count() <= 12 { s } else { String::new() }
 }
 
 /// add_interaction 意图：人名消歧 + 组装草稿
@@ -799,6 +849,14 @@ mod tests {
     fn test_classify_intent_update() {
         assert_eq!(classify_intent("张明去了新公司XX科技"), "update_person");
         assert_eq!(classify_intent("李华的职位变成了总监"), "update_person");
+    }
+
+    #[test]
+    fn test_classify_intent_delete() {
+        assert_eq!(classify_intent("删除联系人 李示例"), "delete_person");
+        assert_eq!(classify_intent("把王样本删掉"), "delete_person");
+        assert_eq!(classify_intent("他离职了，把他删了"), "delete_person");
+        assert_eq!(classify_intent("移除联系人赵演示"), "delete_person");
     }
 
     #[test]

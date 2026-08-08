@@ -194,6 +194,7 @@ pub enum NlqResponse {
     SearchPeople { results: Vec<crate::nlq::NlqResult> },
     CreatePersonDraft { draft: PersonDraft },
     UpdatePersonDraft { draft: UpdateDraft },
+    DeletePersonDraft { draft: DeleteDraft },
     AddInteractionDraft { draft: InteractionDraft },
     FindPath { path: PathData },
 }
@@ -225,6 +226,16 @@ pub struct UpdateDraft {
     pub target_person: Option<Person>,
     pub candidates: Vec<Person>,
     pub changes: Vec<FieldChange>,
+    pub confidence: u8,
+    pub error_hint: Option<String>,
+}
+
+/// 删除联系人草稿：人名消歧结果 + 置信度，经用户确认后执行删除
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteDraft {
+    pub target_person: Option<Person>,
+    pub candidates: Vec<Person>,
     pub confidence: u8,
     pub error_hint: Option<String>,
 }

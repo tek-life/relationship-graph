@@ -372,6 +372,7 @@ export function useChat(userId?: string | null): UseChatReturn {
             break;
           case 'createPersonDraft':
           case 'updatePersonDraft':
+          case 'deletePersonDraft':
           case 'addInteractionDraft':
             assistantMsg.resultType = 'draft';
             assistantMsg.response = nlq;
