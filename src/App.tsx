@@ -117,10 +117,10 @@ function App() {
           <h1 className="text-base font-bold whitespace-nowrap">Personal AI Platform</h1>
           <nav className="flex gap-1">
             <TabButton active={isHomeActive} onClick={() => navigate('/')}>首页</TabButton>
+            <TabButton active={isPathActive('/profile-qa')} onClick={() => navigate('/profile-qa')}>内观画像</TabButton>
             <TabButton active={isPathActive('/contacts')} onClick={() => navigate('/contacts')}>联系人</TabButton>
             <TabButton active={isPathActive('/graph')} onClick={() => navigate('/graph')}>图谱</TabButton>
             <TabButton active={isPathActive('/import')} onClick={() => navigate('/import')}>导入</TabButton>
-            <TabButton active={isPathActive('/profile-qa')} onClick={() => navigate('/profile-qa')}>内观画像</TabButton>
             {isAdmin && (
               <TabButton active={isPathActive('/admin')} onClick={() => navigate('/admin')}>管理后台</TabButton>
             )}
