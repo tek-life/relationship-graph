@@ -1,6 +1,7 @@
 // 图片 OCR 按钮：懒加载 tesseract.js（仅在选图/粘贴时 import），识别结果通过 onText 追加到输入框。
 // worker 与 wasm core 已本地化到 public/tesseract/，traineddata 走 jsdelivr CDN（首次识别需联网，之后走缓存）。
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { Camera } from 'lucide-react';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const OCR_LANGS = 'chi_sim+eng';
@@ -150,11 +151,11 @@ const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOc
       <button
         type="button"
         title="上传图片识别文字（也可直接粘贴截图）"
-        className="rounded-full p-2 text-lg leading-none transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex items-center justify-center rounded-full p-2 transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
         disabled={disabled || running}
         onClick={() => fileInputRef.current?.click()}
       >
-        📷
+        <Camera size={18} aria-hidden="true" />
       </button>
 
       {panelVisible && (

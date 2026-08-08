@@ -1,6 +1,7 @@
 // 内观画像指令模块管理：CRUD + 排序调整
 
 import { useCallback, useEffect, useState } from 'react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { apiDelete, apiGet, apiPost, apiPut } from '../../services/api';
 import type { CreateQaInstructionModuleRequest, QaInstructionModule } from './types';
 import { ConfirmDialog, EmptyState, ErrorBanner, LoadingSpinner, StatusBadge } from './shared';
@@ -319,7 +320,7 @@ export default function QaModuleManager() {
                         onClick={() => handleMove(index, 'up')}
                         title="上移"
                       >
-                        ▲
+                        <ChevronUp size={14} aria-hidden="true" />
                       </button>
                       <button
                         type="button"
@@ -329,7 +330,7 @@ export default function QaModuleManager() {
                         onClick={() => handleMove(index, 'down')}
                         title="下移"
                       >
-                        ▼
+                        <ChevronDown size={14} aria-hidden="true" />
                       </button>
                     </div>
                   </td>

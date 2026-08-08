@@ -1,3 +1,4 @@
+import { ArrowRight } from 'lucide-react';
 import type { PathData } from '../types';
 
 interface PathResultDisplayProps {
@@ -39,20 +40,14 @@ export default function PathResultDisplay({ path, onPersonClick }: PathResultDis
               </button>
               {edge && (
                 <span className="flex items-center gap-0.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                    <polyline points="12 5 19 12 12 19" />
-                  </svg>
+                  <ArrowRight size={16} aria-hidden="true" />
                   <span className="whitespace-nowrap rounded px-1 py-0.5" style={{ backgroundColor: 'var(--surface-hover)' }}>
                     {edge.relationshipType}
                     {edge.confirmationStatus === 'pending' && (
                       <span className="ml-1 text-warning">?</span>
                     )}
                   </span>
-                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                    <polyline points="12 5 19 12 12 19" />
-                  </svg>
+                  <ArrowRight size={16} aria-hidden="true" />
                 </span>
               )}
             </span>

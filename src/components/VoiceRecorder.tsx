@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Mic, Square } from 'lucide-react';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 
 interface Props {
@@ -50,7 +51,7 @@ export default function VoiceRecorder({ onTranscript }: Props) {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className={`rounded-lg px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+          className={`rounded-lg px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 inline-flex items-center gap-1.5 ${
             voice.recording
               ? 'animate-pulse bg-danger-light text-danger'
               : 'border border-line bg-card text-text-primary hover:bg-surface'
@@ -58,7 +59,7 @@ export default function VoiceRecorder({ onTranscript }: Props) {
           disabled={!voice.supported || voice.transcribing}
           onClick={() => voice.toggle()}
         >
-          {voice.recording ? '⏹ 停止' : '🎤 语音转文字'}
+          {voice.recording ? (<><Square size={14} aria-hidden="true" /> 停止</>) : (<><Mic size={14} aria-hidden="true" /> 语音转文字</>)}
         </button>
         {voice.transcribing && <span className="text-sm text-text-secondary">录音上传转写中...</span>}
         {voice.recording && (

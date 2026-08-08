@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import cytoscape from 'cytoscape';
 import { pinyin } from 'pinyin-pro';
 import { inferRelationships, setRelationshipConfirmation } from '../services/db';
@@ -910,7 +911,9 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
               {labelById[selectedEdge.source]} — {labelById[selectedEdge.target]}
               <span className="ml-2 text-sm font-normal text-text-secondary">{relationshipLabel(selectedEdge.label)}</span>
             </h3>
-            <button type="button" className="text-muted hover:text-text-secondary" onClick={() => setSelectedEdge(null)}>✕</button>
+            <button type="button" className="text-muted hover:text-text-secondary" onClick={() => setSelectedEdge(null)}>
+              <X size={16} aria-hidden="true" />
+            </button>
           </div>
           {selectedEdge.confirmationStatus === 'pending' ? (
             <>

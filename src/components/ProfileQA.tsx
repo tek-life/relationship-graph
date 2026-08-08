@@ -4,6 +4,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Check } from 'lucide-react';
 import { apiPost, apiGet } from '../services/api';
 import MarkdownContent from './MarkdownContent';
 
@@ -230,7 +231,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                     i <= stageIndex ? '#fff' : 'var(--text-secondary, #64748b)',
                 }}
               >
-                {i < stageIndex ? '✓' : i + 1}
+                                {i < stageIndex ? <Check size={14} aria-hidden="true" /> : i + 1}
               </div>
               <span
                 className="text-sm whitespace-nowrap"
@@ -362,7 +363,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                   className="flex items-center gap-1 text-sm font-medium"
                   style={{ color: 'var(--success)' }}
                 >
-                  ✓ 内观画像已保存
+                  <Check size={16} aria-hidden="true" /> 内观画像已保存
                 </span>
               )}
               {onComplete && (
@@ -465,13 +466,13 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
               >
                 <span className="inline-flex gap-1">
                   <span className="animate-bounce" style={{ animationDelay: '0ms' }}>
-                    ●
+                    <span className="block h-1.5 w-1.5 rounded-full bg-current" />
                   </span>
                   <span className="animate-bounce" style={{ animationDelay: '150ms' }}>
-                    ●
+                    <span className="block h-1.5 w-1.5 rounded-full bg-current" />
                   </span>
                   <span className="animate-bounce" style={{ animationDelay: '300ms' }}>
-                    ●
+                    <span className="block h-1.5 w-1.5 rounded-full bg-current" />
                   </span>
                 </span>
               </div>

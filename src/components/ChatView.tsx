@@ -14,6 +14,7 @@ import {
   type KeyboardEvent,
   type RefObject,
 } from 'react';
+import { Check, ChevronDown, FileText, Globe, Loader2, Menu, Mic, Paperclip, Send, Sparkles, Square, X } from 'lucide-react';
 import { useChat, type ChatDisplayMessage, type ChatThinking } from '../hooks/useChat';
 import CouncilBar from './CouncilBar';
 import SessionSidebar from './SessionSidebar';
@@ -323,9 +324,7 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
           style={{ color: 'var(--text-secondary)' }}
           title="会话列表"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
+          <Menu size={20} aria-hidden="true" />
         </button>
         <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
           {currentSessionId
@@ -705,7 +704,7 @@ function ChatBubble({
                   }
                 >
                   <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent text-white">
-                    📄
+                    <FileText size={20} aria-hidden="true" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
@@ -817,10 +816,7 @@ function ThinkingBlock({ thinking, streaming }: ThinkingBlockProps) {
         onClick={() => setExpanded((prev) => !prev)}
       >
         {/* 图标 */}
-        <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1" />
-          <circle cx="12" cy="12" r="4" />
-        </svg>
+        <Sparkles size={14} className="shrink-0" aria-hidden="true" />
         <span>{label}</span>
         {streaming && (
           <span className="flex gap-0.5 pl-1" aria-hidden="true">
@@ -829,7 +825,7 @@ function ThinkingBlock({ thinking, streaming }: ThinkingBlockProps) {
             <span className="h-1 w-1 animate-bounce rounded-full bg-muted" style={{ animationDelay: '300ms' }} />
           </span>
         )}
-        <span className={`ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true">▾</span>
+        <span className={`ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true"><ChevronDown size={12} /></span>
       </button>
 
       {expanded && hasContent && (
@@ -841,8 +837,8 @@ function ThinkingBlock({ thinking, streaming }: ThinkingBlockProps) {
                 const isCurrent = streaming && index === stepCount - 1;
                 return (
                   <li key={index} className="flex items-center gap-1.5 text-xs text-text-secondary">
-                    <span className={isCurrent ? 'animate-pulse text-accent' : 'text-success'}>
-                      {isCurrent ? '●' : '✓'}
+                    <span className={isCurrent ? 'flex animate-pulse text-accent' : 'flex text-success'}>
+                      {isCurrent ? <span className="h-3 w-3 rounded-full bg-current" aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}
                     </span>
                     <span className="shrink-0">{STAGE_LABELS[step.stage] ?? step.stage}</span>
                     {step.detail && (
@@ -1059,7 +1055,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
                   color: 'var(--text-secondary)',
                 }}
               >
-                <span aria-hidden="true">📎</span>
+                <span aria-hidden="true" className="flex items-center"><Paperclip size={12} /></span>
                 <span className="max-w-[12rem] truncate">{doc.fileName}</span>
                 <span className="shrink-0 text-muted">{doc.content.length} 字</span>
                 <button
@@ -1068,7 +1064,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
                   title="移除附件"
                   onClick={() => onRemoveAttachment(doc.fileName)}
                 >
-                  ✕
+                  <X size={12} aria-hidden="true" />
                 </button>
               </span>
             ))}
@@ -1106,7 +1102,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
               disabled={loading || !voice.supported || voice.transcribing}
               onClick={onToggleVoice}
             >
-              {voice.recording ? '⏹' : '🎤'}
+              {voice.recording ? <Square size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
             </button>
             {voice.recording && (
               <button
@@ -1137,10 +1133,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
               disabled={busy}
               onClick={onToggleWebSearch}
             >
-              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="10" />
-                <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
-              </svg>
+              <Globe size={14} aria-hidden="true" />
               联网
             </button>
           </div>
@@ -1162,27 +1155,9 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
               disabled={busy || !query.trim()}
             >
             {loading ? (
-              <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                />
-              </svg>
+              <Loader2 size={20} className="animate-spin" aria-hidden="true" />
             ) : (
-              <svg
-                className="h-5 w-5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
-              </svg>
+              <Send size={20} aria-hidden="true" />
             )}
             </button>
           </div>

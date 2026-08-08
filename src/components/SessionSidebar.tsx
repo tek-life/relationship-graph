@@ -3,6 +3,7 @@
  * 从左侧滑出的抽屉式面板，展示会话列表，支持新建、搜索、重命名、删除
  */
 import { useState, useMemo } from 'react';
+import { Search, X } from 'lucide-react';
 import type { Session } from '../types';
 
 interface SessionSidebarProps {
@@ -115,7 +116,7 @@ export default function SessionSidebar({
               className="w-8 h-8 rounded-full flex items-center justify-center transition hover:bg-surface"
               style={{ color: 'var(--text-secondary)' }}
             >
-              ✕
+              <X size={16} aria-hidden="true" />
             </button>
           </div>
 
@@ -148,16 +149,12 @@ export default function SessionSidebar({
                 color: 'var(--text-primary)',
               }}
             />
-            <svg
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
+            <Search
+              size={14}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2"
               style={{ color: 'var(--text-tertiary, #aaa)' }}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <circle cx="11" cy="11" r="8" strokeWidth="2" />
-              <path d="M21 21l-4.35-4.35" strokeWidth="2" strokeLinecap="round" />
-            </svg>
+              aria-hidden="true"
+            />
           </div>
 
           {/* 会话列表 */}

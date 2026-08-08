@@ -2,6 +2,7 @@
 // 抽取纯文本后通过 onDocument 回调交给 ChatView 管理附件，不注入输入框。
 // pdfjs worker 已本地化到 public/pdfjs/（同 public/tesseract/ 的本地化先例），不走 CDN。
 import { useRef, useState } from 'react';
+import { Paperclip } from 'lucide-react';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 /** 单文档抽取文本上限（字符数），超限截断并追加标记 */
@@ -202,11 +203,11 @@ export default function DocumentAttachButton({ onDocument, disabled }: Props) {
       <button
         type="button"
         title="上传文档（.txt / .md / .pdf / .docx）作为对话附件"
-        className="rounded-full p-2 text-lg leading-none transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex items-center justify-center rounded-full p-2 transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
         disabled={disabled || running}
         onClick={() => fileInputRef.current?.click()}
       >
-        📎
+        <Paperclip size={18} aria-hidden="true" />
       </button>
 
       {panelVisible && (

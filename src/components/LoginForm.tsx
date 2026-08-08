@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { KeyRound } from 'lucide-react';
 import { login } from '../services/auth';
 import type { User } from '../types';
 
@@ -51,7 +52,7 @@ export default function LoginForm({ onLoggedIn, onSwitchToMasterPassword }: Logi
             className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full text-2xl"
             style={{ background: 'var(--accent-light)', color: 'var(--accent-color)' }}
           >
-            ⚿
+            <KeyRound size={24} aria-hidden="true" />
           </div>
           <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
             登录

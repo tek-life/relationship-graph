@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Sparkles } from 'lucide-react';
 import { register } from '../services/auth';
 import type { User } from '../types';
 
@@ -57,7 +58,7 @@ export default function RegisterForm({ inviteToken, onRegistered }: RegisterForm
             className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full text-2xl"
             style={{ background: 'var(--accent-light)', color: 'var(--accent-color)' }}
           >
-            ✦
+            <Sparkles size={24} aria-hidden="true" />
           </div>
           <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
             欢迎加入

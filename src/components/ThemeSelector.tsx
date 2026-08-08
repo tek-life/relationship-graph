@@ -1,4 +1,5 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, type ReactNode } from 'react';
+import { Sun, Moon, Contrast, Check } from 'lucide-react';
 import type { Theme } from '../hooks/useTheme';
 
 interface ThemeSelectorProps {
@@ -6,10 +7,10 @@ interface ThemeSelectorProps {
   setTheme: (t: Theme) => void;
 }
 
-const THEME_OPTIONS: { value: Theme; icon: string; label: string }[] = [
-  { value: 'light', icon: '☀️', label: '浅色' },
-  { value: 'dark', icon: '🌙', label: '深色' },
-  { value: 'high-contrast', icon: '🔲', label: '高对比度' },
+const THEME_OPTIONS: { value: Theme; icon: ReactNode; label: string }[] = [
+  { value: 'light', icon: <Sun size={16} aria-hidden="true" />, label: '浅色' },
+  { value: 'dark', icon: <Moon size={16} aria-hidden="true" />, label: '深色' },
+  { value: 'high-contrast', icon: <Contrast size={16} aria-hidden="true" />, label: '高对比度' },
 ];
 
 export default function ThemeSelector({ theme, setTheme }: ThemeSelectorProps) {
@@ -43,7 +44,7 @@ export default function ThemeSelector({ theme, setTheme }: ThemeSelectorProps) {
         }}
         title="切换主题"
       >
-        <span>{current.icon}</span>
+        <span className="flex items-center">{current.icon}</span>
         <span className="hidden sm:inline">{current.label}</span>
       </button>
 
@@ -78,9 +79,9 @@ export default function ThemeSelector({ theme, setTheme }: ThemeSelectorProps) {
                   theme === option.value ? 'var(--accent-light)' : 'transparent';
               }}
             >
-              <span>{option.icon}</span>
+              <span className="flex items-center">{option.icon}</span>
               <span>{option.label}</span>
-              {theme === option.value && <span className="ml-auto">✓</span>}
+              {theme === option.value && <Check size={14} className="ml-auto" aria-hidden="true" />}
             </button>
           ))}
         </div>

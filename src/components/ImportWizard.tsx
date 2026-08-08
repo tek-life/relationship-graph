@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { CheckCircle2 } from 'lucide-react';
 import {
   DuplicateInfo,
   FIELD_DEFS,
@@ -274,7 +275,9 @@ export default function ImportWizard({ onImported }: Props) {
 
       {step === 'done' && commitResult && (
         <div className="text-center">
-          <p className="text-4xl">✅</p>
+          <p className="flex justify-center text-success">
+            <CheckCircle2 size={40} aria-hidden="true" />
+          </p>
           <h3 className="mt-2 text-lg font-semibold">导入完成</h3>
           <p className="mt-2 text-text-secondary">
             成功导入 <b className="text-success">{commitResult.imported}</b> 条，
