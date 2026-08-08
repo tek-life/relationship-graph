@@ -120,6 +120,25 @@ fn cloud_search_model() -> String {
     std::env::var("RG_CLOUD_SEARCH_MODEL").unwrap_or_else(|_| "qwen-plus".to_string())
 }
 
+/// 云端聊天模型路由（纯逻辑入口，回归单测见 model_routing_tests）：
+/// web_search 请求路由到搜索模型，否则用聊天模型
+fn cloud_chat_model_for(web_search: bool) -> String {
+    if web_search {
+        cloud_search_model()
+    } else {
+        cloud_chat_model()
+    }
+}
+
+/// 按通道路由通用聊天模型（纯逻辑，可单测）：cloud 通道按 web_search
+/// 选择搜索/聊天模型，其余通道走本地 Ollama
+fn chat_model_route(channel: Channel, web_search: bool) -> String {
+    match channel {
+        Channel::Cloud => cloud_chat_model_for(web_search),
+        _ => ollama_model(),
+    }
+}
+
 /// 云端抽取首选模型（无思考开销，json_object 正常）
 fn cloud_extract_model() -> String {
     std::env::var("RG_CLOUD_EXTRACT_MODEL").unwrap_or_else(|_| "qwen-flash".to_string())
@@ -374,6 +393,45 @@ mod channel_tests {
         // 默认模型名（env 未设置时）
         assert_eq!(cloud_model_for("general_chat"), "qwen3.7-plus");
         assert_eq!(cloud_model_for("compress_context"), "qwen-flash");
+    }
+}
+
+#[cfg(test)]
+mod model_routing_tests {
+    use super::*;
+
+    /// 回归防护（d9fe0de）：联网搜索请求必须路由到搜索模型而非聊天模型。
+    /// 背景：百炼平台侧对 qwen3.7-plus 静默忽略 enable_search，若误回退为
+    /// 单一聊天模型，联网搜索会静默失效。用相对断言（对比 getter）兼容 env 覆盖。
+    #[test]
+    fn cloud_chat_model_for_routes_to_search_model() {
+        assert_eq!(cloud_chat_model_for(true), cloud_search_model());
+        assert_eq!(cloud_chat_model_for(false), cloud_chat_model());
+    }
+
+    /// 默认值基线（仅在对应 env 未设置时断言，避免并发测试改 env 竞态）：
+    /// 搜索模型与聊天模型必须是不同模型，否则路由无意义
+    #[test]
+    fn search_and_chat_default_models_differ() {
+        if std::env::var("RG_CLOUD_SEARCH_MODEL").is_ok()
+            || std::env::var("RG_CLOUD_CHAT_MODEL").is_ok()
+        {
+            return;
+        }
+        assert_eq!(cloud_search_model(), "qwen-plus");
+        assert_eq!(cloud_chat_model(), "qwen3.7-plus");
+        assert_ne!(cloud_search_model(), cloud_chat_model());
+    }
+
+    /// 通道路由语义：仅 cloud 通道按 web_search 分流，其余通道固定本地 Ollama
+    #[test]
+    fn chat_model_route_channel_semantics() {
+        assert_eq!(chat_model_route(Channel::Cloud, true), cloud_search_model());
+        assert_eq!(chat_model_route(Channel::Cloud, false), cloud_chat_model());
+        assert_eq!(chat_model_route(Channel::Legacy, true), ollama_model());
+        assert_eq!(chat_model_route(Channel::Legacy, false), ollama_model());
+        assert_eq!(chat_model_route(Channel::Rig, true), ollama_model());
+        assert_eq!(chat_model_route(Channel::Rig, false), ollama_model());
     }
 }
 
@@ -679,11 +737,7 @@ async fn cloud_chat_stream(
 > {
     let client = cloud_client()?;
     // web_search 路由到搜索可用模型（qwen3.7-plus 平台侧已忽略 enable_search）
-    let model_name = if web_search {
-        cloud_search_model()
-    } else {
-        cloud_chat_model()
-    };
+    let model_name = cloud_chat_model_for(web_search);
     // 超时对齐聊天超时语义（默认 120s，RG_CLOUD_TIMEOUT_SECS 可覆盖）：
     // 同时覆盖建流阶段与流消费阶段每次 stream.next() 的兑底，
     // 避免云端公网链路中途 stall 时 SSE 无限挂起
@@ -872,11 +926,7 @@ async fn cloud_agent_round_stream(
 ) -> Result<AgentRoundStream, String> {
     let client = cloud_client()?;
     // web_search 路由到搜索可用模型（与 cloud_chat_stream 同策略）
-    let model_name = if web_search {
-        cloud_search_model()
-    } else {
-        cloud_chat_model()
-    };
+    let model_name = cloud_chat_model_for(web_search);
     let timeout = cloud_timeout();
     info!(
         target: "llm",
@@ -1184,15 +1234,7 @@ pub fn general_chat_backend() -> &'static str {
 /// 当前对话模型名，供 SSE 端点发 llm_call 事件：cloud 通道且 web_search
 /// 时返回搜索模型（实际路由），其余返回聊天模型
 pub fn general_chat_model_for(web_search: bool) -> String {
-    if llm_channel("general_chat") == Channel::Cloud {
-        if web_search {
-            cloud_search_model()
-        } else {
-            cloud_chat_model()
-        }
-    } else {
-        ollama_model()
-    }
+    chat_model_route(llm_channel("general_chat"), web_search)
 }
 
 pub fn general_chat_model() -> String {

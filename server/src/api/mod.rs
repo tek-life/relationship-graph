@@ -1094,6 +1094,63 @@ enum ChatStreamPhase {
     End,
 }
 
+/// SSE 阶段机前奏 step 转移（纯函数，回归单测见 chat_stream_prelude_tests）：
+/// 顺序固定 routing → web_search? → tool_loop? → llm_call → Init。
+/// 回归防护（d9fe0de）：llm_call 恒发展示真实路由模型，
+/// 不得被 web_search / tool_loop 吞掉（前端依赖此 step 展示模型名）。
+/// 非前奏阶段返回 None（由调用方兑底）。
+fn prelude_step_transition(
+    phase: &ChatStreamPhase,
+    backend: &str,
+    web_search_step: Option<&str>,
+    tools_step: Option<&str>,
+    model_name: &str,
+) -> Option<(&'static str, String, ChatStreamPhase)> {
+    match phase {
+        ChatStreamPhase::Routing => Some((
+            "routing",
+            format!("backend={}", backend),
+            ChatStreamPhase::WebSearchStep,
+        )),
+        ChatStreamPhase::WebSearchStep => match web_search_step {
+            // 有联网搜索 step 先发，工具/llm step 留给后续轮次
+            Some(detail) => Some((
+                "web_search",
+                detail.to_string(),
+                ChatStreamPhase::ToolLoopStep,
+            )),
+            None => tool_or_llm_step(tools_step, model_name),
+        },
+        ChatStreamPhase::ToolLoopStep => tool_or_llm_step(tools_step, model_name),
+        ChatStreamPhase::LlmCallStep => Some((
+            "llm_call",
+            format!("model={}", model_name),
+            ChatStreamPhase::Init,
+        )),
+        _ => None,
+    }
+}
+
+/// 前奏转移共用分支：有工具 step 先发 tool_loop 再进 llm_call，
+/// 否则直接发 llm_call（llm_call 恒发）
+fn tool_or_llm_step(
+    tools_step: Option<&str>,
+    model_name: &str,
+) -> Option<(&'static str, String, ChatStreamPhase)> {
+    match tools_step {
+        Some(detail) => Some((
+            "tool_loop",
+            detail.to_string(),
+            ChatStreamPhase::LlmCallStep,
+        )),
+        None => Some((
+            "llm_call",
+            format!("model={}", model_name),
+            ChatStreamPhase::Init,
+        )),
+    }
+}
+
 /// 从 rig/cloud 事件流取下一条 SSE 事件；流耗尽时补发 done（usage=null）。
 /// done 的 backend 字段随流传入（"rig" / "cloud"），不再硬编码。
 /// 顺带累加事件计数（仅元数据，不落内容）。
@@ -1213,42 +1270,22 @@ async fn chat_stream_handler(
             let text_count = text_count.clone();
             async move {
                 match phase {
-                    ChatStreamPhase::Routing => Some((
-                        Ok(sse_step("routing", &format!("backend={}", backend))),
-                        (ChatStreamPhase::WebSearchStep, agent_stream),
-                    )),
-                    ChatStreamPhase::WebSearchStep => match web_search_step {
-                        // 有联网搜索 step 先发，工具/llm step 留给后续轮次
-                        Some(detail) => Some((
-                            Ok(sse_step("web_search", detail)),
-                            (ChatStreamPhase::ToolLoopStep, agent_stream),
-                        )),
-                        None => match tools_step {
-                            Some(detail) => Some((
-                                Ok(sse_step("tool_loop", detail)),
-                                (ChatStreamPhase::LlmCallStep, agent_stream),
-                            )),
-                            None => Some((
-                                Ok(sse_step("llm_call", &format!("model={}", model_name))),
-                                (ChatStreamPhase::Init, agent_stream),
-                            )),
-                        },
-                    },
-                    ChatStreamPhase::ToolLoopStep => match tools_step {
-                        Some(detail) => Some((
-                            Ok(sse_step("tool_loop", detail)),
-                            (ChatStreamPhase::LlmCallStep, agent_stream),
-                        )),
-                        None => Some((
-                            Ok(sse_step("llm_call", &format!("model={}", model_name))),
-                            (ChatStreamPhase::Init, agent_stream),
-                        )),
-                    },
-                    // llm_call 恒发（展示真实路由模型），不再被 tool_loop 吃掉
-                    ChatStreamPhase::LlmCallStep => Some((
-                        Ok(sse_step("llm_call", &format!("model={}", model_name))),
-                        (ChatStreamPhase::Init, agent_stream),
-                    )),
+                    // 前奏 step 统一走纯函数转移（含回归单测）：
+                    // routing → web_search? → tool_loop? → llm_call（恒发）
+                    p @ (ChatStreamPhase::Routing
+                    | ChatStreamPhase::WebSearchStep
+                    | ChatStreamPhase::ToolLoopStep
+                    | ChatStreamPhase::LlmCallStep) => {
+                        let (stage, detail, next) = prelude_step_transition(
+                            &p,
+                            backend,
+                            web_search_step,
+                            tools_step,
+                            &model_name,
+                        )
+                        .expect("prelude phase transition is total");
+                        Some((Ok(sse_step(stage, &detail)), (next, agent_stream)))
+                    }
                     ChatStreamPhase::Init => {
                         // Agent 工具循环优先（仅 cloud 且建流成功时）；
                         // 其余 rig / cloud 走普通流式，legacy 降级非流式一次性调用
@@ -1609,5 +1646,89 @@ mod web_search_resolve_tests {
         assert_eq!(count, 1);
         assert_eq!(chars, 4);
         assert!(!truncated);
+    }
+}
+
+#[cfg(test)]
+mod chat_stream_prelude_tests {
+    use super::*;
+
+    /// 从 Routing 走到 Init，收集前奏 step 序列（stage, detail）
+    fn run_prelude(
+        web_search_step: Option<&str>,
+        tools_step: Option<&str>,
+    ) -> Vec<(&'static str, String)> {
+        let mut steps = Vec::new();
+        let mut phase = ChatStreamPhase::Routing;
+        while let Some((stage, detail, next)) =
+            prelude_step_transition(&phase, "cloud", web_search_step, tools_step, "test-model")
+        {
+            steps.push((stage, detail));
+            phase = next;
+        }
+        steps
+    }
+
+    fn stages(steps: &[(&'static str, String)]) -> Vec<&'static str> {
+        steps.iter().map(|(s, _)| *s).collect()
+    }
+
+    /// 回归防护（d9fe0de）：联网搜索 + 工具循环同时存在时，llm_call 必须恒发
+    /// 且顺序固定 routing → web_search → tool_loop → llm_call；
+    /// regression 场景是 tool_loop 顶替了 llm_call，导致前端看不到模型名
+    #[test]
+    fn llm_call_emitted_when_web_search_and_tools_both_present() {
+        let steps = run_prelude(Some("已启用联网搜索"), Some("已启用联系人数据工具"));
+        assert_eq!(
+            stages(&steps),
+            vec!["routing", "web_search", "tool_loop", "llm_call"]
+        );
+        // llm_call 的 detail 必须携带真实路由模型名
+        assert_eq!(steps.last().unwrap().1, "model=test-model");
+    }
+
+    /// 仅工具循环：llm_call 仍恒发
+    #[test]
+    fn llm_call_emitted_with_tools_only() {
+        let steps = run_prelude(None, Some("已启用联系人数据工具"));
+        assert_eq!(stages(&steps), vec!["routing", "tool_loop", "llm_call"]);
+        assert_eq!(steps.last().unwrap().1, "model=test-model");
+    }
+
+    /// 仅联网搜索：llm_call 仍恒发
+    #[test]
+    fn llm_call_emitted_with_web_search_only() {
+        let steps = run_prelude(Some("已启用联网搜索"), None);
+        assert_eq!(stages(&steps), vec!["routing", "web_search", "llm_call"]);
+        assert_eq!(steps.last().unwrap().1, "model=test-model");
+    }
+
+    /// 普通聊天（无联网无工具）：routing 后直接 llm_call
+    #[test]
+    fn plain_chat_emits_routing_then_llm_call() {
+        let steps = run_prelude(None, None);
+        assert_eq!(stages(&steps), vec!["routing", "llm_call"]);
+        assert_eq!(steps.last().unwrap().1, "model=test-model");
+    }
+
+    /// 非前奏阶段返回 None，不会误发 step
+    #[test]
+    fn non_prelude_phase_returns_none() {
+        assert!(prelude_step_transition(
+            &ChatStreamPhase::Init,
+            "cloud",
+            None,
+            None,
+            "m"
+        )
+        .is_none());
+        assert!(prelude_step_transition(
+            &ChatStreamPhase::End,
+            "cloud",
+            None,
+            None,
+            "m"
+        )
+        .is_none());
     }
 }
