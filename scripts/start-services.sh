@@ -52,7 +52,8 @@ fi
 # 按命令行精确匹配检测本项目进程是否在运行（与 restart-services.sh stop_by_pattern
 # 同一方案）：非 root 下 lsof 无法列出 :80 等端口的持有进程（曾导致启动前检查
 # 误报「Caddy 已在运行」），故统一改用 pgrep -f 精确匹配本项目进程的命令行；
-# 模式均以 ^ 锚定命令行开头并包含项目专有标识，不会误匹配其它进程。
+# 模式均以 ^ 锚定命令行开头并包含项目专有标识（Caddyfile 文件名 / 二进制全路径 /
+# 项目目录路径 / http.server --directory 参数），不会误匹配其它进程。
 running_by_pattern() {
   local pattern="$1"
   pgrep -f "${pattern}" >/dev/null 2>&1
@@ -272,9 +273,11 @@ if [ "${RUN_MODE}" = "production" ]; then
     fi
   else
     echo "  [提示] 未安装 Caddy，使用 Python http.server 作为静态文件服务兜底"
-    if ! running_by_pattern "^python3 -m http.server 8000"; then
+    # --directory 参数既指定静态根目录，也作为项目专有标识写入命令行，
+    # 供 pgrep -f 精确匹配（否则 python http.server 命令行不含任何项目特征）
+    if ! running_by_pattern "^python3 -m http\\.server 8000 --directory ${PROJECT_DIR}/dist"; then
       cd "${PROJECT_DIR}/dist"
-      nohup python3 -m http.server 8000 >"${FRONTEND_LOG}" 2>&1 &
+      nohup python3 -m http.server 8000 --directory "${PROJECT_DIR}/dist" >"${FRONTEND_LOG}" 2>&1 &
       cd "${PROJECT_DIR}"
       echo "  Python http.server 已启动（端口 8000），日志：${FRONTEND_LOG}"
       # 等待就绪
@@ -296,7 +299,9 @@ if [ "${RUN_MODE}" = "production" ]; then
   fi
 else
   echo "==> 启动前端开发服务器（开发模式，Vite，端口 1420）"
-  if ! running_by_pattern "^node .*vite"; then
+  # 模式限定本项目 node_modules 路径（npm run dev 实际命令行为
+  # node ${PROJECT_DIR}/node_modules/.bin/vite），避免误判其它项目的 vite 在跑
+  if ! running_by_pattern "^node ${PROJECT_DIR}/node_modules/.*vite"; then
     if [ ! -d "${PROJECT_DIR}/node_modules" ]; then
       echo "  [ERROR] 前端依赖未安装，请先运行 npm install"
       exit 1

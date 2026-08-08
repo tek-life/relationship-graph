@@ -40,7 +40,8 @@ done
 # 说明：非 root 下 lsof/ss 均可能无法列出 :80 等端口的持有 PID（实测 ss -tlnp
 # 对 caddy 的 :80 监听也不显示 pid），因此以 pgrep -f 精确匹配本项目进程的
 # 命令行作为主手段；模式均包含项目专有标识（Caddyfile 文件名 / 二进制全路径 /
-# 端口参数），不会误杀其它进程。停止后再用 ss 校验端口是否已释放。
+# 项目目录路径 / http.server --directory 参数），不会误杀其它进程。
+# 停止后再用 ss 校验端口是否已释放。
 # 注意：模式均以 ^ 锚定命令行开头，避免 pgrep -f 误匹配包含模式文本的其它命令行。
 stop_by_pattern() {
   local pattern="$1"
@@ -104,10 +105,14 @@ else
 fi
 
 # 前端：开发模式 Vite（1420）/ 生产模式 Caddy（RG_WEB_PORT，默认 80）或 http.server（8000）
-# Caddy 匹配 start-services.sh 生成的专有 Caddyfile 路径，只杀本项目的 caddy 实例
-stop_by_pattern "^node .*vite" "Vite 开发服务器" 1420
+# Vite 模式限定本项目 node_modules 路径（npm run dev 实际命令行为
+# node ${PROJECT_DIR}/node_modules/.bin/vite），只匹配本项目的 vite dev server；
+# 生产环境前端由 Caddy 服务 dist/ 产物，vite 仅开发模式使用，未运行时不命中
+stop_by_pattern "^node ${PROJECT_DIR}/node_modules/.*vite" "Vite 开发服务器" 1420
 stop_by_pattern "^caddy run --config /tmp/relationship-graph.Caddyfile" "Caddy 反向代理" "${RG_WEB_PORT:-80}"
-stop_by_pattern "^python3 -m http.server 8000" "Python http.server" 8000
+# http.server 启动时带 --directory ${PROJECT_DIR}/dist（见 start-services.sh），
+# 以该参数作为项目专有标识；该方式仅为未安装 Caddy 时的兜底，现役默认走 Caddy
+stop_by_pattern "^python3 -m http\\.server 8000 --directory ${PROJECT_DIR}/dist" "Python http.server" 8000
 
 # Ollama（默认保留；云端模式下 Ollama 本就不参与 LLM 链路）
 if [ "${WITH_OLLAMA}" -eq 1 ]; then
