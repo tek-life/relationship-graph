@@ -14,6 +14,135 @@ use axum::Json;
 
 use super::ApiError;
 
+/// 画像对话历史字符预算默认值（P1-5）：generate_profile 把全部 QA 历史拼入
+/// prompt，需防超窗；默认 12000 字符（中文约 12-15k token）+ system + 输出
+/// 可被 RG_OLLAMA_NUM_CTX 默认 16384 的窗口容纳。RG_PROFILE_HISTORY_CHARS 可覆盖。
+const DEFAULT_PROFILE_HISTORY_CHARS: usize = 12000;
+
+/// 解析画像历史预算（纯函数，可单测）：输入为 Some 且 trim 后为正整数时取其值，
+/// 否则（未设置/空串/非数字/0/溢出）回退 default。
+fn parse_profile_budget(env_value: Option<&str>, default: usize) -> usize {
+    env_value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
+}
+
+/// 读取画像历史字符预算（RG_PROFILE_HISTORY_CHARS，默认 12000）
+fn profile_history_budget() -> usize {
+    parse_profile_budget(
+        std::env::var("RG_PROFILE_HISTORY_CHARS").ok().as_deref(),
+        DEFAULT_PROFILE_HISTORY_CHARS,
+    )
+}
+
+/// 画像对话历史预算截断（纯函数，可单测）：entries 按时间正序（尾部为最新），
+/// 从新到旧按字符预算累加保留最近轮次（与 resolve_chat_history 的从新到旧
+/// 累加惯例一致）；最近一条即使单独超预算也保留；被丢弃的早期轮次在头部
+/// 附一行截断说明。未超预算时逐字节原文拼接，空历史返回空串。
+fn truncate_profile_history(entries: &[String], budget_chars: usize) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    // 轮次间分隔符 "\n\n" 占 2 字符
+    let mut kept: Vec<&str> = Vec::new();
+    let mut total = 0usize;
+    for entry in entries.iter().rev() {
+        let added = entry.chars().count() + if kept.is_empty() { 0 } else { 2 };
+        if total + added > budget_chars && !kept.is_empty() {
+            break;
+        }
+        total += added;
+        kept.push(entry.as_str());
+    }
+    kept.reverse();
+    let body = kept.join("\n\n");
+    if kept.len() == entries.len() {
+        body
+    } else {
+        format!(
+            "[注：对话记录超长，已按字符预算 {} 截断早期内容，仅保留最近轮次]\n\n{}",
+            budget_chars, body
+        )
+    }
+}
+
+#[cfg(test)]
+mod profile_history_tests {
+    use super::*;
+
+    #[test]
+    fn parse_profile_budget_valid_and_invalid() {
+        // 合法值（含首尾空白 trim）
+        assert_eq!(parse_profile_budget(Some("20000"), 100), 20000);
+        assert_eq!(parse_profile_budget(Some(" 300 "), 100), 300);
+        // 未设置 / 空串 / 空白 / 非数字 / 0 / 溢出 → 回退默认
+        assert_eq!(parse_profile_budget(None, 100), 100);
+        assert_eq!(parse_profile_budget(Some(""), 100), 100);
+        assert_eq!(parse_profile_budget(Some("   "), 100), 100);
+        assert_eq!(parse_profile_budget(Some("abc"), 100), 100);
+        assert_eq!(parse_profile_budget(Some("0"), 100), 100);
+        assert_eq!(parse_profile_budget(Some("-3"), 100), 100);
+        assert_eq!(parse_profile_budget(Some("999999999999999999999999"), 100), 100);
+    }
+
+    #[test]
+    fn profile_budget_default_baseline() {
+        if std::env::var("RG_PROFILE_HISTORY_CHARS").is_ok() {
+            return;
+        }
+        assert_eq!(profile_history_budget(), DEFAULT_PROFILE_HISTORY_CHARS);
+        assert_eq!(DEFAULT_PROFILE_HISTORY_CHARS, 12000);
+    }
+
+    #[test]
+    fn truncate_empty_history() {
+        assert_eq!(truncate_profile_history(&[], 100), "");
+    }
+
+    #[test]
+    fn truncate_within_budget_byte_for_byte() {
+        let entries = vec!["第一轮".to_string(), "第二轮".to_string()];
+        // 未超预算 → 逐字节原文拼接，无截断说明
+        assert_eq!(truncate_profile_history(&entries, 100), "第一轮\n\n第二轮");
+    }
+
+    #[test]
+    fn truncate_exact_budget_boundary() {
+        // "ab\n\ncd" 恰 6 字符，预算 6 → 全保留无截断；预算 5 → 仅保最新
+        let entries = vec!["ab".to_string(), "cd".to_string()];
+        assert_eq!(truncate_profile_history(&entries, 6), "ab\n\ncd");
+        let truncated = truncate_profile_history(&entries, 5);
+        assert!(truncated.starts_with("[注：对话记录超长"));
+        assert!(truncated.ends_with("cd"));
+        assert!(!truncated.contains("ab"));
+    }
+
+    #[test]
+    fn truncate_over_budget_keeps_newest_order() {
+        let entries: Vec<String> = (1..=10).map(|i| format!("轮次{}内容", i)).collect();
+        // 轮次1-9 各 5 字符、轮次10 为 6 字符，分隔符各占 2：
+        // 预算 13 → 轮次10(6) + 轮次9(5+2)=13 恰满；再加轮次8 到 20 超限
+        let out = truncate_profile_history(&entries, 13);
+        assert!(out.starts_with("[注：对话记录超长，已按字符预算 13 截断早期内容，仅保留最近轮次]\n\n"));
+        assert!(out.contains("轮次9内容\n\n轮次10内容"));
+        assert!(!out.contains("轮次8"));
+        // 保留部分仍按时间正序
+        let pos9 = out.find("轮次9").unwrap();
+        let pos10 = out.find("轮次10").unwrap();
+        assert!(pos9 < pos10);
+    }
+
+    #[test]
+    fn truncate_single_entry_over_budget_kept() {
+        // 最近一条即使单独超预算也保留（与 resolve_chat_history 惯例一致）
+        let entries = vec!["x".repeat(500)];
+        assert_eq!(truncate_profile_history(&entries, 10), "x".repeat(500));
+    }
+}
+
 /// 从请求头中提取 token 并获取关联的 user_id
 fn extract_user_id(
     state: &SharedState,
@@ -162,8 +291,9 @@ pub async fn generate_profile(
             .unwrap_or_else(|| "根据对话生成个人画像文档".to_string())
     }; // guard 在此处释放
 
-    // 构建完整对话历史文本
-    let conversation: String = req
+    // 构建完整对话历史文本，并按字符预算截断（P1-5：防全部历史拼入超窗，
+    // 从新到旧保留最近轮次，截断方式与 resolve_chat_history 惯例一致）
+    let entries: Vec<String> = req
         .history
         .iter()
         .map(|h| {
@@ -172,14 +302,18 @@ pub async fn generate_profile(
                 h.module_id, h.question, h.module_id, h.answer
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+        .collect();
+    let total_entries = entries.len();
+    let budget = profile_history_budget();
+    let conversation = truncate_profile_history(&entries, budget);
 
     log::info!(
         target: "profile_qa",
-        "generate_profile history_count={} conversation_len={}",
-        req.history.len(),
-        conversation.len()
+        "generate_profile history_count={} conversation_len={} budget={} truncated={}",
+        total_entries,
+        conversation.chars().count(),
+        budget,
+        conversation.starts_with("[注：对话记录超长")
     );
 
     // 调用 LLM 生成画像文档（不持有数据库锁）

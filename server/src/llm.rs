@@ -13,6 +13,105 @@ use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage, Chat
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 45;
 const DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS: u64 = 120;
 
+/// Ollama 上下文窗口默认值（P1-5）：取建议区间 8192-16384 的上限，
+/// 需同时容纳 system（角色+技能+文档）+ 会话历史（RG_CHAT_HISTORY_CHARS
+/// 默认 8000 字符，中文约 8-10k token）+ 本轮输出（RG_MAX_OUTPUT_TOKENS），
+/// RG_OLLAMA_NUM_CTX 可覆盖，非法值回退本默认值。
+const DEFAULT_OLLAMA_NUM_CTX: u64 = 16384;
+/// 模型单次输出 token 上限默认值（P1-5）：同时映射为 Ollama 的
+/// num_predict 与 OpenAI 兼容端点的 max_tokens，防止模型无限生成占满
+/// 上下文窗口；RG_MAX_OUTPUT_TOKENS 可覆盖，非法值回退本默认值。
+const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4096;
+
+/// 解析正整数（纯函数，可单测）：输入为 Some 且 trim 后为正整数时返回其值；
+/// 未设置（None）、空串、非数字、0、负数一律回退 default。
+fn parse_positive_u64(env_value: Option<&str>, default: u64) -> u64 {
+    env_value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
+}
+
+/// 读取正整数型环境变量（非法/未设置回退 default）
+fn env_positive(env_key: &str, default: u64) -> u64 {
+    parse_positive_u64(std::env::var(env_key).ok().as_deref(), default)
+}
+
+/// Ollama 上下文窗口大小（RG_OLLAMA_NUM_CTX，默认 16384）
+fn ollama_num_ctx() -> u64 {
+    env_positive("RG_OLLAMA_NUM_CTX", DEFAULT_OLLAMA_NUM_CTX)
+}
+
+/// 模型输出 token 上限（RG_MAX_OUTPUT_TOKENS，默认 4096）
+fn max_output_tokens() -> u64 {
+    env_positive("RG_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS)
+}
+
+/// Ollama 原生 API 的 options 对象（纯函数，可单测）：
+/// num_ctx 上下文窗口 + num_predict 输出上限（原生 API 中 max_tokens
+/// 对应的参数名）。legacy /api/generate 与 /api/chat 共用。
+fn build_ollama_options(num_ctx: u64, num_predict: u64) -> serde_json::Value {
+    let mut options = serde_json::Map::new();
+    options.insert("num_ctx".to_string(), serde_json::json!(num_ctx));
+    options.insert("num_predict".to_string(), serde_json::json!(num_predict));
+    serde_json::Value::Object(options)
+}
+
+#[cfg(test)]
+mod window_param_tests {
+    use super::*;
+
+    #[test]
+    fn parse_positive_u64_valid_values() {
+        assert_eq!(parse_positive_u64(Some("16384"), 42), 16384);
+        assert_eq!(parse_positive_u64(Some("  8192 "), 42), 8192);
+        assert_eq!(parse_positive_u64(Some("1"), 42), 1);
+    }
+
+    #[test]
+    fn parse_positive_u64_invalid_fallback() {
+        // 未设置 / 空串 / 空白 / 非数字 / 0 / 负数 / 溢出 / 小数 → 全部回退默认
+        assert_eq!(parse_positive_u64(None, 42), 42);
+        assert_eq!(parse_positive_u64(Some(""), 42), 42);
+        assert_eq!(parse_positive_u64(Some("   "), 42), 42);
+        assert_eq!(parse_positive_u64(Some("abc"), 42), 42);
+        assert_eq!(parse_positive_u64(Some("0"), 42), 42);
+        assert_eq!(parse_positive_u64(Some("-5"), 42), 42);
+        assert_eq!(parse_positive_u64(Some("999999999999999999999999"), 42), 42);
+        assert_eq!(parse_positive_u64(Some("4096.5"), 42), 42);
+    }
+
+    /// 默认值基线（仅在对应 env 未设置时断言，避免并发测试改 env 竞态）
+    #[test]
+    fn ollama_num_ctx_default_baseline() {
+        if std::env::var("RG_OLLAMA_NUM_CTX").is_ok() {
+            return;
+        }
+        assert_eq!(ollama_num_ctx(), DEFAULT_OLLAMA_NUM_CTX);
+        assert_eq!(DEFAULT_OLLAMA_NUM_CTX, 16384);
+    }
+
+    #[test]
+    fn max_output_tokens_default_baseline() {
+        if std::env::var("RG_MAX_OUTPUT_TOKENS").is_ok() {
+            return;
+        }
+        assert_eq!(max_output_tokens(), DEFAULT_MAX_OUTPUT_TOKENS);
+        assert_eq!(DEFAULT_MAX_OUTPUT_TOKENS, 4096);
+    }
+
+    #[test]
+    fn ollama_options_contains_num_ctx_and_num_predict() {
+        let options = build_ollama_options(8192, 2048);
+        assert_eq!(options["num_ctx"], serde_json::json!(8192));
+        assert_eq!(options["num_predict"], serde_json::json!(2048));
+        // 仅含两个窗口参数，无多余字段
+        assert_eq!(options.as_object().unwrap().len(), 2);
+    }
+}
+
 fn ollama_url() -> String {
     std::env::var("RG_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string())
 }
@@ -37,6 +136,8 @@ struct OllamaRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<String>,
     prompt: String,
+    /// 模型参数（P1-5：num_ctx / num_predict），始终携带
+    options: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +169,7 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
         stream: false,
         format: format.map(str::to_string),
         prompt: prompt.to_string(),
+        options: build_ollama_options(ollama_num_ctx(), max_output_tokens()),
     };
 
     let url = format!("{}/api/generate", ollama_url());
@@ -559,7 +661,15 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
     );
 
     let model = client.completion_model(&model_name);
-    let request_builder = model.completion_request(prompt);
+    let request_builder = model
+        .completion_request(prompt)
+        // P1-5：输出上限（rig ollama provider 将 max_tokens 映射为
+        // options.num_predict）
+        .max_tokens(max_output_tokens());
+    // P1-5：num_ctx 经 additional_params 合入 options（rig ollama provider
+    // 将非顶层保留参数合并进 options 对象）
+    let request_builder =
+        request_builder.additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}));
     let request = if format.is_some() {
         let schema: schemars::Schema = serde_json::from_value(serde_json::json!({"type": "object"}))
             .map_err(|e| format!("Schema build error: {}", e))?;
@@ -673,7 +783,10 @@ async fn call_cloud(
             serde_json::json!({"search_strategy": "turbo"}),
         );
     }
-    let request_builder = model.completion_request(prompt);
+    let request_builder = model
+        .completion_request(prompt)
+        // P1-5：输出上限（rig openai provider 映射为请求体 max_tokens）
+        .max_tokens(max_output_tokens());
     let request_builder = if params.is_empty() {
         request_builder
     } else {
@@ -788,7 +901,8 @@ async fn cloud_chat_stream(
     );
 
     let model = client.completion_model(&model_name);
-    // 联网搜索开启时在思考参数基础上合入百炼 enable_search 私有参数
+    // 联网搜索开启时在思考参数基础上合入百炼 enable_search 私有参数；
+    // max_tokens 为 OpenAI 兼容标准参数，经 builder 注入（P1-5）
     let additional = if web_search {
         serde_json::json!({
             "enable_thinking": true,
@@ -805,6 +919,7 @@ async fn cloud_chat_stream(
     let request = model
         .completion_request(last)
         .messages(messages)
+        .max_tokens(max_output_tokens())
         .additional_params(additional)
         .build();
 
@@ -991,6 +1106,8 @@ async fn cloud_agent_round_stream(
         .completion_request(last)
         .messages(messages)
         .tools(crate::data_tools::definitions())
+        // P1-5：输出上限（含思考 token 的总预算，百炼 max_tokens 语义）
+        .max_tokens(max_output_tokens())
         .additional_params(additional)
         .build();
 
@@ -1366,6 +1483,8 @@ async fn cloud_chat_messages(
     let request = model
         .completion_request(last)
         .messages(messages)
+        // P1-5：输出上限
+        .max_tokens(max_output_tokens())
         .additional_params(serde_json::Value::Object(params))
         .build();
 
@@ -1424,7 +1543,14 @@ async fn rig_chat_messages(
     let model = client.completion_model(&model_name);
     let mut messages = chat_message_sequence(system, history, query);
     let last = messages.pop().expect("消息序列非空");
-    let request = model.completion_request(last).messages(messages).build();
+    let request = model
+        .completion_request(last)
+        .messages(messages)
+        // P1-5：输出上限 + num_ctx（rig ollama provider：max_tokens →
+        // options.num_predict；num_ctx 经 additional_params 合入 options）
+        .max_tokens(max_output_tokens())
+        .additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}))
+        .build();
 
     match tokio::time::timeout(timeout, model.completion(request)).await {
         Ok(Ok(response)) => {
@@ -1465,6 +1591,8 @@ struct OllamaChatRequest {
     model: String,
     stream: bool,
     messages: Vec<OllamaChatMessage>,
+    /// 模型参数（P1-5：num_ctx / num_predict），始终携带
+    options: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -1504,6 +1632,7 @@ async fn ollama_chat_messages(
         model: ollama_model(),
         stream: false,
         messages,
+        options: build_ollama_options(ollama_num_ctx(), max_output_tokens()),
     };
     let url = format!("{}/api/chat", ollama_url());
     info!(
@@ -1579,8 +1708,8 @@ pub async fn general_chat_stream(
     let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
 
     let model = client.completion_model(&model_name);
-    // rig（Ollama /api/chat）：无历史时保持原单 prompt 逐字节不变；
-    // 有历史时改 messages 序列（system → 摘要 → 历史轮次 → 本轮问题）
+    // P1-5：输出上限（max_tokens → options.num_predict）+ num_ctx 上下文
+    // 窗口（经 additional_params 合入 options），两个分支统一携带
     let request = if history.is_empty() {
         let prompt = general_chat_prompt(query, skills, web_search, documents);
         info!(
@@ -1590,7 +1719,11 @@ pub async fn general_chat_stream(
             model_name,
             prompt.len()
         );
-        model.completion_request(prompt).build()
+        model
+            .completion_request(prompt)
+            .max_tokens(max_output_tokens())
+            .additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}))
+            .build()
     } else {
         let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
         info!(
@@ -1603,7 +1736,12 @@ pub async fn general_chat_stream(
         );
         let mut messages = chat_message_sequence(&system, history, query);
         let last = messages.pop().expect("消息序列非空");
-        model.completion_request(last).messages(messages).build()
+        model
+            .completion_request(last)
+            .messages(messages)
+            .max_tokens(max_output_tokens())
+            .additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}))
+            .build()
     };
 
     // 超时覆盖连接建立阶段；流消费阶段由 rig stream 自身驱动，
