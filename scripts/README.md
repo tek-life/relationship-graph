@@ -335,6 +335,8 @@ RG_WEB_ROOT=~/relationship-graph/web caddy run --config scripts/Caddyfile   # �
 | `RG_SKILL_BUDGET_CHARS` | 脚本默认 `8000` | 技能/画像注入总字符预算 |
 | `RG_WEB_SEARCH` | 允许 | 聊天联网搜索总闸（cloud 通道百炼 `enable_search`）；设为 `off` 全局关闭，默认不设置即允许 |
 | `RG_DOC_CONTEXT_CHARS` | `12000` | 聊天文档注入字符预算，超出尾部截断并附截断提示 |
+| `RG_CHAT_TOOLS` | 允许 | 聊天联系人数据工具（Function Calling）总闸（仅 cloud 通道）；设为 `off` 全局关闭，默认不设置即允许 |
+| `RG_TOOL_OUTPUT_BUDGET_CHARS` | `8000` | 单次工具输出整包字符预算，超出截断并附提示 |
 | `RG_LLM_CLOUD_FNS` | 无 | 仅 `legacy` 通道有效：按函数灰度切云端（逗号分隔函数名） |
 
 ### API Key 配置（二选一）

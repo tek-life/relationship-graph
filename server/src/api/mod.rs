@@ -761,6 +761,26 @@ async fn chat_handler(
         doc_chars,
         doc_truncated
     );
+    // Agent 工具循环（仅 cloud 通道）：模型通过工具自主查询联系人数据，
+    // 支撑「基于我的数据生成报告」类请求；失败时降级为普通聊天，永不阻断
+    let (tools_enabled, _) = resolve_data_tools_enabled(backend);
+    if tools_enabled {
+        let system = crate::llm::tool_loop_system_prompt(query, &skills, web_search, &documents_prompt);
+        match crate::llm::cloud_chat_with_tools(
+            system,
+            query.to_string(),
+            web_search,
+            state.clone(),
+            crate::llm::AGENT_MAX_TOOL_TURNS,
+        )
+        .await
+        {
+            Ok(reply) => return Ok(Json(ChatResponse { reply })),
+            Err(e) => {
+                log::warn!(target: "chat", "agent_chat_failed fallback=general_chat err={}", e);
+            }
+        }
+    }
     let reply = crate::llm::general_chat(query, &skills, web_search, &documents_prompt)
         .await
         .map_err(ApiError::internal)?;
@@ -772,6 +792,22 @@ fn web_search_env_allowed() -> bool {
     std::env::var("RG_WEB_SEARCH")
         .map(|v| v.trim().to_lowercase() != "off")
         .unwrap_or(true)
+}
+
+/// Agent 联系人数据工具开关（方案 B）：env `RG_CHAT_TOOLS` 未设置或 `on` =
+/// 允许，`off` = 关闭；仅 cloud 通道生效，非 cloud 返回降级文案，永不阻断。
+fn resolve_data_tools_enabled(backend: &str) -> (bool, Option<&'static str>) {
+    let enabled = std::env::var("RG_CHAT_TOOLS")
+        .map(|v| v.trim().to_lowercase() != "off")
+        .unwrap_or(true);
+    if !enabled {
+        return (false, None);
+    }
+    if backend == "cloud" {
+        (true, Some("已启用联系人数据工具"))
+    } else {
+        (false, Some("联系人数据工具仅云端通道可用，已按普通对话处理"))
+    }
 }
 
 /// 解析生效的联网搜索开关与 SSE step 文案（纯函数，可单测）：
@@ -930,6 +966,46 @@ fn sse_error(message: String) -> Event {
 
 type RigEventStream = Pin<Box<dyn Stream<Item = Result<crate::llm::ChatStreamEvent, String>> + Send>>;
 
+type AgentEventStream = crate::llm::AgentEventStream;
+
+/// Agent 工具循环事件 → SSE 映射：Reasoning/Text 透传为增量，ToolCall 发
+/// step(tool_call) 供前端展示进度，Done 携带末轮 usage。
+async fn poll_agent_event(
+    mut stream: AgentEventStream,
+    thinking_count: &AtomicUsize,
+    text_count: &AtomicUsize,
+) -> Option<(Result<Event, Infallible>, ChatStreamPhase)> {
+    use futures::StreamExt;
+    match stream.next().await {
+        Some(Ok(crate::llm::AgentStreamEvent::Reasoning(text))) => {
+            thinking_count.fetch_add(1, Ordering::SeqCst);
+            Some((
+                Ok(sse_delta("thinking_delta", text)),
+                ChatStreamPhase::Agent(stream),
+            ))
+        }
+        Some(Ok(crate::llm::AgentStreamEvent::Text(text))) => {
+            text_count.fetch_add(1, Ordering::SeqCst);
+            Some((
+                Ok(sse_delta("text_delta", text)),
+                ChatStreamPhase::Agent(stream),
+            ))
+        }
+        Some(Ok(crate::llm::AgentStreamEvent::ToolCall(call))) => Some((
+            Ok(sse_step(
+                "tool_call",
+                &format!("正在调用工具 {} 查询联系人数据", call.name),
+            )),
+            ChatStreamPhase::Agent(stream),
+        )),
+        Some(Ok(crate::llm::AgentStreamEvent::Done(usage))) => {
+            Some((Ok(sse_done(usage, "cloud")), ChatStreamPhase::End))
+        }
+        Some(Err(e)) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
+        None => Some((Ok(sse_done(None, "cloud")), ChatStreamPhase::End)),
+    }
+}
+
 /// 流式聊天状态机：保证 step(llm_call) 在模型调用之前发出，
 /// 每个 unfold 轮次恰产出一条 SSE 事件。
 /// WebSearchStep：仅当请求了联网搜索时发 step(web_search)（复用现有
@@ -940,6 +1016,7 @@ enum ChatStreamPhase {
     LlmCallStep,
     Init,
     Rig(RigEventStream),
+    Agent(AgentEventStream),
     LegacyDone,
     End,
 }
@@ -1005,9 +1082,33 @@ async fn chat_stream_handler(
     // 文档上下文注入（预算 RG_DOC_CONTEXT_CHARS）
     let (documents_prompt, doc_count, doc_chars, doc_truncated) =
         resolve_documents_prompt(req.documents);
+    // Agent 工具循环（仅 cloud 通道）：建流失败降级为普通流式聊天，永不阻断
+    let (tools_enabled, tools_step) = resolve_data_tools_enabled(backend);
+    let agent_stream: Option<AgentEventStream> = if tools_enabled {
+        let system = crate::llm::tool_loop_system_prompt(&query, &skills, web_search, &documents_prompt);
+        match crate::llm::cloud_agent_stream(
+            system,
+            query.clone(),
+            web_search,
+            state.clone(),
+            crate::llm::AGENT_MAX_TOOL_TURNS,
+        )
+        .await
+        {
+            Ok(s) => Some(s),
+            Err(e) => {
+                log::warn!(target: "llm", "agent_stream_init_failed fallback=general_chat err={}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // 建流失败时同步降级 step 文案，避免前端收到误导性的工具提示
+    let tools_step = if agent_stream.is_some() { tools_step } else { None };
     log::info!(
         target: "llm",
-        "chat_stream_start backend={} model={} query_len={} skills_chars={} web_search={} doc_count={} doc_chars={} truncated={}",
+        "chat_stream_start backend={} model={} query_len={} skills_chars={} web_search={} doc_count={} doc_chars={} truncated={} agent_tools={}",
         backend,
         model_name,
         query.chars().count(),
@@ -1015,82 +1116,113 @@ async fn chat_stream_handler(
         web_search,
         doc_count,
         doc_chars,
-        doc_truncated
+        doc_truncated,
+        agent_stream.is_some()
     );
 
     // 仅记元数据的事件计数（不落内容）
     let thinking_count = Arc::new(AtomicUsize::new(0));
     let text_count = Arc::new(AtomicUsize::new(0));
 
-    let stream = futures::stream::unfold(ChatStreamPhase::Routing, move |phase| {
-        let query = query.clone();
-        let skills = skills.clone();
-        let documents_prompt = documents_prompt.clone();
-        let model_name = model_name.clone();
-        let thinking_count = thinking_count.clone();
-        let text_count = text_count.clone();
-        async move {
-            match phase {
-                ChatStreamPhase::Routing => Some((
-                    Ok(sse_step("routing", &format!("backend={}", backend))),
-                    ChatStreamPhase::WebSearchStep,
-                )),
-                ChatStreamPhase::WebSearchStep => match web_search_step {
-                    // 仅当请求了联网搜索（含降级场景）才发 step(web_search)
-                    Some(detail) => Some((
-                        Ok(sse_step("web_search", detail)),
-                        ChatStreamPhase::LlmCallStep,
+    let stream = futures::stream::unfold(
+        (ChatStreamPhase::Routing, agent_stream),
+        move |(phase, agent_stream)| {
+            let query = query.clone();
+            let skills = skills.clone();
+            let documents_prompt = documents_prompt.clone();
+            let model_name = model_name.clone();
+            let thinking_count = thinking_count.clone();
+            let text_count = text_count.clone();
+            async move {
+                match phase {
+                    ChatStreamPhase::Routing => Some((
+                        Ok(sse_step("routing", &format!("backend={}", backend))),
+                        (ChatStreamPhase::WebSearchStep, agent_stream),
                     )),
-                    None => Some((
-                        Ok(sse_step("llm_call", &format!("model={}", model_name))),
-                        ChatStreamPhase::Init,
-                    )),
-                },
-                ChatStreamPhase::LlmCallStep => Some((
-                    Ok(sse_step("llm_call", &format!("model={}", model_name))),
-                    ChatStreamPhase::Init,
-                )),
-                ChatStreamPhase::Init => {
-                    // rig 与 cloud 均走流式（general_chat_stream 内部按通道分流）；
-                    // 仅 legacy 降级为非流式一次性调用
-                    if backend == "rig" || backend == "cloud" {
-                        match crate::llm::general_chat_stream(&query, &skills, web_search, &documents_prompt).await {
-                            Ok(stream) => {
-                                poll_rig_event(stream, backend, &thinking_count, &text_count).await
-                            }
-                            Err(e) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
+                    ChatStreamPhase::WebSearchStep => match (web_search_step, tools_step) {
+                        // 有联网搜索 step 先发，工具/llm step 留给下一轮次
+                        (Some(detail), _) => Some((
+                            Ok(sse_step("web_search", detail)),
+                            (ChatStreamPhase::LlmCallStep, agent_stream),
+                        )),
+                        (None, Some(detail)) => Some((
+                            Ok(sse_step("tool_loop", detail)),
+                            (ChatStreamPhase::Init, agent_stream),
+                        )),
+                        (None, None) => Some((
+                            Ok(sse_step("llm_call", &format!("model={}", model_name))),
+                            (ChatStreamPhase::Init, agent_stream),
+                        )),
+                    },
+                    ChatStreamPhase::LlmCallStep => match tools_step {
+                        Some(detail) => Some((
+                            Ok(sse_step("tool_loop", detail)),
+                            (ChatStreamPhase::Init, agent_stream),
+                        )),
+                        None => Some((
+                            Ok(sse_step("llm_call", &format!("model={}", model_name))),
+                            (ChatStreamPhase::Init, agent_stream),
+                        )),
+                    },
+                    ChatStreamPhase::Init => {
+                        // Agent 工具循环优先（仅 cloud 且建流成功时）；
+                        // 其余 rig / cloud 走普通流式，legacy 降级非流式一次性调用
+                        if let Some(stream) = agent_stream {
+                            return poll_agent_event(stream, &thinking_count, &text_count)
+                                .await
+                                .map(|(event, phase)| (event, (phase, None)));
                         }
-                    } else {
-                        match crate::llm::general_chat(&query, &skills, web_search, &documents_prompt).await {
-                            Ok(reply) => {
-                                text_count.fetch_add(1, Ordering::SeqCst);
-                                Some((Ok(sse_delta("text_delta", reply)), ChatStreamPhase::LegacyDone))
+                        if backend == "rig" || backend == "cloud" {
+                            match crate::llm::general_chat_stream(&query, &skills, web_search, &documents_prompt).await {
+                                Ok(stream) => {
+                                    poll_rig_event(stream, backend, &thinking_count, &text_count)
+                                        .await
+                                        .map(|(event, phase)| (event, (phase, None)))
+                                }
+                                Err(e) => Some((Ok(sse_error(e)), (ChatStreamPhase::End, None))),
                             }
-                            Err(e) => Some((Ok(sse_error(e)), ChatStreamPhase::End)),
+                        } else {
+                            match crate::llm::general_chat(&query, &skills, web_search, &documents_prompt).await {
+                                Ok(reply) => {
+                                    text_count.fetch_add(1, Ordering::SeqCst);
+                                    Some((
+                                        Ok(sse_delta("text_delta", reply)),
+                                        (ChatStreamPhase::LegacyDone, None),
+                                    ))
+                                }
+                                Err(e) => Some((Ok(sse_error(e)), (ChatStreamPhase::End, None))),
+                            }
                         }
                     }
-                }
-                ChatStreamPhase::Rig(stream) => {
-                    poll_rig_event(stream, backend, &thinking_count, &text_count).await
-                }
-                // 仅 legacy 非流式降级路径可达，done 固定报 "legacy"
-                ChatStreamPhase::LegacyDone => {
-                    Some((Ok(sse_done(None, "legacy")), ChatStreamPhase::End))
-                }
-                ChatStreamPhase::End => {
-                    log::info!(
-                        target: "llm",
-                        "chat_stream_finish backend={} model={} thinking_events={} text_events={}",
-                        backend,
-                        model_name,
-                        thinking_count.load(Ordering::SeqCst),
-                        text_count.load(Ordering::SeqCst)
-                    );
-                    None
+                    ChatStreamPhase::Rig(stream) => {
+                        poll_rig_event(stream, backend, &thinking_count, &text_count)
+                            .await
+                            .map(|(event, phase)| (event, (phase, None)))
+                    }
+                    ChatStreamPhase::Agent(stream) => {
+                        poll_agent_event(stream, &thinking_count, &text_count)
+                            .await
+                            .map(|(event, phase)| (event, (phase, None)))
+                    }
+                    // 仅 legacy 非流式降级路径可达，done 固定报 "legacy"
+                    ChatStreamPhase::LegacyDone => {
+                        Some((Ok(sse_done(None, "legacy")), (ChatStreamPhase::End, None)))
+                    }
+                    ChatStreamPhase::End => {
+                        log::info!(
+                            target: "llm",
+                            "chat_stream_finish backend={} model={} thinking_events={} text_events={}",
+                            backend,
+                            model_name,
+                            thinking_count.load(Ordering::SeqCst),
+                            text_count.load(Ordering::SeqCst)
+                        );
+                        None
+                    }
                 }
             }
-        }
-    });
+        },
+    );
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
@@ -1229,6 +1361,25 @@ mod web_search_resolve_tests {
             (false, Some("联网搜索仅云端通道可用，已按普通对话处理"))
         );
         assert_eq!(resolve_web_search(false, "cloud"), (false, None));
+    }
+
+    /// Agent 数据工具开关语义（仅在 env RG_CHAT_TOOLS 未设置的测试环境下断言）：
+    /// cloud 生效；非 cloud 降级置 false 且携带文案
+    #[test]
+    fn resolve_data_tools_enabled_semantics() {
+        if std::env::var("RG_CHAT_TOOLS").is_ok() {
+            return;
+        }
+        assert_eq!(
+            resolve_data_tools_enabled("cloud"),
+            (true, Some("已启用联系人数据工具"))
+        );
+        let (enabled, step) = resolve_data_tools_enabled("legacy");
+        assert!(!enabled);
+        assert!(step.is_some());
+        let (enabled, step) = resolve_data_tools_enabled("rig");
+        assert!(!enabled);
+        assert!(step.is_some());
     }
 
     /// 空/None 文档 → 空串与全零元数据，prompt 逐字节不变前提

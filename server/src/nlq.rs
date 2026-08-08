@@ -61,20 +61,20 @@ pub struct SortSpec {
 }
 
 #[derive(Debug)]
-struct Candidate {
-    person_id: String,
-    name: String,
-    aliases: Vec<String>,
-    sensitivity_level: String,
-    company: Option<String>,
-    title: Option<String>,
-    location: Option<String>,
-    relationship_strength: Option<String>,
-    resource_tags: Vec<String>,
-    status: String,
-    next_step: Option<String>,
-    last_interaction_at: Option<String>,
-    last_interaction_summary: Option<String>,
+pub struct Candidate {
+    pub person_id: String,
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub sensitivity_level: String,
+    pub company: Option<String>,
+    pub title: Option<String>,
+    pub location: Option<String>,
+    pub relationship_strength: Option<String>,
+    pub resource_tags: Vec<String>,
+    pub status: String,
+    pub next_step: Option<String>,
+    pub last_interaction_at: Option<String>,
+    pub last_interaction_summary: Option<String>,
 }
 
 #[derive(Debug)]
@@ -198,7 +198,7 @@ fn validate_query_intent(mut intent: QueryIntent) -> QueryIntent {
     intent
 }
 
-fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>, rusqlite::Error> {
+pub fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT
             p.id,
@@ -361,7 +361,7 @@ fn person_has_any_topic(conn: &Connection, person_id: &str, topics: &[String]) -
     Ok(topic_match_count(conn, person_id, topics)? > 0)
 }
 
-fn topic_match_count(conn: &Connection, person_id: &str, topics: &[String]) -> Result<usize, rusqlite::Error> {
+pub fn topic_match_count(conn: &Connection, person_id: &str, topics: &[String]) -> Result<usize, rusqlite::Error> {
     if topics.is_empty() {
         return Ok(0);
     }

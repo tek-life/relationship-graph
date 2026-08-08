@@ -113,6 +113,7 @@ relationship-graph/
 | 单元测试 | 已完成 Rust 侧基础测试 | `src-tauri/src/db/tests.rs`、`commands/nlq.rs` 内测试 |
 | 聊天联网搜索 | 已完成（cloud 通道） | `server/src/llm.rs`（百炼 `enable_search` 透传）、`components/ChatView.tsx` |
 | 聊天文档上传注入 | 已完成（前端解析） | `server/src/document.rs`、`components/DocumentAttachButton.tsx` |
+| 聊天联系人数据工具调用（方案 B） | 已完成（cloud 通道） | `server/src/data_tools.rs`、`server/src/llm.rs`（Agent 工具循环） |
 
 ### 5.1 安全与加密
 
@@ -159,6 +160,18 @@ relationship-graph/
 - **联网搜索**：仅 cloud 通道生效（`RG_LLM_BACKEND=cloud`），通过百炼 `enable_search` 实现；`ChatRequest.webSearch`（camelCase，可选）控制单次请求开关，env `RG_WEB_SEARCH=off` 为全局总闸（默认允许）；SSE 新增 step stage `web_search`。
 - **文档上传**：前端解析 txt / md / pdf（pdfjs-dist）/ docx（mammoth），`.doc` 不支持；以 `ChatRequest.documents: [{fileName, content}]` 随请求提交，服务端 `server/src/document.rs` 按 `RG_DOC_CONTEXT_CHARS`（默认 12000 字）预算尾部截断并附 `[文档内容超长已截断]`；prompt 注入顺序为 角色 → 技能 → 文档 → 问题。
 - 二期规划见 §8 待办（MCP rmcp 搜索、后端解析端点、来源角标）。
+
+### 5.7 聊天联系人数据工具调用（方案 B，Function Calling）
+
+解决「基于我的数据生成报告/盘点」类请求拿不到真实联系人数据的问题：模型通过工具自主查库，而非编造模拟数据。
+
+- **工具集**（全部只读，`server/src/data_tools.rs`）：`search_contacts`（地点/关键词/强度/状态/N 天未联系，LIMIT 30）、`get_person_detail`（id 或姓名/代称，含背景、关系链、最近互动）、`list_recent_interactions`（默认 30 天，LIMIT 40）。
+- **工具循环引擎**（`server/src/llm.rs` `cloud_agent_stream`）：每轮流式调用携 tools；流式 `ToolCall` 事件累积为 pending_calls → 本轮结束后加锁执行工具（查完即释放）→ 追加 assistant/tool 消息进入下一轮；`AGENT_MAX_TOOL_TURNS = 4` 防不收敛。
+- **脱敏在工具层源头完成**：medium/high 返回代称（`sensitivity::display_name`），high 额外标记 `realNameHidden:true`；phone/email 永不输出；模型从源头看不到真名。
+- **预算**：单次工具输出按 `RG_TOOL_OUTPUT_BUDGET_CHARS`（默认 8000 字符）整包截断并附提示。
+- **开关与降级**：仅 cloud 通道生效；env `RG_CHAT_TOOLS=off` 为全局总闸（默认允许）；建流/调用失败自动降级普通聊天，永不阻断；legacy/rig 通道行为与改造前一致。
+- **SSE 事件**：新增 step stage `tool_loop`（已启用提示）与 `tool_call`（正在调用工具 X）；thinking_delta/text_delta/done 契约不变，done 的 usage 取末轮。
+- **实测基线**（qwen3.7-plus）：tools + enable_thinking 共存正常；流式 + tools 正常；二轮 role:tool 回传正常。未尽项见 §8.2。
 
 ---
 
@@ -258,6 +271,20 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 - 隐私日志合规：只记录元数据，不落对话内容。
 - 并发锁模式基本正确：LLM 调用前已释放 DB 锁。
 - 50 条上下文压缩机制已实现。
+
+### 8.2 方案 B（联系人数据工具调用）未尽实现项（2026-08-08）
+
+当前落地的是只读工具 + cloud 通道的最小闭环，以下能力尚未实现：
+
+1. **写工具 / 草稿链路**：三个工具均只读，模型不能经工具新增/修改联系人、录入互动；若后续支持写工具，必须复用 NLQ 草稿 + 用户确认机制（§10 设计原则），禁止工具直写库。
+2. **会话历史注入**：工具循环当前为单轮（system + user），未携带会话历史（与 §8.1 P0-3 同源缺口）；多轮追问时模型不记得上一轮工具结果。
+3. **rig / legacy 通道工具支持**：工具仅 cloud 通道生效，本地 Ollama 通道无工具能力（qwen2 系列原生 tools 支持弱，短期不做）。
+4. **工具调用详情 UI**：前端仅展示 step 文案，未展示工具名/参数/结果摘要与多轮思考过程；后续可把 ToolCall 事件扩展为携带参数的结构化 step。
+5. **大规模数据分页**：`search_contacts` LIMIT 30 + 整包 8000 字截断，千级联系人全量盘点仍可能截断；未支持 offset/分页参数与聚合统计类工具（如 count_by_location）。
+6. **并行工具调用**：引擎支持单轮多个 ToolCall，但百炼 `parallel_tool_calls` 场景未专项实测。
+7. **中间轮 usage 计量**：仅保留末轮 Final 的 usage，多轮累计 token 消耗未统计（与 §8.1 P1-7 token 计量同源）。
+8. **同名歧义**：`get_person_detail` 按姓名搜索时取第一个候选人，同名时可能误选；未接入 entity_mentions 歧义确认机制。
+9. **工具描述回归基线**：工具 description 措辞直接影响 qwen 工具选择准确率，修改前需实测回归（spike 脚本已删，可用临时实例 + 报告类查询验证）。
 
 ---
 

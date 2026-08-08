@@ -774,6 +774,348 @@ async fn cloud_chat_stream(
     Ok(Box::pin(mapped))
 }
 
+// ---------- Agent 工具循环（cloud 通道 Function Calling） ----------
+//
+// 为「基于我的数据生成报告」类请求提供真实联系人数据：模型通过
+// data_tools 定义的只读工具自主查库（脱敏在工具层完成）。仅 cloud
+// 通道启用；rig / legacy 通道不带 tools，行为与改造前一致。
+// 循环模型：每轮流式调用携 tools；Final 携带 ToolCall → 执行工具并
+// 追加消息进入下一轮；否则视为最终回答。DB 锁仅在工具执行瞬间持有。
+
+/// Agent 循环中模型请求的单个工具调用
+#[derive(Debug, Clone)]
+pub struct CloudToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Agent 流事件（对外契约，api 层映射为 SSE）
+pub enum AgentStreamEvent {
+    Reasoning(String),
+    Text(String),
+    ToolCall(CloudToolCall),
+    Done(Option<(usize, usize)>),
+}
+
+/// 单轮 rig 原始流（错误已映射为 String）。
+/// StreamedAssistantContent 泛型参数为 Final 携带的 raw 响应类型：
+/// openai CompletionsClient 的 StreamingResponse = StreamingCompletionResponse
+///（仅含 usage: Usage 字段；工具调用不在 Final 里，而在流式 ToolCall 事件中）。
+type AgentRoundStream = std::pin::Pin<
+    Box<
+        dyn futures::Stream<
+                Item = Result<StreamedAssistantContent<openai::StreamingCompletionResponse>, String>,
+            > + Send,
+    >,
+>;
+
+/// Agent 对外流
+pub type AgentEventStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = Result<AgentStreamEvent, String>> + Send>>;
+
+/// 工具循环最大轮次（防模型反复调工具不收敛；超限后不再开启新轮）
+pub const AGENT_MAX_TOOL_TURNS: usize = 4;
+
+/// Agent 循环的系统语：复用 general_chat 的角色设定与技能/文档/联网段，
+/// 在技能段与文档段之间追加数据工具使用指令（禁止编造联系人数据）。
+pub fn tool_loop_system_prompt(query: &str, skills: &str, web_search: bool, documents: &str) -> String {
+    let base = if web_search {
+        "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。\
+本次对话已启用联网搜索，可参考最新网络信息作答。"
+    } else {
+        "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。\
+当用户问题涉及实时互联网信息时，明确说明你无法联网，并给出可行替代方案。"
+    };
+    let mut prompt = base.to_string();
+    if !skills.is_empty() {
+        prompt.push_str(&format!(
+            "\n\n你当前具备以下技能，请在适用时遵循：\n{}",
+            skills.trim_end()
+        ));
+    }
+    prompt.push_str(
+        "\n\n你可以通过工具访问用户的联系人数据库（联系人、互动记录、关系链）。\
+当用户的问题涉及其联系人、关系、互动记录，或要求基于这些数据做统计、盘点、分析、生成报告时，\
+必须先调用工具获取真实数据后再作答；严禁在未查询真实数据的情况下编造或模拟联系人数据。\
+工具返回的姓名可能是隐私保护代称，请照用代称，不要猜测真名。",
+    );
+    if !documents.is_empty() {
+        prompt.push_str(&format!("\n\n{}", documents.trim_end()));
+    }
+    prompt.push_str(&format!("\n\n用户问题：{}", query));
+    prompt
+}
+
+/// 单轮携 tools 的流式调用（cloud 通道）。思考保持开启（已实测与 tools 共存）；
+/// web_search 时合入百炼 enable_search。messages 为完整有序消息序列。
+async fn cloud_agent_round_stream(
+    messages: Vec<rig_core::completion::Message>,
+    web_search: bool,
+) -> Result<AgentRoundStream, String> {
+    let client = cloud_client()?;
+    let model_name = cloud_chat_model();
+    let timeout = cloud_timeout();
+    info!(
+        target: "llm",
+        "agent_round_stream model={} messages={} web_search={}",
+        model_name,
+        messages.len(),
+        web_search
+    );
+
+    let model = client.completion_model(&model_name);
+    let mut additional = serde_json::json!({"enable_thinking": true});
+    if web_search {
+        additional["enable_search"] = serde_json::json!(true);
+        additional["search_options"] = serde_json::json!({"search_strategy": "turbo"});
+    }
+    // builder 语义：chat_history + prompt；messages 尾元素作为 prompt，
+    // 其余按序放入 chat_history，重建后与原始序列一致
+    let mut messages = messages;
+    let last = messages.pop().ok_or_else(|| "Agent 消息序列为空".to_string())?;
+    let request = model
+        .completion_request(last)
+        .messages(messages)
+        .tools(crate::data_tools::definitions())
+        .additional_params(additional)
+        .build();
+
+    let stream = match tokio::time::timeout(timeout, model.stream(request)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => return Err(format!("云端请求失败（模型 {}）：{}", model_name, e)),
+        Err(_) => {
+            return Err(format!(
+                "云端请求超时：模型 {} 在 {} 秒内未建连。你可以稍后重试，或提高环境变量 RG_CLOUD_TIMEOUT_SECS。",
+                model_name,
+                timeout.as_secs()
+            ))
+        }
+    };
+    use futures::StreamExt;
+    Ok(Box::pin(stream.map(move |item| {
+        item.map_err(|e| format!("云端流式响应失败（模型 {}）：{}", model_name, e))
+    })))
+}
+
+struct AgentCtx {
+    state: crate::state::SharedState,
+    messages: Vec<rig_core::completion::Message>,
+    web_search: bool,
+    max_turns: usize,
+    turn: usize,
+    current: Option<AgentRoundStream>,
+    pending_calls: Vec<CloudToolCall>,
+    /// 最近一轮 Final 携带的 usage（流结束时随 Done 事件对外输出）
+    last_usage: Option<(usize, usize)>,
+}
+
+/// 工具循环的流式版本（/api/chat/stream）：Reasoning/Text 增量透传，
+/// ToolCall 事件由 api 层映射为 SSE step 并进入下一轮。
+/// 工具执行锁约定：锁内查询 → 立即 drop guard，LLM 调用期间不持锁。
+pub async fn cloud_agent_stream(
+    system_prompt: String,
+    query: String,
+    web_search: bool,
+    state: crate::state::SharedState,
+    max_turns: usize,
+) -> Result<AgentEventStream, String> {
+    let messages = vec![
+        rig_core::completion::Message::system(system_prompt),
+        rig_core::completion::Message::user(query),
+    ];
+    let stream = cloud_agent_round_stream(messages.clone(), web_search).await?;
+    let ctx = AgentCtx {
+        state,
+        messages,
+        web_search,
+        max_turns,
+        turn: 1,
+        current: Some(stream),
+        pending_calls: Vec::new(),
+        last_usage: None,
+    };
+    let timeout = cloud_timeout();
+    let stall_error = "云端流式响应超时：长时间未返回新内容，请稍后重试。".to_string();
+
+    let stream = futures::stream::try_unfold(ctx, move |mut ctx| {
+        let stall_error = stall_error.clone();
+        async move {
+            use futures::StreamExt;
+            use rig_core::completion::AssistantContent;
+            loop {
+                // 上一轮以工具调用结束 → 执行工具（每个工具独立加锁/释放，
+                // 查完立即 drop guard）→ 组装消息 → 开启新一轮
+                if ctx.current.is_none() {
+                    if ctx.pending_calls.is_empty() {
+                        return Ok(None);
+                    }
+                    let calls = std::mem::take(&mut ctx.pending_calls);
+                    ctx.messages.push(rig_core::completion::Message::Assistant {
+                        id: None,
+                        content: rig_core::OneOrMany::many(
+                            calls
+                                .iter()
+                                .map(|c| {
+                                    AssistantContent::ToolCall(
+                                        rig_core::completion::message::ToolCall::new(
+                                            c.id.clone(),
+                                            rig_core::completion::message::ToolFunction::new(
+                                                c.name.clone(),
+                                                c.arguments.clone(),
+                                            ),
+                                        ),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                        .map_err(|_| "工具调用消息为空".to_string())?,
+                    });
+                    for call in &calls {
+                        let output = match ctx.state.db.lock() {
+                            Ok(guard) => match crate::db::get_conn(&guard) {
+                                Ok(conn) => {
+                                    crate::data_tools::execute_tool(conn, &call.name, &call.arguments)
+                                }
+                                Err(e) => {
+                                    serde_json::json!({"error": format!("数据库未解锁: {}", e)}).to_string()
+                                }
+                            },
+                            Err(e) => {
+                                serde_json::json!({"error": format!("数据库锁获取失败: {}", e)}).to_string()
+                            }
+                        }; // guard 在此释放
+                        ctx.messages
+                            .push(rig_core::completion::Message::tool_result(call.id.clone(), output));
+                    }
+                    let next = cloud_agent_round_stream(ctx.messages.clone(), ctx.web_search).await?;
+                    ctx.turn += 1;
+                    ctx.current = Some(next);
+                }
+
+                let stream = ctx.current.as_mut().expect("current stream");
+                let next = match tokio::time::timeout(timeout, stream.next()).await {
+                    Ok(item) => item,
+                    Err(_) => return Err(stall_error.clone()),
+                };
+                match next {
+                    None => {
+                        // 本轮流结束：有待处理的工具调用且未超轮次上限 → 进入
+                        // 工具执行分支；否则发 Done 终止（pending 需清空，
+                        // 防止下一轮 poll 误入工具执行分支）
+                        ctx.current = None;
+                        if ctx.pending_calls.is_empty() {
+                            return Ok(Some((AgentStreamEvent::Done(ctx.last_usage), ctx)));
+                        }
+                        if ctx.turn >= ctx.max_turns {
+                            log::warn!(
+                                target: "llm",
+                                "agent_tool_budget_exhausted turn={} pending={}",
+                                ctx.turn,
+                                ctx.pending_calls.len()
+                            );
+                            ctx.pending_calls.clear();
+                            return Ok(Some((AgentStreamEvent::Done(ctx.last_usage), ctx)));
+                        }
+                        continue;
+                    }
+                    Some(Err(e)) => return Err(e),
+                    Some(Ok(StreamedAssistantContent::Reasoning(reasoning))) => {
+                        let text: String = reasoning
+                            .content
+                            .iter()
+                            .filter_map(|item| match item {
+                                rig_core::completion::message::ReasoningContent::Text { text, .. } => {
+                                    Some(text.as_str())
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        return Ok(Some((AgentStreamEvent::Reasoning(text), ctx)));
+                    }
+                    Some(Ok(StreamedAssistantContent::ReasoningDelta { reasoning, .. })) => {
+                        if reasoning.is_empty() {
+                            continue;
+                        }
+                        return Ok(Some((AgentStreamEvent::Reasoning(reasoning), ctx)));
+                    }
+                    Some(Ok(StreamedAssistantContent::Text(text))) => {
+                        if text.text.is_empty() {
+                            continue;
+                        }
+                        return Ok(Some((AgentStreamEvent::Text(text.text), ctx)));
+                    }
+                    Some(Ok(StreamedAssistantContent::ToolCall { tool_call, .. })) => {
+                        // 完整工具调用事件（provider 已将 delta 累积为完整参数）：
+                        // 记入 pending_calls 待本轮流结束后执行，同时对外发进度事件
+                        let call = CloudToolCall {
+                            id: tool_call
+                                .call_id
+                                .clone()
+                                .unwrap_or_else(|| tool_call.id.clone()),
+                            name: tool_call.function.name.clone(),
+                            arguments: tool_call.function.arguments.clone(),
+                        };
+                        ctx.pending_calls.push(call.clone());
+                        return Ok(Some((AgentStreamEvent::ToolCall(call), ctx)));
+                    }
+                    Some(Ok(StreamedAssistantContent::Final(final_response))) => {
+                        // Final 仅携带 usage（openai StreamingCompletionResponse）；
+                        // 工具调用以流式 ToolCall 事件为准。provider 未回 usage
+                        // 时全 0 → None，与 ollama 路径 usage=null 语义一致
+                        let input = final_response.usage.prompt_tokens;
+                        let output = final_response.usage.completion_tokens.unwrap_or(0);
+                        ctx.last_usage = if input == 0 && output == 0 {
+                            None
+                        } else {
+                            Some((input, output))
+                        };
+                        continue;
+                    }
+                    // ToolCallDelta / Unknown 等：完整 ToolCall 事件会随后到达，忽略
+                    Some(Ok(_)) => continue,
+                }
+            }
+        }
+    });
+    Ok(Box::pin(stream))
+}
+
+/// 工具循环的非流式版本（/api/chat）：消费 cloud_agent_stream 收集全文；
+/// 工具执行由引擎内部完成，此处仅需透传文本。
+pub async fn cloud_chat_with_tools(
+    system_prompt: String,
+    query: String,
+    web_search: bool,
+    state: crate::state::SharedState,
+    max_turns: usize,
+) -> Result<String, String> {
+    use futures::StreamExt;
+    let stream = cloud_agent_stream(system_prompt, query, web_search, state, max_turns).await?;
+    futures::pin_mut!(stream);
+    let mut text = String::new();
+    let mut tool_rounds = 0usize;
+    while let Some(event) = stream.next().await {
+        match event {
+            Err(e) => return Err(e),
+            Ok(AgentStreamEvent::Text(t)) => text.push_str(&t),
+            Ok(AgentStreamEvent::ToolCall(c)) => {
+                tool_rounds += 1;
+                info!(target: "llm", "agent_tool_call tool={}", c.name);
+            }
+            Ok(AgentStreamEvent::Reasoning(_)) | Ok(AgentStreamEvent::Done(_)) => {}
+        }
+    }
+    info!(target: "llm", "agent_chat_done tool_rounds={} text_chars={}", tool_rounds, text.chars().count());
+    if text.trim().is_empty() {
+        return Err("云端模型未返回有效内容".to_string());
+    }
+    Ok(text)
+}
+
 /// general_chat 的系统语（流式与非流式保持一致）。
 /// skills/documents 为空且 web_search=false 时输出与无技能注入的旧格式
 /// 逐字节一致；非空时在角色设定与“用户问题：”之间依次插入技能段、文档段
