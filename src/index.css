@@ -2,7 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== Theme CSS Variables ===== */
+/* ===== Theme CSS Variables =====
+   --success / --warning（UX P0-1 新增）：语义状态色令牌。
+   用途：成功态（提交成功 / 已完成 / 正向反馈）用 --success，
+         警示态（待跟进 / 关系冷却 / 非阻断性提醒）用 --warning。
+   取值与各自主题的 accent / danger 保持同级对比度，供 bg-success /
+   text-success / bg-warning 等语义类（见 tailwind.config.js）使用。 */
 :root, [data-theme="light"] {
   --bg-primary: #f1f5f9;
   --bg-secondary: #f8fafc;
@@ -18,6 +23,8 @@
   --danger-hover: #b91c1c;
   --surface-hover: #f1f5f9;
   --shadow-color: rgba(0, 0, 0, 0.05);
+  --success: #16a34a;
+  --warning: #d97706;
 }
 
 [data-theme="dark"] {
@@ -35,6 +42,8 @@
   --danger-hover: #ef4444;
   --surface-hover: #334155;
   --shadow-color: rgba(0, 0, 0, 0.3);
+  --success: #4ade80;
+  --warning: #fbbf24;
 }
 
 [data-theme="high-contrast"] {
@@ -52,10 +61,13 @@
   --danger-hover: #ff6666;
   --surface-hover: #333333;
   --shadow-color: rgba(255, 255, 255, 0.1);
+  --success: #00e676;
+  --warning: #ffab00;
 }
 
 :root {
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* UX P0-1：追加中文字体栈（与 tailwind.config.js fontFamily.sans 保持一致） */
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   color: var(--text-primary);
   background: var(--bg-primary);
   font-synthesis: none;
