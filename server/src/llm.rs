@@ -8,7 +8,7 @@ use rig_core::completion::{AssistantContent, CompletionModel as _};
 use rig_core::providers::{ollama, openai};
 use rig_core::streaming::StreamedAssistantContent;
 
-use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage};
+use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage, ChatHistory};
 
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 45;
 const DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS: u64 = 120;
@@ -724,12 +724,47 @@ async fn call_cloud(
     }
 }
 
-/// general_chat 的云端流式版本：百炼聊天模型开思考（enable_thinking=true），
-/// reasoning_content 增量由 rig openai provider 映射为 ReasoningDelta，
-/// include_usage 由 provider 自动注入，usage 随末尾独立 chunk 的 Final 到达。
-/// 事件映射与 rig ollama 路径一致（Reasoning→thinking_delta 等由上层转换）。
+/// 多轮对话消息序列构建（messages 模式通用）：
+/// system（角色+技能+文档，摘要已拼入）→ 历史轮次 → 本轮 user 问题。
+fn chat_message_sequence(
+    system: &str,
+    history: &ChatHistory,
+    query: &str,
+) -> Vec<rig_core::completion::Message> {
+    let mut messages = vec![rig_core::completion::Message::system(system.to_string())];
+    for (role, content) in &history.turns {
+        match role.as_str() {
+            "user" => messages.push(rig_core::completion::Message::user(content.clone())),
+            "assistant" => messages.push(rig_core::completion::Message::assistant(content.clone())),
+            _ => {} // 历史组装层已过滤其他角色，此处双重防护
+        }
+    }
+    messages.push(rig_core::completion::Message::user(query.to_string()));
+    messages
+}
+
+/// messages 模式的 system prompt：角色+技能+文档 →（如有）[对话摘要]。
+/// 注入顺序（计划 §2-4）：角色+技能+文档 → 摘要 → 最近历史轮次 → 本轮 query。
+fn build_system_with_summary(
+    skills: &str,
+    web_search: bool,
+    documents: &str,
+    summary: Option<&str>,
+) -> String {
+    let mut system = general_chat_system_prompt(skills, web_search, documents);
+    if let Some(s) = summary.map(str::trim).filter(|s| !s.is_empty()) {
+        system.push_str(&format!("\n\n[对话摘要] {}", s));
+    }
+    system
+}
+
+/// general_chat_stream 的云端 messages 版本：消息序列 = system → 历史轮次 →
+/// 本轮问题；百炼聊天模型开思考（enable_thinking=true），web_search 时合入
+/// enable_search；事件映射与旧版一致。
 async fn cloud_chat_stream(
-    prompt: &str,
+    system: &str,
+    history: &ChatHistory,
+    query: &str,
     web_search: bool,
 ) -> Result<
     std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
@@ -744,10 +779,11 @@ async fn cloud_chat_stream(
     let timeout = cloud_timeout();
     info!(
         target: "llm",
-        "cloud_stream_request url={} model={} prompt_len={} web_search={}",
+        "cloud_stream_request url={} model={} system_len={} history_turns={} web_search={}",
         cloud_base_url(),
         model_name,
-        prompt.len(),
+        system.len(),
+        history.turns.len(),
         web_search
     );
 
@@ -762,8 +798,13 @@ async fn cloud_chat_stream(
     } else {
         serde_json::json!({"enable_thinking": true})
     };
+    let mut messages = chat_message_sequence(system, history, query);
+    let last = messages
+        .pop()
+        .ok_or_else(|| "消息序列为空".to_string())?;
     let request = model
-        .completion_request(prompt)
+        .completion_request(last)
+        .messages(messages)
         .additional_params(additional)
         .build();
 
@@ -994,11 +1035,22 @@ pub async fn cloud_agent_stream(
     state: crate::state::SharedState,
     owner_id: String,
     max_turns: usize,
+    history: &ChatHistory,
 ) -> Result<AgentEventStream, String> {
-    let messages = vec![
-        rig_core::completion::Message::system(system_prompt),
-        rig_core::completion::Message::user(query),
-    ];
+    // 多轮历史注入：摘要拼入 system 尾部，历史轮次置于 system 与本轮问题之间
+    let mut system_prompt = system_prompt;
+    if let Some(s) = history.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        system_prompt.push_str(&format!("\n\n[对话摘要] {}", s));
+    }
+    let mut messages = vec![rig_core::completion::Message::system(system_prompt)];
+    for (role, content) in &history.turns {
+        match role.as_str() {
+            "user" => messages.push(rig_core::completion::Message::user(content.clone())),
+            "assistant" => messages.push(rig_core::completion::Message::assistant(content.clone())),
+            _ => {}
+        }
+    }
+    messages.push(rig_core::completion::Message::user(query));
     let stream = cloud_agent_round_stream(messages.clone(), web_search).await?;
     let ctx = AgentCtx {
         state,
@@ -1169,9 +1221,10 @@ pub async fn cloud_chat_with_tools(
     state: crate::state::SharedState,
     owner_id: String,
     max_turns: usize,
+    history: &ChatHistory,
 ) -> Result<String, String> {
     use futures::StreamExt;
-    let stream = cloud_agent_stream(system_prompt, query, web_search, state, owner_id, max_turns).await?;
+    let stream = cloud_agent_stream(system_prompt, query, web_search, state, owner_id, max_turns, history).await?;
     futures::pin_mut!(stream);
     let mut text = String::new();
     let mut tool_rounds = 0usize;
@@ -1200,7 +1253,9 @@ pub async fn cloud_chat_with_tools(
 /// frontmatter 并按字符预算截断；文档段由 document::build_documents_prompt
 /// 构建并按 RG_DOC_CONTEXT_CHARS 预算截断）。
 /// web_search=true 时将“无法联网”句替换为联网搜索已启用说明。
-fn general_chat_prompt(query: &str, skills: &str, web_search: bool, documents: &str) -> String {
+/// 仅含角色+技能+文档（不含用户问题）；messages 模式下作为 system 消息，
+/// 单 prompt 模式下由 general_chat_prompt 追加“用户问题：”尾段。
+fn general_chat_system_prompt(skills: &str, web_search: bool, documents: &str) -> String {
     let base = if web_search {
         "你是您的个人 AI 平台的通用助理。请直接回答用户问题，默认使用简体中文。\
 本次对话已启用联网搜索，可参考最新网络信息作答。"
@@ -1218,8 +1273,16 @@ fn general_chat_prompt(query: &str, skills: &str, web_search: bool, documents: &
     if !documents.is_empty() {
         prompt.push_str(&format!("\n\n{}", documents.trim_end()));
     }
-    prompt.push_str(&format!("\n\n用户问题：{}", query));
     prompt
+}
+
+/// 单 prompt 模式的完整提示词（与改造前逐字节一致）
+fn general_chat_prompt(query: &str, skills: &str, web_search: bool, documents: &str) -> String {
+    format!(
+        "{}\n\n用户问题：{}",
+        general_chat_system_prompt(skills, web_search, documents),
+        query
+    )
 }
 
 /// 当前 general_chat 实际走的通道（"rig" / "cloud" / "legacy"），供 SSE 端点发 routing 事件
@@ -1241,17 +1304,242 @@ pub fn general_chat_model() -> String {
     general_chat_model_for(false)
 }
 
-pub async fn general_chat(query: &str, skills: &str, web_search: bool, documents: &str) -> Result<String, String> {
-    let prompt = general_chat_prompt(query, skills, web_search, documents);
+pub async fn general_chat(
+    query: &str,
+    skills: &str,
+    web_search: bool,
+    documents: &str,
+    history: &ChatHistory,
+) -> Result<String, String> {
+    let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
+    if history.is_empty() {
+        // 无历史：行为与改造前逐字节一致（单 prompt + 三通道分发）
+        let prompt = general_chat_prompt(query, skills, web_search, documents);
+        return call_ollama(&prompt, None, timeout, "general_chat", web_search).await;
+    }
+    // 有历史：messages 数组化（system → 摘要 → 历史轮次 → 本轮问题），
+    // 按通道分发：cloud 百炼 / rig Ollama（经 rig）/ legacy Ollama /api/chat
+    let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
+    match llm_channel("general_chat") {
+        Channel::Cloud => cloud_chat_messages(&system, history, query, web_search, timeout).await,
+        Channel::Rig => rig_chat_messages(&system, history, query, timeout).await,
+        Channel::Legacy => ollama_chat_messages(&system, history, query, timeout).await,
+    }
+}
 
-    call_ollama(
-        &prompt,
-        None,
-        ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
-        "general_chat",
-        web_search,
-    )
-    .await
+/// messages 模式的非流式聊天（cloud 通道）：对齐 call_cloud 参数语义
+///（聊天类 enable_thinking=false 避免 400；web_search 合入 enable_search），
+/// 消息序列 = system → 历史轮次 → 本轮问题。
+async fn cloud_chat_messages(
+    system: &str,
+    history: &ChatHistory,
+    query: &str,
+    web_search: bool,
+    timeout: Duration,
+) -> Result<String, String> {
+    let client = cloud_client()?;
+    let model_name = if web_search { cloud_search_model() } else { cloud_chat_model() };
+    let started = Instant::now();
+    info!(
+        target: "llm",
+        "cloud_messages_request url={} model={} fn=general_chat system_len={} history_turns={} web_search={}",
+        cloud_base_url(),
+        model_name,
+        system.len(),
+        history.turns.len(),
+        web_search
+    );
+
+    let model = client.completion_model(&model_name);
+    let mut params = serde_json::Map::new();
+    // 百炼思考模型非流式请求显式关闭思考避免 400（与 call_cloud 一致）
+    params.insert("enable_thinking".to_string(), serde_json::json!(false));
+    if web_search {
+        params.insert("enable_search".to_string(), serde_json::json!(true));
+        params.insert(
+            "search_options".to_string(),
+            serde_json::json!({"search_strategy": "turbo"}),
+        );
+    }
+    let mut messages = chat_message_sequence(system, history, query);
+    let last = messages.pop().expect("消息序列非空");
+    let request = model
+        .completion_request(last)
+        .messages(messages)
+        .additional_params(serde_json::Value::Object(params))
+        .build();
+
+    match tokio::time::timeout(timeout, model.completion(request)).await {
+        Ok(Ok(response)) => {
+            let text: String = response
+                .choice
+                .iter()
+                .filter_map(|item| match item {
+                    AssistantContent::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            info!(
+                target: "llm",
+                "cloud_messages_response model={} fn=general_chat elapsed_ms={} text_chars={}",
+                model_name,
+                started.elapsed().as_millis(),
+                text.chars().count()
+            );
+            if text.is_empty() {
+                Err("云端模型返回内容为空".to_string())
+            } else {
+                Ok(text)
+            }
+        }
+        Ok(Err(e)) => Err(format!("云端请求失败（模型 {}）：{}", model_name, e)),
+        Err(_) => Err(format!(
+            "云端请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_CLOUD_TIMEOUT_SECS。",
+            model_name,
+            timeout.as_secs()
+        )),
+    }
+}
+
+/// messages 模式的非流式聊天（rig 通道，Ollama）：与 call_rig 平行，
+/// 消息序列经 chat_history + prompt 重建，错误文案与 legacy 通道一致。
+async fn rig_chat_messages(
+    system: &str,
+    history: &ChatHistory,
+    query: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let client = rig_client()?;
+    let model_name = ollama_model();
+    info!(
+        target: "llm",
+        "rig_messages_request url={} model={} system_len={} history_turns={}",
+        ollama_url(),
+        model_name,
+        system.len(),
+        history.turns.len()
+    );
+
+    let model = client.completion_model(&model_name);
+    let mut messages = chat_message_sequence(system, history, query);
+    let last = messages.pop().expect("消息序列非空");
+    let request = model.completion_request(last).messages(messages).build();
+
+    match tokio::time::timeout(timeout, model.completion(request)).await {
+        Ok(Ok(response)) => {
+            let text: String = response
+                .choice
+                .iter()
+                .filter_map(|item| match item {
+                    AssistantContent::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            if text.is_empty() {
+                Err("Empty response from Ollama".to_string())
+            } else {
+                Ok(text)
+            }
+        }
+        Ok(Err(e)) => Err(format!("Ollama request failed: {}", e)),
+        Err(_) => Err(format!(
+            "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
+            model_name,
+            timeout.as_secs()
+        )),
+    }
+}
+
+/// Ollama /api/chat messages 格式（legacy 降级路径多轮支持）：
+/// 单 prompt 的 /api/generate 无法表达消息序列，多轮历史时改走 /api/chat。
+#[derive(Serialize, Deserialize)]
+struct OllamaChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct OllamaChatRequest {
+    model: String,
+    stream: bool,
+    messages: Vec<OllamaChatMessage>,
+}
+
+#[derive(Deserialize)]
+struct OllamaChatResponse {
+    message: Option<OllamaChatMessage>,
+}
+
+async fn ollama_chat_messages(
+    system: &str,
+    history: &ChatHistory,
+    query: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let mut messages = vec![OllamaChatMessage {
+        role: "system".to_string(),
+        content: system.to_string(),
+    }];
+    for (role, content) in &history.turns {
+        if role == "user" || role == "assistant" {
+            messages.push(OllamaChatMessage {
+                role: role.clone(),
+                content: content.clone(),
+            });
+        }
+    }
+    messages.push(OllamaChatMessage {
+        role: "user".to_string(),
+        content: query.to_string(),
+    });
+
+    let req = OllamaChatRequest {
+        model: ollama_model(),
+        stream: false,
+        messages,
+    };
+    let url = format!("{}/api/chat", ollama_url());
+    info!(
+        target: "llm",
+        "ollama_chat_request url={} model={} messages={}",
+        url,
+        req.model,
+        req.messages.len()
+    );
+
+    let resp = client
+        .post(&url)
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_timeout() {
+                format!(
+                    "Ollama 请求超时：模型 {} 在 {} 秒内未返回结果。你可以稍后重试，或提高环境变量 RG_OLLAMA_CHAT_TIMEOUT_SECS / RG_OLLAMA_TIMEOUT_SECS。",
+                    req.model,
+                    timeout.as_secs()
+                )
+            } else {
+                format!("Ollama request failed: {}", e)
+            }
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Ollama returned status {}", resp.status()));
+    }
+
+    let data: OllamaChatResponse = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+    data.message
+        .map(|m| m.content)
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| "Empty response from Ollama".to_string())
 }
 
 /// general_chat_stream 的流式输出事件：
@@ -1273,31 +1561,50 @@ pub async fn general_chat_stream(
     skills: &str,
     web_search: bool,
     documents: &str,
+    history: &ChatHistory,
 ) -> Result<
     std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
     String,
 > {
-    let prompt = general_chat_prompt(query, skills, web_search, documents);
-
     // cloud 通道：百炼聊天模型（开思考，web_search 时合入 enable_search），
+    // messages 序列 = system（角色+技能+文档+摘要）→ 历史轮次 → 本轮问题；
     // SSE 事件契约与 rig ollama 路径一致
     if llm_channel("general_chat") == Channel::Cloud {
-        return cloud_chat_stream(&prompt, web_search).await;
+        let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
+        return cloud_chat_stream(&system, history, query, web_search).await;
     }
 
     let client = rig_client()?;
     let model_name = ollama_model();
     let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
-    info!(
-        target: "llm",
-        "rig_stream_request url={} model={} prompt_len={}",
-        ollama_url(),
-        model_name,
-        prompt.len()
-    );
 
     let model = client.completion_model(&model_name);
-    let request = model.completion_request(prompt).build();
+    // rig（Ollama /api/chat）：无历史时保持原单 prompt 逐字节不变；
+    // 有历史时改 messages 序列（system → 摘要 → 历史轮次 → 本轮问题）
+    let request = if history.is_empty() {
+        let prompt = general_chat_prompt(query, skills, web_search, documents);
+        info!(
+            target: "llm",
+            "rig_stream_request url={} model={} prompt_len={}",
+            ollama_url(),
+            model_name,
+            prompt.len()
+        );
+        model.completion_request(prompt).build()
+    } else {
+        let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
+        info!(
+            target: "llm",
+            "rig_stream_request url={} model={} system_len={} history_turns={}",
+            ollama_url(),
+            model_name,
+            system.len(),
+            history.turns.len()
+        );
+        let mut messages = chat_message_sequence(&system, history, query);
+        let last = messages.pop().expect("消息序列非空");
+        model.completion_request(last).messages(messages).build()
+    };
 
     // 超时覆盖连接建立阶段；流消费阶段由 rig stream 自身驱动，
     // 客户端断开时 Abortable 包装使流取消。

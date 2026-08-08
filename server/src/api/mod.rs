@@ -837,6 +837,10 @@ async fn chat_handler(
     let user_id = user.map(|u| (u.0).0);
     // 归属校验前置：携带 sessionId 时必须属于当前用户，否则 404（不泄露存在性）
     verify_chat_session_owned(&state, req.session_id.as_deref(), user_id.as_deref())?;
+    // 聊天历史组装：request_at 捕获请求时刻，严格排除本轮刚落库的 user 消息；
+    // 读取失败降级为空历史，永不阻断聊天
+    let request_at = Utc::now().to_rfc3339();
+    let history = load_chat_history(&state, req.session_id.as_deref(), &request_at);
     let skills = resolve_skills_prompt(&state, req.agent_id.as_deref(), user_id.as_deref());
     // 联网搜索：请求开关 AND env 总闸 AND 云端通道；非 cloud 静默置 false 不阻断
     let backend = crate::llm::general_chat_backend();
@@ -869,6 +873,7 @@ async fn chat_handler(
             state.clone(),
             owner_id,
             crate::llm::AGENT_MAX_TOOL_TURNS,
+            &history,
         )
         .await
         {
@@ -878,7 +883,7 @@ async fn chat_handler(
             }
         }
     }
-    let reply = crate::llm::general_chat(query, &skills, web_search, &documents_prompt)
+    let reply = crate::llm::general_chat(query, &skills, web_search, &documents_prompt, &history)
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(ChatResponse { reply }))
@@ -1392,6 +1397,10 @@ async fn chat_stream_handler(
     let user_id = user.map(|u| (u.0).0);
     // 归属校验前置：携带 sessionId 时必须属于当前用户，否则 404（不泄露存在性）
     verify_chat_session_owned(&state, req.session_id.as_deref(), user_id.as_deref())?;
+    // 聊天历史组装：request_at 捕获请求时刻，严格排除本轮刚落库的 user 消息；
+    // 读取失败降级为空历史，永不阻断聊天
+    let request_at = Utc::now().to_rfc3339();
+    let history = load_chat_history(&state, req.session_id.as_deref(), &request_at);
     let skills = resolve_skills_prompt(&state, req.agent_id.as_deref(), user_id.as_deref());
 
     let backend = crate::llm::general_chat_backend();
@@ -1418,6 +1427,7 @@ async fn chat_stream_handler(
             state.clone(),
             owner_id,
             crate::llm::AGENT_MAX_TOOL_TURNS,
+            &history,
         )
         .await
         {
@@ -1456,6 +1466,7 @@ async fn chat_stream_handler(
             let query = query.clone();
             let skills = skills.clone();
             let documents_prompt = documents_prompt.clone();
+            let history = history.clone();
             let model_name = model_name.clone();
             let thinking_count = thinking_count.clone();
             let text_count = text_count.clone();
@@ -1486,7 +1497,7 @@ async fn chat_stream_handler(
                                 .map(|(event, phase)| (event, (phase, None)));
                         }
                         if backend == "rig" || backend == "cloud" {
-                            match crate::llm::general_chat_stream(&query, &skills, web_search, &documents_prompt).await {
+                            match crate::llm::general_chat_stream(&query, &skills, web_search, &documents_prompt, &history).await {
                                 Ok(stream) => {
                                     poll_rig_event(stream, backend, &thinking_count, &text_count)
                                         .await
@@ -1495,7 +1506,7 @@ async fn chat_stream_handler(
                                 Err(e) => Some((Ok(sse_error(e)), (ChatStreamPhase::End, None))),
                             }
                         } else {
-                            match crate::llm::general_chat(&query, &skills, web_search, &documents_prompt).await {
+                            match crate::llm::general_chat(&query, &skills, web_search, &documents_prompt, &history).await {
                                 Ok(reply) => {
                                     text_count.fetch_add(1, Ordering::SeqCst);
                                     Some((
