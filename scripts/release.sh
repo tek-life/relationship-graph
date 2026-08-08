@@ -9,7 +9,7 @@ set -euo pipefail
 #   2. 本地 npm run build（前端 dist/）
 #   3. rsync 增量上传到 ECS（~/relationship-graph/{bin,web}）
 #   4. 远端重启 systemd 用户级服务（无需 root）
-#   5. 健康检查（8790 后端 + 8080 前端）
+#   5. 健康检查（8790 后端 + 80 前端）
 #
 # 前提：
 #   - 服务器已运行过一次 scripts/server-init.sh
@@ -142,10 +142,10 @@ else
   exit 1
 fi
 
-# 前端监听端口：从远端 Caddyfile 监听行读取（服务器默认 80，老实例 8080）
+# 前端监听端口：从远端 Caddyfile 监听行读取（默认 80）
 WEB_PORT=$(${SSH} "grep -oE '^:[0-9]+' ${REMOTE_DIR}/Caddyfile 2>/dev/null | head -1 | tr -dc '0-9'")
 if [ -z "${WEB_PORT}" ]; then
-  WEB_PORT=8080
+  WEB_PORT=80
 fi
 
 if ${SSH} "curl -sf http://localhost:${WEB_PORT}" >/dev/null 2>&1; then

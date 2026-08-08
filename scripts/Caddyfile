@@ -12,7 +12,8 @@
 # 可移植性（环境变量，均有默认值，本机可直接用）：
 #   RG_WEB_ROOT   静态资源根目录（默认 /home/hfli/personal_ai_workspace/dist；
 #                 ECS 部署设为 ~/relationship-graph/web 即可复用本文件）
-#   RG_WEB_PORT   监听端口（默认 8080；服务器部署置 80，需 root 或 CAP_NET_BIND_SERVICE）
+#   RG_WEB_PORT   监听端口（默认 80；非 root 环境需给 caddy 授 cap_net_bind_service，
+#                 或设 RG_WEB_PORT=8080 回退）
 #
 # 使用方法：
 #   caddy run --config /home/hfli/personal_ai_workspace/scripts/Caddyfile
@@ -34,7 +35,7 @@
 	admin localhost:2020
 }
 
-:{$RG_WEB_PORT:8080} {
+:{$RG_WEB_PORT:80} {
 	# 前端静态文件根目录（RG_WEB_ROOT 可覆盖，默认本工作区 dist/）
 	root * {$RG_WEB_ROOT:/home/hfli/personal_ai_workspace/dist}
 

@@ -45,6 +45,8 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
 # LLM 通道：生产默认云端（百炼）；本地模型回退设 RG_LLM_BACKEND=legacy
 RG_LLM_BACKEND="${RG_LLM_BACKEND:-cloud}"
 RG_USE_OLLAMA="${RG_USE_OLLAMA:-0}"
+# 前端 Web 端口：默认 80（与 start-services.sh / Caddyfile 一致）
+RG_WEB_PORT="${RG_WEB_PORT:-80}"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -253,11 +255,11 @@ else
   exit 1
 fi
 
-# 检查前端服务（生产模式检查 8080 端口 / Caddy，开发模式检查 1420 端口 / Vite）
+# 检查前端服务（生产模式检查 ${RG_WEB_PORT} 端口 / Caddy，开发模式检查 1420 端口 / Vite）
 if [ -d "${PROJECT_DIR}/dist" ]; then
-  # 生产模式：前端由 Caddy（8080）或 Python http.server（8000）提供服务
-  if curl -s http://localhost:8080 >/dev/null 2>&1; then
-    log_info "前端（Caddy）健康检查通过（http://localhost:8080）"
+  # 生产模式：前端由 Caddy（${RG_WEB_PORT}）或 Python http.server（8000）提供服务
+  if curl -s "http://localhost:${RG_WEB_PORT}" >/dev/null 2>&1; then
+    log_info "前端（Caddy）健康检查通过（http://localhost:${RG_WEB_PORT}）"
   elif curl -s http://localhost:8000 >/dev/null 2>&1; then
     log_info "前端（Python http.server）健康检查通过（http://localhost:8000）"
   else
@@ -325,11 +327,16 @@ else
 fi
 
 log_info "部署完成！"
+# 默认端口 80 时 URL 不带端口后缀
+WEB_SUFFIX=":${RG_WEB_PORT}"
+if [ "${RG_WEB_PORT}" = "80" ]; then
+  WEB_SUFFIX=""
+fi
 echo ""
 echo "============================================"
 echo "访问地址："
 if [ -d "${PROJECT_DIR}/dist" ]; then
-  echo "  生产模式（Caddy/反向代理）：http://$(hostname -I | awk '{print $1}'):8080"
+  echo "  生产模式（Caddy/反向代理）：http://$(hostname -I | awk '{print $1}')${WEB_SUFFIX}"
   echo "  前端构建产物目录：${PROJECT_DIR}/dist"
 else
   echo "  开发模式（Vite）：http://$(hostname -I | awk '{print $1}'):1420"
@@ -369,10 +376,10 @@ else
   echo "  Axum服务端  - http://localhost:8790   - [启动中]"
 fi
 
-# 前端（生产模式检查 8080/8000，开发模式检查 1420）
+# 前端（生产模式检查 ${RG_WEB_PORT}/8000，开发模式检查 1420）
 if [ -d "${PROJECT_DIR}/dist" ]; then
-  if curl -s http://localhost:8080 >/dev/null 2>&1; then
-    echo "  前端(Caddy)  - http://localhost:8080   - [已就绪]"
+  if curl -s "http://localhost:${RG_WEB_PORT}" >/dev/null 2>&1; then
+    echo "  前端(Caddy)  - http://localhost:${RG_WEB_PORT}    - [已就绪]"
   elif curl -s http://localhost:8000 >/dev/null 2>&1; then
     echo "  前端(http)   - http://localhost:8000   - [已就绪]"
   else

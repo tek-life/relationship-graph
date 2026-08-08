@@ -2,7 +2,7 @@
 
 本目录包含个人智能 AI 平台的部署、启动、重启、依赖安装与测试辅助脚本。
 
-**当前生产形态**：后端 Axum 服务（端口 8790）+ 前端静态资源（Caddy：本机 8080 / 服务器默认 80），
+**当前生产形态**：后端 Axum 服务（端口 8790）+ 前端静态资源（Caddy 默认 80，`RG_WEB_PORT` 可覆盖），
 LLM 能力**默认使用阿里云百炼云端模型**（`RG_LLM_BACKEND=cloud`），无需本地 Ollama；
 Ollama（localhost:11434）仅本地开发走 legacy/rig 通道时需要。
 
@@ -293,7 +293,7 @@ HOST_IP=192.168.1.10 PROXY_PORT=7890 source ./scripts/setup-proxy.sh   # 自定�
 
 - admin 端点固定 `localhost:2020`（Caddyfile 全局块）：与 apt 安装的系统级 caddy（占用默认 admin 2019）共存，否则启动失败；caddy 2.6 的 `run` 无 `--admin` flag，只能在全局块设置；
 - 访问日志路径由 `start-services.sh` 生成配置时替换：`/var/log/relationship-graph` 可写则用之，否则回退 `/tmp/relationship-graph-caddy-access.log`（不再依赖 sudo 建目录）；
-- 监听 `:8080`（即 0.0.0.0），后端 8790 同为 0.0.0.0，满足局域网访问前提（WSL2 NAT 可达性见[注意事项](#注意事项)）。
+- 监听 `:80`（即 0.0.0.0，`RG_WEB_PORT` 可覆盖），后端 8790 同为 0.0.0.0，满足局域网访问前提（WSL2 NAT 可达性见[注意事项](#注意事项)）。
 
 ```bash
 # 由 start-services.sh 自动拉起（推荐）；手工运行：
@@ -302,7 +302,7 @@ caddy adapt --config scripts/Caddyfile       # 仅校验配置
 RG_WEB_ROOT=~/relationship-graph/web caddy run --config scripts/Caddyfile   # 覆盖静态根
 ```
 
-监听端口默认 8080（Caddyfile 内 `:8080`）；`start-services.sh` 生产模式会自动拉起。
+监听端口默认 80（Caddyfile 内 `:{$RG_WEB_PORT:80}`）；`start-services.sh` 生产模式会自动拉起。非 root 环境绑定 80 需给 caddy 授权：`sudo setcap 'cap_net_bind_service=+ep' $(command -v caddy)`（start-services.sh 会尝试自动授权），或 `RG_WEB_PORT=8080` 回退。
 
 ---
 
@@ -397,5 +397,5 @@ RG_LLM_BACKEND=legacy ./scripts/dev.sh
 4. **先停后编译**：`restart-services.sh --build` 已遵循"先停服务再 cargo build"，手动操作时也请照此，避免旧进程运行已被覆盖删除的二进制。
 5. **沙箱/容器内启动陷阱**：在只读挂载的沙箱里启动服务会命中"数据库只读"错误，请在真实文件系统（沙箱外）启动常驻服务。
 6. **测试实例隔离**：`e2e-import-test.mjs` 默认打 8791 测试实例，请勿指向 8790 正式库。
-7. **WSL2 局域网访问**：后端 8790 与 Caddy 8080 均监听 0.0.0.0，但 WSL2 默认 NAT 模式下局域网其它设备无法直达 WSL 内端口，需在 Windows 宿主机做端口转发（`netsh interface portproxy`）或在 `.wslconfig` 开启 mirrored 网络；本机（Windows 浏览器）访问 `http://localhost:8080` 始终可用。
+7. **WSL2 局域网访问**：后端 8790 与 Caddy 80 均监听 0.0.0.0，但 WSL2 默认 NAT 模式下局域网其它设备无法直达 WSL 内端口，需在 Windows 宿主机做端口转发（`netsh interface portproxy`）或在 `.wslconfig` 开启 mirrored 网络；本机（Windows 浏览器）访问 `http://localhost` 始终可用。
 8. **系统级 Caddy 共存**：若机器上另有 apt 安装的系统级 caddy（监听 :80、admin 2019），本项目 Caddyfile 已将 admin 错开到 2020，两者可共存；如确认不用系统级 caddy 可 `sudo systemctl disable --now caddy` 释放 80 端口。

@@ -11,7 +11,7 @@ set -euo pipefail
 #   - Ollama（端口 11434）仅本地开发 legacy/rig 通道需要，生产默认跳过；
 #     如需启动请显式设置 RG_USE_OLLAMA=1
 #   - Axum 服务端：HTTP API（端口 8790，优先使用 release 二进制）
-#   - 前端（生产模式）：Caddy 反向代理（端口 8080）或 Python http.server（端口 8000）兜底
+#   - 前端（生产模式）：Caddy 反向代理（默认端口 80，RG_WEB_PORT 可覆盖）或 Python http.server（端口 8000）兜底
 #   - 前端（开发模式）：Vite 开发服务器（端口 1420）
 #
 # 云端模型（阿里百炼）可选覆盖项（均有服务端默认值，无需必填）：
@@ -38,6 +38,8 @@ RG_LLM_BACKEND="${RG_LLM_BACKEND:-cloud}"
 RG_SKILL_BUDGET_CHARS="${RG_SKILL_BUDGET_CHARS:-8000}"
 # Ollama 开关：云端模式默认跳过；RG_USE_OLLAMA=1 时启动（仅本地开发需要）
 RG_USE_OLLAMA="${RG_USE_OLLAMA:-0}"
+# 前端 Web 端口：默认 80；非 root 且无法授 cap 时可 RG_WEB_PORT=8080 回退
+RG_WEB_PORT="${RG_WEB_PORT:-80}"
 
 # 运行模式检测
 if [ -d "${PROJECT_DIR}/dist" ]; then
@@ -205,7 +207,20 @@ if [ "${RUN_MODE}" = "production" ]; then
 
   # 优先使用 Caddy 反向代理
   if command -v caddy &>/dev/null; then
-    if ! lsof -i :8080 >/dev/null 2>&1; then
+    if ! lsof -i :"${RG_WEB_PORT}" >/dev/null 2>&1; then
+      # 特权端口（<1024）绑定授权：非 root 用户需给 caddy 授 cap_net_bind_service
+      if [ "${RG_WEB_PORT}" -lt 1024 ]; then
+        CADDY_BIN="$(command -v caddy)"
+        if ! getcap "${CADDY_BIN}" 2>/dev/null | grep -q cap_net_bind_service; then
+          if sudo -n setcap 'cap_net_bind_service=+ep' "${CADDY_BIN}" 2>/dev/null; then
+            echo "  已给 caddy 授 cap_net_bind_service（绑定端口 ${RG_WEB_PORT}）"
+          else
+            echo "  [WARN] 非 root 绑定端口 ${RG_WEB_PORT} 需授权，请手动执行后重试："
+            echo "         sudo setcap 'cap_net_bind_service=+ep' ${CADDY_BIN}"
+            echo "         或设 RG_WEB_PORT=8080 回退"
+          fi
+        fi
+      fi
       # 访问日志路径：目录可写则用 /var/log/relationship-graph，否则回退 /tmp
       # （避免依赖 sudo 创建目录；Caddyfile 中的占位符在此替换）
       if [ -d /var/log/relationship-graph ] && [ -w /var/log/relationship-graph ]; then
@@ -225,21 +240,21 @@ if [ "${RUN_MODE}" = "production" ]; then
       # admin 端口冲突已改在 Caddyfile 全局块设置（admin localhost:2020）：
       # caddy 2.6 的 run 子命令无 --admin flag，与系统级 caddy（admin 2019）共存必需
       nohup caddy run --config "${CADDYFILE_GEN}" --adapter caddyfile >"${CADDY_LOG}" 2>&1 &
-      echo "  Caddy 反向代理已启动（端口 8080，静态根 ${RG_WEB_ROOT}），日志：${CADDY_LOG}"
+      echo "  Caddy 反向代理已启动（端口 ${RG_WEB_PORT}，静态根 ${RG_WEB_ROOT}），日志：${CADDY_LOG}"
       # 等待就绪
       for i in {1..30}; do
-        if curl -s http://localhost:8080 >/dev/null 2>&1; then
+        if curl -s "http://localhost:${RG_WEB_PORT}" >/dev/null 2>&1; then
           break
         fi
         sleep 1
       done
-      if curl -s http://localhost:8080 >/dev/null 2>&1; then
-        echo "  Caddy 前端服务已就绪（http://localhost:8080）"
+      if curl -s "http://localhost:${RG_WEB_PORT}" >/dev/null 2>&1; then
+        echo "  Caddy 前端服务已就绪（http://localhost:${RG_WEB_PORT}）"
       else
         echo "  [WARN] Caddy 启动中，请查看日志：${CADDY_LOG}"
       fi
     else
-      echo "  Caddy 已在运行（端口 8080）"
+      echo "  Caddy 已在运行（端口 ${RG_WEB_PORT}）"
     fi
   else
     echo "  [提示] 未安装 Caddy，使用 Python http.server 作为静态文件服务兜底"
@@ -310,7 +325,7 @@ fi
 
 # 前端健康检查
 if [ "${RUN_MODE}" = "production" ]; then
-  if curl -s http://localhost:8080 >/dev/null 2>&1; then
+  if curl -s "http://localhost:${RG_WEB_PORT}" >/dev/null 2>&1; then
     echo "  前端（Caddy）健康检查：通过"
   elif curl -s http://localhost:8000 >/dev/null 2>&1; then
     echo "  前端（http.server）健康检查：通过"
@@ -359,8 +374,8 @@ fi
 
 # 前端
 if [ "${RUN_MODE}" = "production" ]; then
-  if curl -s http://localhost:8080 >/dev/null 2>&1; then
-    echo "  前端(Caddy)  - http://localhost:8080   - [已就绪]"
+  if curl -s "http://localhost:${RG_WEB_PORT}" >/dev/null 2>&1; then
+    echo "  前端(Caddy)  - http://localhost:${RG_WEB_PORT}    - [已就绪]"
   elif curl -s http://localhost:8000 >/dev/null 2>&1; then
     echo "  前端(http)   - http://localhost:8000   - [已就绪]"
   else
