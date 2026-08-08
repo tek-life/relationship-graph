@@ -497,19 +497,63 @@ fn cloud_api_key_file() -> std::path::PathBuf {
         .join("rg-cloud-api-key")
 }
 
-/// 解析云端 API Key：优先 env RG_CLOUD_API_KEY，缺省读文件（均 trim）；
-/// 两者皆无/皆空时报错。Key 不落日志与代码。
-fn cloud_api_key() -> Result<String, String> {
-    cloud_api_key_from(std::env::var("RG_CLOUD_API_KEY").ok(), &cloud_api_key_file())
+/// 云端 API Key 来源标识（优先级从高到低：env > 文件 > DB settings）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudApiKeySource {
+    /// 环境变量 RG_CLOUD_API_KEY
+    Env,
+    /// 本地文件 ~/.config/rg-cloud-api-key
+    File,
+    /// 数据库 settings 表（admin 配置页写入，key=cloud_api_key）
+    Db,
 }
 
-/// Key 解析纯函数版本（便于单测）
-fn cloud_api_key_from(env_value: Option<String>, file_path: &std::path::Path) -> Result<String, String> {
-    const MISSING_HINT: &str = "未配置云端 API Key：请设置环境变量 RG_CLOUD_API_KEY 或文件 ~/.config/rg-cloud-api-key";
+impl CloudApiKeySource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CloudApiKeySource::Env => "env",
+            CloudApiKeySource::File => "file",
+            CloudApiKeySource::Db => "db",
+        }
+    }
+}
+
+/// DB settings 层 Key 读取器注册表：由 main.rs 启动时注入（读 settings
+/// 表 cloud_api_key），llm.rs 不直接依赖 AppState。注册前/注册失败时
+/// DB 层视为无值（前两层行为与改造前逐字节一致）。
+type DbKeyReader = dyn Fn() -> Option<String> + Send + Sync;
+static CLOUD_KEY_DB_READER: OnceLock<Box<DbKeyReader>> = OnceLock::new();
+
+/// 注册 DB settings 层 Key 读取器（仅首次注册生效）。
+/// 读取器实现约束：① 短持锁、不在持锁期间做 LLM 调用；② 返回前
+/// trim；③ 绝不把 Key 写入日志。
+pub fn register_cloud_key_db_reader(reader: Box<DbKeyReader>) {
+    if CLOUD_KEY_DB_READER.set(reader).is_err() {
+        log::warn!(target: "llm", "cloud_key_db_reader_already_registered（忽略重复注册）");
+    }
+}
+
+fn read_db_cloud_api_key() -> Option<String> {
+    CLOUD_KEY_DB_READER
+        .get()
+        .and_then(|reader| reader())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// 解析云端 API Key（含来源）：优先级 env RG_CLOUD_API_KEY >
+/// 文件 ~/.config/rg-cloud-api-key > DB settings（均 trim）；
+/// 三层皆无/皆空时报错。Key 不落日志与代码。
+fn resolve_cloud_api_key(
+    env_value: Option<String>,
+    file_path: &std::path::Path,
+    db_value: Option<String>,
+) -> Result<(String, CloudApiKeySource), String> {
+    const MISSING_HINT: &str = "未配置云端 API Key：请设置环境变量 RG_CLOUD_API_KEY、文件 ~/.config/rg-cloud-api-key，或在管理后台「系统设置」中保存";
     if let Some(value) = env_value {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
+            return Ok((trimmed.to_string(), CloudApiKeySource::Env));
         }
     }
     match std::fs::read_to_string(file_path) {
@@ -517,13 +561,50 @@ fn cloud_api_key_from(env_value: Option<String>, file_path: &std::path::Path) ->
             // 剥离 UTF-8 BOM（U+FEFF，Windows 记事本保存的 Key 文件会携带），
             // 否则 BOM 混入 Key 导致云端 401 且报错不直观
             let trimmed = content.trim().trim_start_matches('\u{FEFF}').trim();
-            if trimmed.is_empty() {
-                Err(MISSING_HINT.to_string())
-            } else {
-                Ok(trimmed.to_string())
+            if !trimmed.is_empty() {
+                return Ok((trimmed.to_string(), CloudApiKeySource::File));
             }
         }
-        Err(_) => Err(MISSING_HINT.to_string()),
+        Err(_) => {}
+    }
+    if let Some(value) = db_value {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok((trimmed.to_string(), CloudApiKeySource::Db));
+        }
+    }
+    Err(MISSING_HINT.to_string())
+}
+
+/// Key 解析纯函数版本（便于单测）
+fn cloud_api_key_from(
+    env_value: Option<String>,
+    file_path: &std::path::Path,
+    db_value: Option<String>,
+) -> Result<String, String> {
+    resolve_cloud_api_key(env_value, file_path, db_value).map(|(key, _source)| key)
+}
+
+/// 解析云端 API Key：优先 env RG_CLOUD_API_KEY，其次文件，最后 DB settings；
+/// 三层皆无时报错。Key 不落日志与代码。
+fn cloud_api_key() -> Result<String, String> {
+    cloud_api_key_from(
+        std::env::var("RG_CLOUD_API_KEY").ok(),
+        &cloud_api_key_file(),
+        read_db_cloud_api_key(),
+    )
+}
+
+/// 当前生效 Key 的摘要（供 admin 配置页 GET 展示）：只返回来源与
+/// 掩码，绝不返回明文。
+pub fn cloud_api_key_status() -> (Option<CloudApiKeySource>, Option<String>) {
+    match resolve_cloud_api_key(
+        std::env::var("RG_CLOUD_API_KEY").ok(),
+        &cloud_api_key_file(),
+        read_db_cloud_api_key(),
+    ) {
+        Ok((key, source)) => (Some(source), Some(crate::db::setting::mask_secret(&key))),
+        Err(_) => (None, None),
     }
 }
 
@@ -934,25 +1015,59 @@ mod channel_tests {
     fn cloud_api_key_resolution() {
         let missing = std::env::temp_dir().join("rg-test-nonexistent-key-file");
         let _ = std::fs::remove_file(&missing);
-        // env 与文件均缺失 → 报错
-        let err = cloud_api_key_from(None, &missing).unwrap_err();
+        // env、文件、DB 三层均缺失 → 报错
+        let err = cloud_api_key_from(None, &missing, None).unwrap_err();
         assert!(err.contains("未配置云端 API Key"));
         // env 优先且 trim
-        assert_eq!(cloud_api_key_from(Some("  sk-abc  ".to_string()), &missing).unwrap(), "sk-abc");
+        assert_eq!(cloud_api_key_from(Some("  sk-abc  ".to_string()), &missing, None).unwrap(), "sk-abc");
         // env 为空白 → 回退文件（trim）
         let file = std::env::temp_dir().join("rg-test-key-file");
         std::fs::write(&file, " sk-file \n").unwrap();
-        assert_eq!(cloud_api_key_from(Some("   ".to_string()), &file).unwrap(), "sk-file");
-        assert_eq!(cloud_api_key_from(None, &file).unwrap(), "sk-file");
-        // 文件内容为空白 → 报错
+        assert_eq!(cloud_api_key_from(Some("   ".to_string()), &file, None).unwrap(), "sk-file");
+        assert_eq!(cloud_api_key_from(None, &file, None).unwrap(), "sk-file");
+        // 文件内容为空白 → 回退 DB；DB 也空白 → 报错
         std::fs::write(&file, "  \n").unwrap();
-        assert!(cloud_api_key_from(None, &file).is_err());
+        assert_eq!(cloud_api_key_from(None, &file, Some(" sk-db ".to_string())).unwrap(), "sk-db");
+        assert!(cloud_api_key_from(None, &file, Some("   ".to_string())).is_err());
         // Windows 记事本保存的 Key 文件携带 UTF-8 BOM（U+FEFF）→ 剥离后正常解析
         std::fs::write(&file, "\u{FEFF}sk-bom\n").unwrap();
-        assert_eq!(cloud_api_key_from(None, &file).unwrap(), "sk-bom");
+        assert_eq!(cloud_api_key_from(None, &file, None).unwrap(), "sk-bom");
         // BOM + 空白包裹同样剥离
         std::fs::write(&file, "\u{FEFF}  sk-bom2  \n").unwrap();
-        assert_eq!(cloud_api_key_from(None, &file).unwrap(), "sk-bom2");
+        assert_eq!(cloud_api_key_from(None, &file, None).unwrap(), "sk-bom2");
+        let _ = std::fs::remove_file(&file);
+    }
+
+    /// 三层优先级：env > 文件 > DB settings（既有两层行为不变，
+    /// DB 仅作兜底来源）
+    #[test]
+    fn cloud_api_key_priority_env_over_file_over_db() {
+        let file = std::env::temp_dir().join("rg-test-key-file-priority");
+        std::fs::write(&file, "sk-file\n").unwrap();
+        let db = Some("sk-sp-dbkey".to_string());
+
+        // 三层同时存在 → env 胜出
+        let (key, source) = resolve_cloud_api_key(Some("sk-env".to_string()), &file, db.clone()).unwrap();
+        assert_eq!(key, "sk-env");
+        assert_eq!(source, CloudApiKeySource::Env);
+        assert_eq!(source.as_str(), "env");
+
+        // env 缺失 → 文件胜出（即使 DB 有值）
+        let (key, source) = resolve_cloud_api_key(None, &file, db.clone()).unwrap();
+        assert_eq!(key, "sk-file");
+        assert_eq!(source, CloudApiKeySource::File);
+        assert_eq!(source.as_str(), "file");
+
+        // env 与文件均缺失 → DB 胜出（trim）
+        let missing = std::env::temp_dir().join("rg-test-nonexistent-priority");
+        let _ = std::fs::remove_file(&missing);
+        let (key, source) = resolve_cloud_api_key(Some("  ".to_string()), &missing, db.clone()).unwrap();
+        assert_eq!(key, "sk-sp-dbkey");
+        assert_eq!(source, CloudApiKeySource::Db);
+        assert_eq!(source.as_str(), "db");
+
+        // 三层全空 → 报错（错误文案提示三个来源，不泄露任何 Key 内容）
+        assert!(resolve_cloud_api_key(None, &missing, None).is_err());
         let _ = std::fs::remove_file(&file);
     }
 
@@ -1183,9 +1298,11 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
 
 /// 缓存云端 CompletionsClient（必须用 CompletionsClient：默认 Client 走
 /// Responses API，百炼兼容端点会 404）。构建失败/Key 缺失不缓存，下次调用可重试。
+/// 静态句柄提升到模块级，便于 admin 更新/清除 DB 中的 Key 后失效缓存。
+static CLOUD_CLIENT: Mutex<Option<openai::CompletionsClient>> = Mutex::new(None);
+
 fn cloud_client() -> Result<openai::CompletionsClient, String> {
-    static CLIENT: Mutex<Option<openai::CompletionsClient>> = Mutex::new(None);
-    let mut guard = CLIENT
+    let mut guard = CLOUD_CLIENT
         .lock()
         .map_err(|e| format!("Cloud client lock failed: {}", e))?;
     if let Some(client) = guard.as_ref() {
@@ -1199,6 +1316,15 @@ fn cloud_client() -> Result<openai::CompletionsClient, String> {
         .map_err(|e| format!("Cloud client build failed: {}", e))?;
     *guard = Some(client.clone());
     Ok(client)
+}
+
+/// 失效已缓存的云端客户端：admin 在 DB 中更新/清除 API Key 后调用，
+/// 下次 cloud 调用按最新 Key 重建客户端。锁异常时静默降级（下次
+/// 客户端重建自然重新读 Key，不阻断 admin 操作）。
+pub fn invalidate_cloud_client() {
+    if let Ok(mut guard) = CLOUD_CLIENT.lock() {
+        *guard = None;
+    }
 }
 
 /// 通过 rig openai CompletionsClient 调用百炼兼容端点（非流式）。

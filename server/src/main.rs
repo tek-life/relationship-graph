@@ -32,6 +32,20 @@ async fn main() {
 
     let state = Arc::new(AppState::new(data_dir));
 
+    // 注册云端 API Key 的 DB settings 层读取器（第三层来源，env > 文件 > DB）。
+    // 短持锁读 settings 后立刻释放；任何失败降级为无值（不阻断聊天链路）；
+    // 读取器内部不打日志，Key 不落日志。
+    {
+        let reader_state = state.clone();
+        llm::register_cloud_key_db_reader(Box::new(move || {
+            let guard = reader_state.db.lock().ok()?;
+            let conn = db::get_conn(&guard).ok()?;
+            db::setting::get_setting_value::<String>(conn, db::setting::KEY_CLOUD_API_KEY)
+                .ok()
+                .flatten()
+        }));
+    }
+
     // 启动自动解锁：存在密钥文件即用其打开加密库，无需任何人工解锁步骤。
     // 密钥文件缺失但库存在（老库）时保持锁定，等待 /api/auth/migrate 一次性迁移。
     match std::fs::read_to_string(state.key_file_path()) {

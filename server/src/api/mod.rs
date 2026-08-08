@@ -146,6 +146,12 @@ pub fn router(state: SharedState) -> Router {
             "/api/admin/qa-modules/:id",
             put(admin::update_qa_module).delete(admin::delete_qa_module),
         )
+        // 系统设置（P0-2：云端 API Key 等）
+        .route("/api/admin/config", get(admin::get_config))
+        .route(
+            "/api/admin/config/cloud-api-key",
+            put(admin::update_cloud_api_key).delete(admin::delete_cloud_api_key),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
     Router::new()

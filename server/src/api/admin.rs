@@ -1,7 +1,7 @@
 //! Admin 管理 API：用户列表、角色变更、邀请令牌管理、数字人/技能/QA 模块 CRUD。
 //! Admin 路由由 require_admin 中间件保护；list_active_digital_agents 为公开接口。
 
-use crate::db::{agent_config, get_conn, skill_package, user as user_db};
+use crate::db::{agent_config, get_conn, setting, skill_package, user as user_db};
 use crate::state::SharedState;
 use crate::types::{
     AgentSkill, CreateAgentSkillRequest, CreateDigitalAgentRequest,
@@ -539,6 +539,92 @@ pub async fn list_active_digital_agents(
     let active: Vec<_> = agents.into_iter().filter(|a| a.is_active).collect();
     log::info!(target: "agent_config", "list_active_digital_agents count={}", active.len());
     Ok(Json(active))
+}
+
+// ============================================================
+// 系统设置（settings 表：云端 API Key 等，P0-2）
+// ============================================================
+
+/// PUT /api/admin/config/cloud-api-key 请求体
+#[derive(serde::Deserialize)]
+pub struct UpdateCloudApiKeyRequest {
+    #[serde(rename = "apiKey", default)]
+    pub api_key: String,
+}
+
+/// 组装云端 API Key 配置摘要（掩码 + 是否已设置 + 生效来源）；
+/// 绝不回传明文。
+fn cloud_api_key_summary(conn: &rusqlite::Connection) -> Result<serde_json::Value, rusqlite::Error> {
+    let db_configured = setting::get_setting_value::<String>(conn, setting::KEY_CLOUD_API_KEY)?
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let (source, mask) = crate::llm::cloud_api_key_status();
+    Ok(serde_json::json!({
+        "configured": source.is_some(),
+        "source": source.map(|s| s.as_str()),
+        "mask": mask,
+        "dbConfigured": db_configured,
+    }))
+}
+
+/// GET /api/admin/config — 系统配置摘要（敏感值仅回掩码，绝不回传明文）
+pub async fn get_config(State(state): State<SharedState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let summary = cloud_api_key_summary(conn)?;
+    drop(guard);
+    log::info!(target: "admin", "get_config");
+    Ok(Json(serde_json::json!({ "cloudApiKey": summary })))
+}
+
+/// PUT /api/admin/config/cloud-api-key — 保存云端 API Key 到 settings
+///（SQLCipher 整库加密，详见 db/setting.rs 加密决策注释）。
+/// 保存后失效已缓存的云端客户端，下次调用即用新 Key。
+/// 日志只记掩码，不落明文。
+pub async fn update_cloud_api_key(
+    State(state): State<SharedState>,
+    Json(req): Json<UpdateCloudApiKeyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let api_key = req.api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err(ApiError::bad_request("API Key 不能为空，如需清除请使用 DELETE"));
+    }
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    setting::set_setting(conn, setting::KEY_CLOUD_API_KEY, &api_key)?;
+    let summary = cloud_api_key_summary(conn)?;
+    drop(guard);
+
+    crate::llm::invalidate_cloud_client();
+    // 日志脱敏：只记掩码与生效来源（env/file 优先级更高时 DB 值不会生效）
+    log::info!(
+        target: "admin",
+        "update_cloud_api_key mask={} effective_source={}",
+        setting::mask_secret(&api_key),
+        summary["source"].as_str().unwrap_or("none")
+    );
+    Ok(Json(serde_json::json!({ "updated": true, "cloudApiKey": summary })))
+}
+
+/// DELETE /api/admin/config/cloud-api-key — 清除 settings 中的云端 API Key
+///（幂等）。注意：env / 文件来源优先级更高，清除 DB 值后生效 Key 可能
+/// 仍来自前两层，响应中 source 字段如实反映。
+pub async fn delete_cloud_api_key(
+    State(state): State<SharedState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    setting::delete_setting(conn, setting::KEY_CLOUD_API_KEY)?;
+    let summary = cloud_api_key_summary(conn)?;
+    drop(guard);
+
+    crate::llm::invalidate_cloud_client();
+    log::info!(
+        target: "admin",
+        "delete_cloud_api_key effective_source={}",
+        summary["source"].as_str().unwrap_or("none")
+    );
+    Ok(Json(serde_json::json!({ "deleted": true, "cloudApiKey": summary })))
 }
 
 #[cfg(test)]

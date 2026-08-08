@@ -1313,4 +1313,108 @@ mod tests {
         assert_eq!(skill_package::list_bindings(&conn, &a2).unwrap().len(), 0);
         assert!(agent_config::get_digital_agent(&conn, &a1).unwrap().is_none());
     }
+
+    // ---------- settings 读写 ----------
+
+    /// 键不存在时返回 None（get_setting 与类型化读取均如此）
+    #[test]
+    fn settings_missing_key_returns_none() {
+        use crate::db::setting;
+        let conn = in_memory_db();
+        assert_eq!(setting::get_setting(&conn, "nope").unwrap(), None);
+        assert_eq!(setting::get_setting_value::<String>(&conn, "nope").unwrap(), None);
+    }
+
+    /// 字符串值写入后以 JSON 文本存储，可原样读回
+    #[test]
+    fn settings_set_get_string_roundtrip() {
+        use crate::db::setting;
+        let conn = in_memory_db();
+        setting::set_setting(&conn, "cloud_api_key", &"sk-sp-test1234").unwrap();
+        // 原始文本是 JSON 序列化形态（带引号），而非明文直存
+        assert_eq!(
+            setting::get_setting(&conn, "cloud_api_key").unwrap().as_deref(),
+            Some("\"sk-sp-test1234\"")
+        );
+        assert_eq!(
+            setting::get_setting_value::<String>(&conn, "cloud_api_key").unwrap().as_deref(),
+            Some("sk-sp-test1234")
+        );
+    }
+
+    /// 同键重复写入为覆盖（upsert），不产生重复行
+    #[test]
+    fn settings_upsert_overwrites_value() {
+        use crate::db::setting;
+        let conn = in_memory_db();
+        setting::set_setting(&conn, "k", &"v1").unwrap();
+        setting::set_setting(&conn, "k", &"v2").unwrap();
+        assert_eq!(setting::get_setting_value::<String>(&conn, "k").unwrap().as_deref(), Some("v2"));
+        assert_eq!(setting::list_settings(&conn).unwrap().len(), 1);
+    }
+
+    /// 支持结构化值（JSON 对象）与列表；list_settings 按 key 排序
+    #[test]
+    fn settings_structured_values_and_listing() {
+        use crate::db::setting;
+        let conn = in_memory_db();
+        setting::set_setting(&conn, "models", &serde_json::json!({ "chat": "qwen3.7-plus" })).unwrap();
+        setting::set_setting(&conn, "flags", &vec!["a", "b"]).unwrap();
+
+        let models: serde_json::Value = setting::get_setting_value(&conn, "models").unwrap().unwrap();
+        assert_eq!(models["chat"], "qwen3.7-plus");
+        let flags: Vec<String> = setting::get_setting_value(&conn, "flags").unwrap().unwrap();
+        assert_eq!(flags, vec!["a", "b"]);
+
+        let all = setting::list_settings(&conn).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].0, "flags");
+        assert_eq!(all[1].0, "models");
+    }
+
+    /// 删除幂等：删存在的键生效，删不存在的键不报错
+    #[test]
+    fn settings_delete_is_idempotent() {
+        use crate::db::setting;
+        let conn = in_memory_db();
+        setting::set_setting(&conn, "k", &"v").unwrap();
+        setting::delete_setting(&conn, "k").unwrap();
+        assert_eq!(setting::get_setting(&conn, "k").unwrap(), None);
+        setting::delete_setting(&conn, "k").unwrap(); // 再删一次不报错
+    }
+
+    /// 脏数据降级：value 非合法 JSON 时类型化读取返回 None 而非报错
+    #[test]
+    fn settings_invalid_json_degrades_to_none() {
+        use crate::db::setting;
+        let conn = in_memory_db();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('bad', 'not-json')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(setting::get_setting_value::<String>(&conn, "bad").unwrap(), None);
+        // 原始文本仍可读出（便于排查）
+        assert_eq!(setting::get_setting(&conn, "bad").unwrap().as_deref(), Some("not-json"));
+    }
+
+    // ---------- 敏感值掩码 ----------
+
+    /// 掩码只保留末 4 位；短值全隐藏；首尾空白先 trim；绝不包含原值中段
+    #[test]
+    fn mask_secret_keeps_only_last_four_chars() {
+        use crate::db::setting;
+        assert_eq!(setting::mask_secret("sk-sp-abcdefghijklmnop"), "sk-…mnop");
+        assert_eq!(setting::mask_secret("  sk-sp-1234abcd  "), "sk-…abcd");
+        // 恰好 4 位 → 可见末 4 位
+        assert_eq!(setting::mask_secret("1234"), "sk-…1234");
+        // 不足 4 位 → 全隐藏
+        assert_eq!(setting::mask_secret("abc"), "****");
+        assert_eq!(setting::mask_secret(""), "****");
+        assert_eq!(setting::mask_secret("   "), "****");
+        // 掩码结果不含中段明文
+        let masked = setting::mask_secret("sk-sp-secretsecretsecret9876");
+        assert!(!masked.contains("secret"));
+        assert!(masked.ends_with("9876"));
+    }
 }
