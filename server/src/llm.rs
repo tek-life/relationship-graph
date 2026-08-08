@@ -13,50 +13,83 @@ use crate::types::{PersonDraft, FieldChange, InteractionDraft, ChatMessage, Chat
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 45;
 const DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS: u64 = 120;
 
-/// Ollama 上下文窗口默认值（P1-5）：取建议区间 8192-16384 的上限，
-/// 需同时容纳 system（角色+技能+文档）+ 会话历史（RG_CHAT_HISTORY_CHARS
-/// 默认 8000 字符，中文约 8-10k token）+ 本轮输出（RG_MAX_OUTPUT_TOKENS），
-/// RG_OLLAMA_NUM_CTX 可覆盖，非法值回退本默认值。
-const DEFAULT_OLLAMA_NUM_CTX: u64 = 16384;
-/// 模型单次输出 token 上限默认值（P1-5）：同时映射为 Ollama 的
-/// num_predict 与 OpenAI 兼容端点的 max_tokens，防止模型无限生成占满
-/// 上下文窗口；RG_MAX_OUTPUT_TOKENS 可覆盖，非法值回退本默认值。
-const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4096;
+// ---------- 窗口参数策略（回归修复） ----------
+//
+// 原则：**env 显式设置才携带，未设置 = 旧行为（不发送参数）**：
+// - RG_OLLAMA_NUM_CTX：Ollama options.num_ctx（上下文窗口）
+// - RG_MAX_OUTPUT_TOKENS：Ollama options.num_predict / cloud、rig 的 max_tokens
+// - RG_MAX_OUTPUT_TOKENS_LONG：长输出场景（generate_profile_document /
+//   compress_context / agent 工具循环含思考 token）单独放宽；未设置时
+//   这些场景也不携带（与旧行为一致），不回退到 RG_MAX_OUTPUT_TOKENS。
+//
+// 不再提供默认值的原因：P1-5 曾始终携带 num_ctx=16384 /
+// num_predict=4096 / max_tokens=4096，导致存量低配 Ollama 部署窗口
+// 暴涨 4 倍（内存/延迟风险）、cloud 长输出被静默截断，破坏存量行为；
+// 改回未设置不携带后，请求体逐字节等同 P1-5 之前。
 
-/// 解析正整数（纯函数，可单测）：输入为 Some 且 trim 后为正整数时返回其值；
-/// 未设置（None）、空串、非数字、0、负数一律回退 default。
-fn parse_positive_u64(env_value: Option<&str>, default: u64) -> u64 {
+/// 解析正整数（纯函数，可单测）：输入为 Some 且 trim 后为正整数时返回
+/// Some(值)；未设置（None）、空串、非数字、0、负数、溢出、小数一律
+/// 返回 None（语义 = 不携带该参数，保持旧行为）。
+fn parse_positive_opt(env_value: Option<&str>) -> Option<u64> {
     env_value
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(default)
 }
 
-/// 读取正整数型环境变量（非法/未设置回退 default）
-fn env_positive(env_key: &str, default: u64) -> u64 {
-    parse_positive_u64(std::env::var(env_key).ok().as_deref(), default)
+/// 读取可选正整数型环境变量（非法/未设置 → None = 不携带参数）
+fn env_positive_opt(env_key: &str) -> Option<u64> {
+    parse_positive_opt(std::env::var(env_key).ok().as_deref())
 }
 
-/// Ollama 上下文窗口大小（RG_OLLAMA_NUM_CTX，默认 16384）
-fn ollama_num_ctx() -> u64 {
-    env_positive("RG_OLLAMA_NUM_CTX", DEFAULT_OLLAMA_NUM_CTX)
+/// Ollama 上下文窗口（RG_OLLAMA_NUM_CTX）：未设置 → None（不携带）
+fn ollama_num_ctx() -> Option<u64> {
+    env_positive_opt("RG_OLLAMA_NUM_CTX")
 }
 
-/// 模型输出 token 上限（RG_MAX_OUTPUT_TOKENS，默认 4096）
-fn max_output_tokens() -> u64 {
-    env_positive("RG_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS)
+/// 模型输出 token 上限（RG_MAX_OUTPUT_TOKENS）：未设置 → None（不携带）
+fn max_output_tokens() -> Option<u64> {
+    env_positive_opt("RG_MAX_OUTPUT_TOKENS")
 }
 
-/// Ollama 原生 API 的 options 对象（纯函数，可单测）：
-/// num_ctx 上下文窗口 + num_predict 输出上限（原生 API 中 max_tokens
-/// 对应的参数名）。legacy /api/generate 与 /api/chat 共用。
-fn build_ollama_options(num_ctx: u64, num_predict: u64) -> serde_json::Value {
+/// 长输出场景的输出 token 上限（RG_MAX_OUTPUT_TOKENS_LONG）：未设置 →
+/// None（不携带，与旧行为一致）；独立于 RG_MAX_OUTPUT_TOKENS，不回退。
+fn max_output_tokens_long() -> Option<u64> {
+    env_positive_opt("RG_MAX_OUTPUT_TOKENS_LONG")
+}
+
+/// 长输出场景判定：画像文档生成 / 上下文压缩（agent 工具循环在
+/// cloud_agent_round_stream 中直接读 max_output_tokens_long）
+fn is_long_output_fn(fn_name: &str) -> bool {
+    matches!(fn_name, "generate_profile_document" | "compress_context")
+}
+
+/// 按 fn 解析输出上限：长输出场景读 RG_MAX_OUTPUT_TOKENS_LONG，
+/// 其余读 RG_MAX_OUTPUT_TOKENS；env 未设置时返回 None（不携带）
+fn output_cap_for_fn(fn_name: &str) -> Option<u64> {
+    if is_long_output_fn(fn_name) {
+        max_output_tokens_long()
+    } else {
+        max_output_tokens()
+    }
+}
+
+/// Ollama 原生 API 的 options 对象（纯函数，可单测）：仅携带 env 显式
+/// 设置的参数；两者皆未设置时返回 None（请求体不含 options 字段，
+/// 逐字节等同改造前）。legacy /api/generate 与 /api/chat 共用。
+fn build_ollama_options(num_ctx: Option<u64>, num_predict: Option<u64>) -> Option<serde_json::Value> {
+    if num_ctx.is_none() && num_predict.is_none() {
+        return None;
+    }
     let mut options = serde_json::Map::new();
-    options.insert("num_ctx".to_string(), serde_json::json!(num_ctx));
-    options.insert("num_predict".to_string(), serde_json::json!(num_predict));
-    serde_json::Value::Object(options)
+    if let Some(value) = num_ctx {
+        options.insert("num_ctx".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = num_predict {
+        options.insert("num_predict".to_string(), serde_json::json!(value));
+    }
+    Some(serde_json::Value::Object(options))
 }
 
 #[cfg(test)]
@@ -64,51 +97,93 @@ mod window_param_tests {
     use super::*;
 
     #[test]
-    fn parse_positive_u64_valid_values() {
-        assert_eq!(parse_positive_u64(Some("16384"), 42), 16384);
-        assert_eq!(parse_positive_u64(Some("  8192 "), 42), 8192);
-        assert_eq!(parse_positive_u64(Some("1"), 42), 1);
+    fn parse_positive_opt_valid_values() {
+        assert_eq!(parse_positive_opt(Some("16384")), Some(16384));
+        assert_eq!(parse_positive_opt(Some("  8192 ")), Some(8192));
+        assert_eq!(parse_positive_opt(Some("1")), Some(1));
     }
 
     #[test]
-    fn parse_positive_u64_invalid_fallback() {
-        // 未设置 / 空串 / 空白 / 非数字 / 0 / 负数 / 溢出 / 小数 → 全部回退默认
-        assert_eq!(parse_positive_u64(None, 42), 42);
-        assert_eq!(parse_positive_u64(Some(""), 42), 42);
-        assert_eq!(parse_positive_u64(Some("   "), 42), 42);
-        assert_eq!(parse_positive_u64(Some("abc"), 42), 42);
-        assert_eq!(parse_positive_u64(Some("0"), 42), 42);
-        assert_eq!(parse_positive_u64(Some("-5"), 42), 42);
-        assert_eq!(parse_positive_u64(Some("999999999999999999999999"), 42), 42);
-        assert_eq!(parse_positive_u64(Some("4096.5"), 42), 42);
+    fn parse_positive_opt_invalid_returns_none() {
+        // 未设置 / 空串 / 空白 / 非数字 / 0 / 负数 / 溢出 / 小数 → 一律 None（不携带）
+        assert_eq!(parse_positive_opt(None), None);
+        assert_eq!(parse_positive_opt(Some("")), None);
+        assert_eq!(parse_positive_opt(Some("   ")), None);
+        assert_eq!(parse_positive_opt(Some("abc")), None);
+        assert_eq!(parse_positive_opt(Some("0")), None);
+        assert_eq!(parse_positive_opt(Some("-5")), None);
+        assert_eq!(parse_positive_opt(Some("999999999999999999999999")), None);
+        assert_eq!(parse_positive_opt(Some("4096.5")), None);
     }
 
-    /// 默认值基线（仅在对应 env 未设置时断言，避免并发测试改 env 竞态）
+    /// 回归语义：env 未设置时不携带窗口参数（仅在对应 env 未设置时
+    /// 断言，避免并发测试改 env 竞态）
     #[test]
-    fn ollama_num_ctx_default_baseline() {
+    fn ollama_num_ctx_unset_means_absent() {
         if std::env::var("RG_OLLAMA_NUM_CTX").is_ok() {
             return;
         }
-        assert_eq!(ollama_num_ctx(), DEFAULT_OLLAMA_NUM_CTX);
-        assert_eq!(DEFAULT_OLLAMA_NUM_CTX, 16384);
+        assert_eq!(ollama_num_ctx(), None);
     }
 
     #[test]
-    fn max_output_tokens_default_baseline() {
+    fn max_output_tokens_unset_means_absent() {
         if std::env::var("RG_MAX_OUTPUT_TOKENS").is_ok() {
             return;
         }
-        assert_eq!(max_output_tokens(), DEFAULT_MAX_OUTPUT_TOKENS);
-        assert_eq!(DEFAULT_MAX_OUTPUT_TOKENS, 4096);
+        assert_eq!(max_output_tokens(), None);
+        // LONG 变体同样：未设置不携带（不回退到普通档）
+        if std::env::var("RG_MAX_OUTPUT_TOKENS_LONG").is_ok() {
+            return;
+        }
+        assert_eq!(max_output_tokens_long(), None);
     }
 
+    /// 两者皆未设置 → options 为 None（请求体不含 options 字段）
     #[test]
-    fn ollama_options_contains_num_ctx_and_num_predict() {
-        let options = build_ollama_options(8192, 2048);
-        assert_eq!(options["num_ctx"], serde_json::json!(8192));
-        assert_eq!(options["num_predict"], serde_json::json!(2048));
-        // 仅含两个窗口参数，无多余字段
-        assert_eq!(options.as_object().unwrap().len(), 2);
+    fn ollama_options_absent_when_both_unset() {
+        assert!(build_ollama_options(None, None).is_none());
+    }
+
+    /// 设置则携带，且仅含已设置的字段
+    #[test]
+    fn ollama_options_carries_only_set_fields() {
+        let both = build_ollama_options(Some(8192), Some(2048)).unwrap();
+        assert_eq!(both["num_ctx"], serde_json::json!(8192));
+        assert_eq!(both["num_predict"], serde_json::json!(2048));
+        assert_eq!(both.as_object().unwrap().len(), 2);
+
+        let ctx_only = build_ollama_options(Some(8192), None).unwrap();
+        assert_eq!(ctx_only.as_object().unwrap().len(), 1);
+        assert!(ctx_only.get("num_predict").is_none());
+
+        let predict_only = build_ollama_options(None, Some(2048)).unwrap();
+        assert_eq!(predict_only.as_object().unwrap().len(), 1);
+        assert!(predict_only.get("num_ctx").is_none());
+    }
+
+    /// 序列化回归：options 为 None 时请求 JSON 不含 "options" 键，
+    /// 逐字节等同改造前（未设置 env 的存量部署不受影响）
+    #[test]
+    fn ollama_request_serialization_omits_absent_options() {
+        let req = OllamaRequest {
+            model: "m".to_string(),
+            stream: false,
+            format: None,
+            prompt: "p".to_string(),
+            options: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("options").is_none());
+    }
+
+    /// 长输出场景判定：仅画像文档与上下文压缩命中
+    #[test]
+    fn long_output_fn_detection() {
+        assert!(is_long_output_fn("generate_profile_document"));
+        assert!(is_long_output_fn("compress_context"));
+        assert!(!is_long_output_fn("general_chat"));
+        assert!(!is_long_output_fn("extract_person_fields"));
     }
 }
 
@@ -334,8 +409,10 @@ struct OllamaRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<String>,
     prompt: String,
-    /// 模型参数（P1-5：num_ctx / num_predict），始终携带
-    options: serde_json::Value,
+    /// 模型参数（num_ctx / num_predict）：仅 env 显式设置时携带；
+    /// None 时序列化跳过 options 字段（与改造前请求体逐字节一致）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -602,7 +679,7 @@ async fn ollama_generate_once(fn_name: &str, prompt: &str, format: Option<&str>,
         stream: false,
         format: format.map(str::to_string),
         prompt: prompt.to_string(),
-        options: build_ollama_options(ollama_num_ctx(), max_output_tokens()),
+        options: build_ollama_options(ollama_num_ctx(), output_cap_for_fn(fn_name)),
     };
 
     let url = format!("{}/api/generate", ollama_url());
@@ -1595,15 +1672,17 @@ async fn call_rig(fn_name: &str, prompt: &str, format: Option<&str>, timeout: Du
     );
 
     let model = client.completion_model(&model_name);
-    let request_builder = model
-        .completion_request(prompt)
-        // P1-5：输出上限（rig ollama provider 将 max_tokens 映射为
-        // options.num_predict）
-        .max_tokens(max_output_tokens());
-    // P1-5：num_ctx 经 additional_params 合入 options（rig ollama provider
-    // 将非顶层保留参数合并进 options 对象）
-    let request_builder =
-        request_builder.additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}));
+    // 窗口参数仅 env 显式设置时携带（未设置 = 旧行为）：rig ollama
+    // provider 将 max_tokens 映射为 options.num_predict，num_ctx 经
+    // additional_params 合入 options
+    let mut request_builder = model.completion_request(prompt);
+    if let Some(tokens) = output_cap_for_fn(fn_name) {
+        request_builder = request_builder.max_tokens(tokens);
+    }
+    if let Some(num_ctx) = ollama_num_ctx() {
+        request_builder =
+            request_builder.additional_params(serde_json::json!({"num_ctx": num_ctx}));
+    }
     let request = if format.is_some() {
         let schema: schemars::Schema = serde_json::from_value(serde_json::json!({"type": "object"}))
             .map_err(|e| LlmError::Permanent(format!("Schema build error: {}", e)))?;
@@ -1740,10 +1819,12 @@ async fn call_cloud(
             serde_json::json!({"search_strategy": "turbo"}),
         );
     }
-    let request_builder = model
-        .completion_request(prompt)
-        // P1-5：输出上限（rig openai provider 映射为请求体 max_tokens）
-        .max_tokens(max_output_tokens());
+    // 输出上限仅 env 显式设置时携带（rig openai provider 映射为请求体
+    // max_tokens）；长输出场景（画像文档/压缩）读 RG_MAX_OUTPUT_TOKENS_LONG
+    let mut request_builder = model.completion_request(prompt);
+    if let Some(tokens) = output_cap_for_fn(fn_name) {
+        request_builder = request_builder.max_tokens(tokens);
+    }
     let request_builder = if params.is_empty() {
         request_builder
     } else {
@@ -1889,12 +1970,12 @@ async fn cloud_chat_stream(
     let last = messages
         .pop()
         .ok_or_else(|| "消息序列为空".to_string())?;
-    let request = model
-        .completion_request(last)
-        .messages(messages)
-        .max_tokens(max_output_tokens())
-        .additional_params(additional)
-        .build();
+    // 输出上限仅 env 显式设置时携带（RG_MAX_OUTPUT_TOKENS，未设置 = 旧行为）
+    let mut request_builder = model.completion_request(last).messages(messages);
+    if let Some(tokens) = max_output_tokens() {
+        request_builder = request_builder.max_tokens(tokens);
+    }
+    let request = request_builder.additional_params(additional).build();
 
     let stream = match tokio::time::timeout(timeout, model.stream(request)).await {
         Ok(Ok(stream)) => stream,
@@ -2089,14 +2170,16 @@ async fn cloud_agent_round_stream(
     // 其余按序放入 chat_history，重建后与原始序列一致
     let mut messages = messages;
     let last = messages.pop().ok_or_else(|| "Agent 消息序列为空".to_string())?;
-    let request = model
+    // 输出上限读 RG_MAX_OUTPUT_TOKENS_LONG（agent 循环含思考 token 的总
+    // 预算，百炼 max_tokens 语义）；未设置不携带（与旧行为一致）
+    let mut request_builder = model
         .completion_request(last)
         .messages(messages)
-        .tools(crate::data_tools::definitions())
-        // P1-5：输出上限（含思考 token 的总预算，百炼 max_tokens 语义）
-        .max_tokens(max_output_tokens())
-        .additional_params(additional)
-        .build();
+        .tools(crate::data_tools::definitions());
+    if let Some(tokens) = max_output_tokens_long() {
+        request_builder = request_builder.max_tokens(tokens);
+    }
+    let request = request_builder.additional_params(additional).build();
 
     let stream = match tokio::time::timeout(timeout, model.stream(request)).await {
         Ok(Ok(stream)) => stream,
@@ -2487,11 +2570,12 @@ async fn cloud_chat_messages(
     }
     let mut messages = chat_message_sequence(system, history, query);
     let last = messages.pop().expect("消息序列非空");
-    let request = model
-        .completion_request(last)
-        .messages(messages)
-        // P1-5：输出上限
-        .max_tokens(max_output_tokens())
+    // 输出上限仅 env 显式设置时携带（未设置 = 旧行为）
+    let mut request_builder = model.completion_request(last).messages(messages);
+    if let Some(tokens) = max_output_tokens() {
+        request_builder = request_builder.max_tokens(tokens);
+    }
+    let request = request_builder
         .additional_params(serde_json::Value::Object(params))
         .build();
 
@@ -2566,14 +2650,17 @@ async fn rig_chat_messages(
     let model = client.completion_model(&model_name);
     let mut messages = chat_message_sequence(system, history, query);
     let last = messages.pop().expect("消息序列非空");
-    let request = model
-        .completion_request(last)
-        .messages(messages)
-        // P1-5：输出上限 + num_ctx（rig ollama provider：max_tokens →
-        // options.num_predict；num_ctx 经 additional_params 合入 options）
-        .max_tokens(max_output_tokens())
-        .additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}))
-        .build();
+    // 窗口参数仅 env 显式设置时携带（rig ollama provider：max_tokens →
+    // options.num_predict；num_ctx 经 additional_params 合入 options）
+    let mut request_builder = model.completion_request(last).messages(messages);
+    if let Some(tokens) = max_output_tokens() {
+        request_builder = request_builder.max_tokens(tokens);
+    }
+    if let Some(num_ctx) = ollama_num_ctx() {
+        request_builder =
+            request_builder.additional_params(serde_json::json!({"num_ctx": num_ctx}));
+    }
+    let request = request_builder.build();
 
     match tokio::time::timeout(timeout, model.completion(request)).await {
         Ok(Ok(response)) => {
@@ -2626,8 +2713,10 @@ struct OllamaChatRequest {
     model: String,
     stream: bool,
     messages: Vec<OllamaChatMessage>,
-    /// 模型参数（P1-5：num_ctx / num_predict），始终携带
-    options: serde_json::Value,
+    /// 模型参数（num_ctx / num_predict）：仅 env 显式设置时携带；
+    /// None 时序列化跳过 options 字段（与改造前请求体逐字节一致）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -2779,8 +2868,7 @@ async fn ollama_chat_stream(
     let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
 
     let model = client.completion_model(&model_name);
-    // P1-5：输出上限（max_tokens → options.num_predict）+ num_ctx 上下文
-    // 窗口（经 additional_params 合入 options），两个分支统一携带
+    // 窗口参数仅 env 显式设置时携带（未设置 = 旧行为）；两个分支统一处理
     let request = if history.is_empty() {
         // 等价于改造前 general_chat_prompt(query, skills, web_search, documents)：
         // 历史为空时 summary 必为空（ChatHistory::is_empty 语义），system 即
@@ -2793,11 +2881,15 @@ async fn ollama_chat_stream(
             model_name,
             prompt.len()
         );
-        model
-            .completion_request(prompt)
-            .max_tokens(max_output_tokens())
-            .additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}))
-            .build()
+        let mut request_builder = model.completion_request(prompt);
+        if let Some(tokens) = max_output_tokens() {
+            request_builder = request_builder.max_tokens(tokens);
+        }
+        if let Some(num_ctx) = ollama_num_ctx() {
+            request_builder =
+                request_builder.additional_params(serde_json::json!({"num_ctx": num_ctx}));
+        }
+        request_builder.build()
     } else {
         info!(
             target: "llm",
@@ -2809,12 +2901,15 @@ async fn ollama_chat_stream(
         );
         let mut messages = chat_message_sequence(system, history, query);
         let last = messages.pop().expect("消息序列非空");
-        model
-            .completion_request(last)
-            .messages(messages)
-            .max_tokens(max_output_tokens())
-            .additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}))
-            .build()
+        let mut request_builder = model.completion_request(last).messages(messages);
+        if let Some(tokens) = max_output_tokens() {
+            request_builder = request_builder.max_tokens(tokens);
+        }
+        if let Some(num_ctx) = ollama_num_ctx() {
+            request_builder =
+                request_builder.additional_params(serde_json::json!({"num_ctx": num_ctx}));
+        }
+        request_builder.build()
     };
 
     // 超时覆盖连接建立阶段；流消费阶段由 rig stream 自身驱动，
