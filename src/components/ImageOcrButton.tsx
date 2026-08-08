@@ -150,7 +150,7 @@ const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOc
       <button
         type="button"
         title="上传图片识别文字（也可直接粘贴截图）"
-        className="rounded-full p-2 text-lg leading-none transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+        className="rounded-full p-2 text-lg leading-none transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
         disabled={disabled || running}
         onClick={() => fileInputRef.current?.click()}
       >
@@ -158,11 +158,11 @@ const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOc
       </button>
 
       {panelVisible && (
-        <div className="absolute bottom-full left-0 z-10 mb-2 w-64 rounded-lg border bg-white p-3 shadow-lg">
+        <div className="absolute bottom-full left-0 z-10 mb-2 w-64 rounded-lg border bg-card p-3 shadow-lg">
           <div className="flex items-start justify-between gap-2">
-            <span className="text-xs font-medium text-slate-600">{running ? '正在识别图片文字...' : '图片 OCR'}</span>
+            <span className="text-xs font-medium text-text-secondary">{running ? '正在识别图片文字...' : '图片 OCR'}</span>
             {!running && (
-              <button type="button" className="text-xs text-slate-400 hover:text-slate-600" onClick={closePanel}>
+              <button type="button" className="text-xs text-muted hover:text-text-secondary" onClick={closePanel}>
                 关闭
               </button>
             )}
@@ -172,13 +172,13 @@ const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOc
           )}
           {progress !== null && (
             <div className="mt-2">
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${progress}%` }} />
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${progress}%` }} />
               </div>
-              <p className="mt-1 text-xs text-slate-500">识别进度 {progress}%</p>
+              <p className="mt-1 text-xs text-text-secondary">识别进度 {progress}%</p>
             </div>
           )}
-          {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+          {error && <p className="mt-2 text-xs text-danger">{error}</p>}
         </div>
       )}
     </div>

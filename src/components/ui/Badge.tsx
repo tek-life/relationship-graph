@@ -19,7 +19,7 @@ const VARIANT_STYLE: Record<BadgeVariant, BadgeStyle> = {
   default: { backgroundColor: 'var(--surface-hover)', color: 'var(--text-secondary)' },
   success: { backgroundColor: 'var(--success, rgba(22, 163, 74, 0.12))', color: 'var(--success-text, #16a34a)' },
   warning: { backgroundColor: 'var(--warning, rgba(217, 119, 6, 0.12))', color: 'var(--warning-text, #d97706)' },
-  danger: { backgroundColor: 'rgba(220, 38, 38, 0.12)', color: 'var(--danger-color)' },
+  danger: { backgroundColor: 'var(--danger-light)', color: 'var(--danger-color)' },
   info: { backgroundColor: 'var(--accent-light)', color: 'var(--accent-color)' },
 };
 

@@ -65,7 +65,7 @@ export default function PersonForm({ onSubmit, initial, heading, submitLabel }: 
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border bg-white p-4 shadow-sm">
+    <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border bg-card p-4 shadow-sm">
       <h2 className="text-lg font-semibold">{heading ?? '新增联系人'}</h2>
       <input className="input" placeholder="姓名" value={form.name} onChange={(e) => update('name', e.target.value)} required />
       <input className="input" placeholder="昵称/代称，如：老张、张工" value={form.aliases} onChange={(e) => update('aliases', e.target.value)} />

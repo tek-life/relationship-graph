@@ -319,7 +319,7 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
         <button
           type="button"
           onClick={() => setSidebarOpen(true)}
-          className="rounded-lg p-2 transition hover:bg-gray-100"
+          className="rounded-lg p-2 transition hover:bg-surface"
           style={{ color: 'var(--text-secondary)' }}
           title="会话列表"
         >
@@ -392,7 +392,7 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
             {/* 错误提示 */}
             {error && (
               <div className="px-4 pb-2">
-                <p className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>
+                <p className="rounded-2xl bg-danger-light px-4 py-3 text-sm text-danger">{error}</p>
               </div>
             )}
 
@@ -583,7 +583,7 @@ function ChatBubble({
   }
 
   const bubbleStyle = isUser
-    ? { borderColor: 'rgba(148,163,184,0.35)', backgroundColor: 'rgba(255,255,255,0.92)' }
+    ? { borderColor: 'var(--border-color)', backgroundColor: 'var(--surface-hover)' }
     : { borderColor: 'transparent', backgroundColor: 'transparent' };
 
   // 助手纯文本消息（无结构化结果、非错误气泡）：应用长内容策略与工具条
@@ -597,7 +597,7 @@ function ChatBubble({
       <div className={`flex w-full max-w-3xl gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
         {/* 头像 */}
         <div
-          className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-white shadow-sm"
+          className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-card shadow-sm"
           style={{ borderColor: 'var(--border-color)' }}
         >
           {isUser ? (
@@ -639,7 +639,7 @@ function ChatBubble({
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
-                      className="rounded-full px-3 py-1 text-xs transition hover:bg-slate-100"
+                      className="rounded-full px-3 py-1 text-xs transition hover:bg-surface"
                       style={{ color: 'var(--text-secondary)' }}
                       onClick={() => setEditing(false)}
                     >
@@ -647,7 +647,7 @@ function ChatBubble({
                     </button>
                     <button
                       type="button"
-                      className="rounded-full bg-slate-800 px-3 py-1 text-xs font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="rounded-full bg-text-primary px-3 py-1 text-xs font-medium text-bg-primary transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                       disabled={!draft.trim()}
                       onClick={() => void submitEdit()}
                     >
@@ -675,14 +675,14 @@ function ChatBubble({
 
               {/* 流式生成中且暂无内容时的占位提示 */}
               {!isUser && message.streaming && !message.content && (
-                <p className="animate-pulse text-sm text-slate-400">正在生成…</p>
+                <p className="animate-pulse text-sm text-muted">正在生成…</p>
               )}
 
               {/* 错误消息的重试按钮 */}
               {message.retryable && (
                 <button
                   type="button"
-                  className="mt-2 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-medium text-red-600 transition hover:bg-red-100"
+                  className="mt-2 rounded-full border border-danger bg-danger-light px-3 py-1 text-xs font-medium text-danger transition hover:brightness-95"
                   onClick={() => void onRetry()}
                 >
                   重试
@@ -691,20 +691,20 @@ function ChatBubble({
 
               {/* 联网搜索提示（仅前端本地标记） */}
               {!isUser && message.webSearched && (
-                <p className="mt-1 text-xs text-slate-400">本回答可能包含联网信息</p>
+                <p className="mt-1 text-xs text-muted">本回答可能包含联网信息</p>
               )}
 
               {/* 附件按钮 */}
               {message.attachment && (
                 <button
                   type="button"
-                  className="mt-3 flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition hover:bg-slate-50"
-                  style={{ borderColor: 'var(--border-color)', backgroundColor: 'rgba(255,255,255,0.75)' }}
+                  className="mt-3 flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition hover:bg-surface"
+                  style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
                   onClick={() =>
                     onShowPanel(message.attachment?.content ?? '', message.attachment?.title ?? '输出内容.md')
                   }
                 >
-                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent text-white">
                     📄
                   </div>
                   <div className="min-w-0 flex-1">
@@ -810,10 +810,10 @@ function ThinkingBlock({ thinking, streaming }: ThinkingBlockProps) {
   const label = streaming ? '思考中…' : `已思考 · ${stepCount} 个步骤`;
 
   return (
-    <div className="mb-2 rounded-2xl bg-slate-500/5 px-3 py-2">
+    <div className="mb-2 rounded-2xl bg-secondary px-3 py-2">
       <button
         type="button"
-        className="flex w-full items-center gap-1.5 text-xs italic text-slate-500"
+        className="flex w-full items-center gap-1.5 text-xs italic text-text-secondary"
         onClick={() => setExpanded((prev) => !prev)}
       >
         {/* 图标 */}
@@ -824,29 +824,29 @@ function ThinkingBlock({ thinking, streaming }: ThinkingBlockProps) {
         <span>{label}</span>
         {streaming && (
           <span className="flex gap-0.5 pl-1" aria-hidden="true">
-            <span className="h-1 w-1 animate-bounce rounded-full bg-slate-400" style={{ animationDelay: '0ms' }} />
-            <span className="h-1 w-1 animate-bounce rounded-full bg-slate-400" style={{ animationDelay: '150ms' }} />
-            <span className="h-1 w-1 animate-bounce rounded-full bg-slate-400" style={{ animationDelay: '300ms' }} />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-muted" style={{ animationDelay: '0ms' }} />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-muted" style={{ animationDelay: '150ms' }} />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-muted" style={{ animationDelay: '300ms' }} />
           </span>
         )}
         <span className={`ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true">▾</span>
       </button>
 
       {expanded && hasContent && (
-        <div className="mt-2 space-y-2 border-l-2 border-slate-200 pl-3">
+        <div className="mt-2 space-y-2 border-l-2 border-line pl-3">
           {/* 步骤条：✓ 已完成 → ● 进行中 */}
           {stepCount > 0 && (
             <ul className="space-y-1">
               {thinking.steps.map((step, index) => {
                 const isCurrent = streaming && index === stepCount - 1;
                 return (
-                  <li key={index} className="flex items-center gap-1.5 text-xs text-slate-500">
-                    <span className={isCurrent ? 'animate-pulse text-blue-500' : 'text-emerald-500'}>
+                  <li key={index} className="flex items-center gap-1.5 text-xs text-text-secondary">
+                    <span className={isCurrent ? 'animate-pulse text-accent' : 'text-success'}>
                       {isCurrent ? '●' : '✓'}
                     </span>
                     <span className="shrink-0">{STAGE_LABELS[step.stage] ?? step.stage}</span>
                     {step.detail && (
-                      <span className="truncate text-slate-400">{step.detail}</span>
+                      <span className="truncate text-muted">{step.detail}</span>
                     )}
                   </li>
                 );
@@ -855,7 +855,7 @@ function ThinkingBlock({ thinking, streaming }: ThinkingBlockProps) {
           )}
           {/* 推理文本（增量追加形成打字机效果，流式中显示光标） */}
           {thinking.reasoning && (
-            <p className="whitespace-pre-wrap text-xs italic leading-5 text-slate-500">
+            <p className="whitespace-pre-wrap text-xs italic leading-5 text-text-secondary">
               {thinking.reasoning}
               {streaming && <span className="animate-pulse not-italic">▍</span>}
             </p>
@@ -884,7 +884,7 @@ function CollapsibleMarkdown({ content }: { content: string }) {
       />
       <button
         type="button"
-        className="mt-2 text-xs font-medium text-blue-600 transition hover:underline"
+        className="mt-2 text-xs font-medium text-accent transition hover:underline"
         onClick={() => setExpanded((prev) => !prev)}
       >
         {expanded ? '收起' : '展开全文'}
@@ -958,7 +958,7 @@ function ToolbarActionButton({
   return (
     <button
       type="button"
-      className="rounded-full px-2 py-0.5 text-xs transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+      className="rounded-full px-2 py-0.5 text-xs transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
       style={{ color: 'var(--text-secondary)' }}
       disabled={disabled}
       onClick={onClick}
@@ -1061,10 +1061,10 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
               >
                 <span aria-hidden="true">📎</span>
                 <span className="max-w-[12rem] truncate">{doc.fileName}</span>
-                <span className="shrink-0 text-slate-400">{doc.content.length} 字</span>
+                <span className="shrink-0 text-muted">{doc.content.length} 字</span>
                 <button
                   type="button"
-                  className="shrink-0 rounded-full px-0.5 text-slate-400 transition hover:text-red-500"
+                  className="shrink-0 rounded-full px-0.5 text-muted transition hover:text-danger"
                   title="移除附件"
                   onClick={() => onRemoveAttachment(doc.fileName)}
                 >
@@ -1072,7 +1072,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
                 </button>
               </span>
             ))}
-            {attachNotice && <span className="text-xs text-amber-600">{attachNotice}</span>}
+            {attachNotice && <span className="text-xs text-warning">{attachNotice}</span>}
           </div>
         )}
         <textarea
@@ -1100,7 +1100,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
                     : '语音输入'
               }
               className={`rounded-full p-2 text-lg leading-none transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                voice.recording ? 'animate-pulse bg-red-100 text-red-600' : 'hover:bg-slate-100'
+                voice.recording ? 'animate-pulse bg-danger-light text-danger' : 'hover:bg-surface'
               }`}
               style={!voice.supported ? { color: 'var(--text-tertiary, #aaa)' } : undefined}
               disabled={loading || !voice.supported || voice.transcribing}
@@ -1111,7 +1111,7 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
             {voice.recording && (
               <button
                 type="button"
-                className="text-xs font-medium text-red-600"
+                className="text-xs font-medium text-danger"
                 onClick={onStopVoice}
               >
                 停止
@@ -1130,8 +1130,8 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
               aria-pressed={webSearchOn}
               className={`flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
                 webSearchOn
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'hover:bg-slate-100'
+                  ? 'bg-accent-light text-accent'
+                  : 'hover:bg-surface'
               }`}
               style={!webSearchOn ? { color: 'var(--text-secondary)' } : undefined}
               disabled={busy}
@@ -1149,10 +1149,10 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
             {loading && streaming && (
               <button
                 type="button"
-                className="flex items-center gap-1.5 rounded-full bg-slate-800 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-700"
+                className="flex items-center gap-1.5 rounded-full bg-text-primary px-3 py-1.5 text-xs font-medium text-bg-primary transition hover:opacity-90"
                 onClick={onStopGeneration}
               >
-                <span className="inline-block h-2 w-2 bg-white" aria-hidden="true" />
+                <span className="inline-block h-2 w-2 bg-bg-primary" aria-hidden="true" />
                 停止生成
               </button>
             )}
@@ -1250,7 +1250,7 @@ function FilePanel({
         {/* 面板内容 */}
         <div
           className={`min-h-0 flex-1 overflow-y-auto ${
-            viewMode === 'rendered' ? 'px-5 py-4' : 'bg-slate-950 px-0 py-0'
+            viewMode === 'rendered' ? 'px-5 py-4' : 'bg-secondary px-0 py-0'
           }`}
         >
           {viewMode === 'rendered' ? (
@@ -1268,7 +1268,7 @@ function PanelButton({ children, onClick }: { children: React.ReactNode; onClick
   return (
     <button
       type="button"
-      className="rounded-full border px-3 py-1.5 text-xs transition hover:bg-gray-50"
+      className="rounded-full border px-3 py-1.5 text-xs transition hover:bg-surface"
       style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
       onClick={onClick}
     >
@@ -1280,11 +1280,11 @@ function PanelButton({ children, onClick }: { children: React.ReactNode; onClick
 function SourceView({ content }: { content: string }) {
   const lines = content.split('\n');
   return (
-    <pre className="h-full overflow-x-auto p-4 text-sm text-slate-100">
+    <pre className="h-full overflow-x-auto p-4 text-sm text-text-primary">
       <code>
         {lines.map((line, index) => (
           <div key={index} className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3">
-            <span className="select-none text-right text-slate-500">{index + 1}</span>
+            <span className="select-none text-right text-muted">{index + 1}</span>
             <span className="whitespace-pre-wrap break-words">{line || ' '}</span>
           </div>
         ))}

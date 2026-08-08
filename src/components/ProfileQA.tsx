@@ -222,7 +222,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                 style={{
                   backgroundColor:
                     i < stageIndex
-                      ? '#22c55e'
+                      ? 'var(--success)'
                       : i === stageIndex
                         ? 'var(--accent-color)'
                         : 'var(--bg-secondary, #f1f5f9)',
@@ -250,7 +250,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                   style={{
                     backgroundColor:
                       i < stageIndex
-                        ? '#22c55e'
+                        ? 'var(--success)'
                         : 'var(--border-color, #e2e8f0)',
                   }}
                 />
@@ -264,7 +264,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
       {error && (
         <div
           className="mx-6 mt-3 rounded-lg px-4 py-2 text-sm"
-          style={{ backgroundColor: '#fef2f2', color: '#dc2626' }}
+          style={{ backgroundColor: 'var(--danger-light)', color: 'var(--danger-color)' }}
         >
           {error}
         </div>
@@ -360,7 +360,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
               ) : (
                 <span
                   className="flex items-center gap-1 text-sm font-medium"
-                  style={{ color: '#22c55e' }}
+                  style={{ color: 'var(--success)' }}
                 >
                   ✓ 内观画像已保存
                 </span>

@@ -601,7 +601,7 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
                     onClick={() => setAgentForm({ ...agentForm, isActive: !agentForm.isActive })}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+                      className={`inline-block h-4 w-4 transform rounded-full bg-card transition ${
                         agentForm.isActive ? 'translate-x-6' : 'translate-x-1'
                       }`}
                     />

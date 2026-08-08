@@ -122,14 +122,14 @@ export default function ImportWizard({ onImported }: Props) {
   };
 
   return (
-    <div className="rounded-xl border bg-white p-6 shadow-sm">
+    <div className="rounded-xl border bg-card p-6 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-semibold">Excel 导入</h2>
-        <div className="text-sm text-slate-500">
+        <div className="text-sm text-text-secondary">
           {['选择文件', '字段映射', '预览确认', '完成'].map((label, i) => {
             const stepIndex = ['upload', 'mapping', 'preview', 'done'].indexOf(step);
             return (
-              <span key={label} className={i <= stepIndex ? 'font-medium text-blue-600' : ''}>
+              <span key={label} className={i <= stepIndex ? 'font-medium text-accent' : ''}>
                 {i > 0 && ' → '}
                 {label}
               </span>
@@ -138,12 +138,12 @@ export default function ImportWizard({ onImported }: Props) {
         </div>
       </div>
 
-      {error && <div className="mb-4 rounded bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {error && <div className="mb-4 rounded bg-danger-light p-3 text-sm text-danger">{error}</div>}
 
       {step === 'upload' && (
-        <div className="rounded-lg border-2 border-dashed border-slate-300 p-10 text-center">
-          <p className="text-slate-600">选择手搓的 Excel（.xlsx / .xls）或 CSV 文件</p>
-          <p className="mt-1 text-sm text-slate-400">文件在浏览器内解析，原始文件不会上传</p>
+        <div className="rounded-lg border-2 border-dashed border-line p-10 text-center">
+          <p className="text-text-secondary">选择手捣的 Excel（.xlsx / .xls）或 CSV 文件</p>
+          <p className="mt-1 text-sm text-muted">文件在浏览器内解析，原始文件不会上传</p>
           <label className="btn-primary mt-4 inline-block cursor-pointer">
             {busy ? '解析中...' : '选择文件'}
             <input
@@ -159,12 +159,12 @@ export default function ImportWizard({ onImported }: Props) {
 
       {step === 'mapping' && (
         <div>
-          <p className="mb-3 text-sm text-slate-600">
+          <p className="mb-3 text-sm text-text-secondary">
             已解析 <b>{fileName}</b>：共 {rawRows.length} 行。请确认每列对应的字段（已自动猜测）：
           </p>
           <div className="max-h-96 overflow-auto rounded border">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-slate-50">
+              <thead className="sticky top-0 bg-secondary">
                 <tr>
                   <th className="p-2 text-left">Excel 列</th>
                   <th className="p-2 text-left">样例（前3行）</th>
@@ -175,7 +175,7 @@ export default function ImportWizard({ onImported }: Props) {
                 {headers.map((header, col) => (
                   <tr key={col} className="border-t">
                     <td className="p-2 font-medium">{header || `第${col + 1}列`}</td>
-                    <td className="p-2 text-slate-500">
+                    <td className="p-2 text-text-secondary">
                       {rawRows.slice(0, 3).map((row) => row[col]).filter(Boolean).join(' / ') || '-'}
                     </td>
                     <td className="p-2">
@@ -206,7 +206,7 @@ export default function ImportWizard({ onImported }: Props) {
             <button type="button" className="btn-primary" disabled={busy} onClick={handleMappingConfirm}>
               {busy ? '校验中...' : '下一步：预览与查重'}
             </button>
-            <button type="button" className="rounded px-4 py-2 text-slate-600 hover:bg-slate-100" onClick={reset}>
+            <button type="button" className="rounded px-4 py-2 text-text-secondary hover:bg-surface" onClick={reset}>
               重新选择文件
             </button>
           </div>
@@ -217,9 +217,9 @@ export default function ImportWizard({ onImported }: Props) {
         <div>
           <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard label="总行数" value={previewResult.total} />
-            <StatCard label="有效" value={previewResult.valid} tone="text-green-600" />
-            <StatCard label="无效（将跳过）" value={previewResult.invalid.length} tone="text-red-600" />
-            <StatCard label="疑似重复" value={previewResult.duplicates.length} tone="text-amber-600" />
+            <StatCard label="有效" value={previewResult.valid} tone="text-success" />
+            <StatCard label="无效（将跳过）" value={previewResult.invalid.length} tone="text-danger" />
+            <StatCard label="疑似重复" value={previewResult.duplicates.length} tone="text-warning" />
           </div>
 
           {previewResult.duplicates.length > 0 && (
@@ -238,7 +238,7 @@ export default function ImportWizard({ onImported }: Props) {
                           />
                         </td>
                         <td className="p-2">第 {dup.index + 2} 行：{normalized[dup.index]?.name}</td>
-                        <td className="p-2 text-slate-500">
+                        <td className="p-2 text-text-secondary">
                           {dup.matchType === 'exact' ? '姓名+电话完全重复' : '姓名相同'}
                           （{dup.source === 'db' ? '与已有联系人' : '与本文件内其他行'}）
                         </td>
@@ -251,21 +251,21 @@ export default function ImportWizard({ onImported }: Props) {
           )}
 
           {previewResult.invalid.length > 0 && (
-            <div className="mb-4 rounded bg-red-50 p-3 text-sm text-red-700">
+            <div className="mb-4 rounded bg-danger-light p-3 text-sm text-danger">
               {previewResult.invalid.length} 行无效将自动跳过（如姓名为空）。行号：
               {previewResult.invalid.slice(0, 10).map((issue) => issue.index + 2).join('、')}
               {previewResult.invalid.length > 10 && ' 等'}
             </div>
           )}
 
-          <p className="mb-3 text-sm text-slate-600">
+          <p className="mb-3 text-sm text-text-secondary">
             将导入 <b>{normalized.length - skipIndices.size}</b> 条，跳过 <b>{skipIndices.size}</b> 条
           </p>
           <div className="flex gap-3">
             <button type="button" className="btn-primary" disabled={busy} onClick={handleCommit}>
               {busy ? '导入中...' : '开始导入'}
             </button>
-            <button type="button" className="rounded px-4 py-2 text-slate-600 hover:bg-slate-100" onClick={() => setStep('mapping')}>
+            <button type="button" className="rounded px-4 py-2 text-text-secondary hover:bg-surface" onClick={() => setStep('mapping')}>
               返回调整映射
             </button>
           </div>
@@ -276,13 +276,13 @@ export default function ImportWizard({ onImported }: Props) {
         <div className="text-center">
           <p className="text-4xl">✅</p>
           <h3 className="mt-2 text-lg font-semibold">导入完成</h3>
-          <p className="mt-2 text-slate-600">
-            成功导入 <b className="text-green-600">{commitResult.imported}</b> 条，
+          <p className="mt-2 text-text-secondary">
+            成功导入 <b className="text-success">{commitResult.imported}</b> 条，
             跳过 {commitResult.skipped} 条，失败 {commitResult.failed.length} 条，
             耗时 {(commitResult.elapsedMs / 1000).toFixed(2)} 秒
           </p>
           {commitResult.failed.length > 0 && (
-            <div className="mx-auto mt-3 max-w-md rounded bg-red-50 p-3 text-left text-sm text-red-700">
+            <div className="mx-auto mt-3 max-w-md rounded bg-danger-light p-3 text-left text-sm text-danger">
               失败明细：
               {commitResult.failed.slice(0, 5).map((issue) => (
                 <p key={issue.index}>第 {issue.index + 2} 行：{issue.reason}</p>
@@ -300,9 +300,9 @@ export default function ImportWizard({ onImported }: Props) {
 
 function StatCard({ label, value, tone }: { label: string; value: number; tone?: string }) {
   return (
-    <div className="rounded-lg bg-slate-50 p-3 text-center">
+    <div className="rounded-lg bg-secondary p-3 text-center">
       <p className={`text-2xl font-bold ${tone ?? ''}`}>{value}</p>
-      <p className="text-sm text-slate-500">{label}</p>
+      <p className="text-sm text-text-secondary">{label}</p>
     </div>
   );
 }

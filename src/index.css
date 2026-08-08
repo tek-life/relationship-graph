@@ -25,6 +25,10 @@
   --shadow-color: rgba(0, 0, 0, 0.05);
   --success: #16a34a;
   --warning: #d97706;
+  /* UX P0-2 语义软背景：danger/success/warning 的浅底，供 bg-danger-light 等类使用 */
+  --danger-light: #fee2e2;
+  --success-light: #f0fdf4;
+  --warning-light: #fffbeb;
 }
 
 [data-theme="dark"] {
@@ -44,6 +48,9 @@
   --shadow-color: rgba(0, 0, 0, 0.3);
   --success: #4ade80;
   --warning: #fbbf24;
+  --danger-light: rgba(248, 113, 113, 0.15);
+  --success-light: rgba(74, 222, 128, 0.15);
+  --warning-light: rgba(251, 191, 36, 0.15);
 }
 
 [data-theme="high-contrast"] {
@@ -63,6 +70,9 @@
   --shadow-color: rgba(255, 255, 255, 0.1);
   --success: #00e676;
   --warning: #ffab00;
+  --danger-light: #330d0d;
+  --success-light: #0d2b18;
+  --warning-light: #33240d;
 }
 
 :root {

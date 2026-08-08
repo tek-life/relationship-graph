@@ -26,17 +26,17 @@ export default function GraphView({ data, personsById, onNodeClick, onRefresh, i
   }, [initialFocusId]);
 
   if (persons.length === 0) {
-    return <div className="rounded-xl border border-dashed p-8 text-center text-slate-500">暂无联系人数据。</div>;
+    return <div className="rounded-xl border border-dashed p-8 text-center text-text-secondary">暂无联系人数据。</div>;
   }
 
   return (
     <div>
       <div className="mb-3 flex items-center justify-between">
-        <div className="flex gap-1 rounded-full bg-slate-200 p-1">
+        <div className="flex gap-1 rounded-full bg-surface p-1">
           <ViewButton active={view === 'directory'} onClick={() => setView('directory')}>通讯录</ViewButton>
           <ViewButton active={view === 'network'} onClick={() => setView('network')}>关系网络</ViewButton>
         </div>
-        <span className="text-sm text-slate-500">共 {persons.length} 人、{data.edges.length} 条关系</span>
+        <span className="text-sm text-text-secondary">共 {persons.length} 人、{data.edges.length} 条关系</span>
       </div>
       {view === 'directory' ? (
         <ContactDirectory persons={persons} onSelect={onNodeClick} />
@@ -52,7 +52,7 @@ function ViewButton({ active, onClick, children }: { active: boolean; onClick: (
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-full px-4 py-1.5 text-sm font-medium ${active ? 'bg-white text-blue-600 shadow' : 'text-slate-600'}`}
+      className={`rounded-full px-4 py-1.5 text-sm font-medium ${active ? 'bg-card text-accent shadow' : 'text-text-secondary'}`}
     >
       {children}
     </button>
@@ -140,7 +140,7 @@ function ContactDirectory({ persons, onSelect }: { persons: Person[]; onSelect?:
   };
 
   return (
-    <div ref={wrapperRef} className="relative rounded-xl border bg-white shadow-sm">
+    <div ref={wrapperRef} className="relative rounded-xl border bg-card shadow-sm">
       <div className="border-b p-4">
         <input
           type="search"
@@ -150,7 +150,7 @@ function ContactDirectory({ persons, onSelect }: { persons: Person[]; onSelect?:
           onChange={(event) => setKeyword(event.target.value)}
         />
         {keyword && (
-          <p className="mt-2 text-sm text-slate-500">匹配 {filtered.length} 人{filtered.length === 0 ? '，换个关键词试试' : ''}</p>
+          <p className="mt-2 text-sm text-text-secondary">匹配 {filtered.length} 人{filtered.length === 0 ? '，换个关键词试试' : ''}</p>
         )}
       </div>
 
@@ -165,24 +165,24 @@ function ContactDirectory({ persons, onSelect }: { persons: Person[]; onSelect?:
               }}
               className="mb-5"
             >
-              <div className="sticky top-0 z-[5] -mx-1 bg-white/95 px-1 py-1">
-                <span className="text-sm font-bold text-blue-600">{letter}</span>
-                <span className="ml-2 text-xs text-slate-400">{groups.get(letter)!.length} 人</span>
+              <div className="sticky top-0 z-[5] -mx-1 bg-card/95 px-1 py-1">
+                <span className="text-sm font-bold text-accent">{letter}</span>
+                <span className="ml-2 text-xs text-muted">{groups.get(letter)!.length} 人</span>
               </div>
               <div className="mt-1 grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-x-2 gap-y-4">
                 {groups.get(letter)!.map((meta) => (
                   <button
                     key={meta.person.id}
                     type="button"
-                    className="group flex flex-col items-center rounded-lg p-2 text-center hover:bg-slate-50"
+                    className="group flex flex-col items-center rounded-lg p-2 text-center hover:bg-surface"
                     onClick={() => onSelect?.(meta.person.id)}
                     onMouseEnter={(event) => showTooltip(meta, event)}
                     onMouseLeave={() => setHovered(null)}
                   >
                     <Avatar meta={meta} />
-                    <span className="mt-1.5 w-full truncate text-sm text-slate-800">{meta.displayName}</span>
+                    <span className="mt-1.5 w-full truncate text-sm text-text-primary">{meta.displayName}</span>
                     {meta.person.company && (
-                      <span className="w-full truncate text-xs text-slate-400">{meta.person.company}</span>
+                      <span className="w-full truncate text-xs text-muted">{meta.person.company}</span>
                     )}
                   </button>
                 ))}
@@ -190,7 +190,7 @@ function ContactDirectory({ persons, onSelect }: { persons: Person[]; onSelect?:
             </div>
           ))}
           {filtered.length === 0 && (
-            <p className="py-16 text-center text-slate-400">没有匹配的联系人</p>
+            <p className="py-16 text-center text-muted">没有匹配的联系人</p>
           )}
         </div>
 
@@ -205,7 +205,7 @@ function ContactDirectory({ persons, onSelect }: { persons: Person[]; onSelect?:
                 disabled={!enabled}
                 onClick={() => jumpTo(letter)}
                 className={`h-[3.4%] min-h-4 w-6 rounded leading-none ${
-                  enabled ? 'font-medium text-blue-600 hover:bg-blue-50' : 'cursor-default text-slate-300'
+                  enabled ? 'font-medium text-accent hover:bg-accent-light' : 'cursor-default text-muted'
                 }`}
               >
                 {letter}
@@ -235,9 +235,9 @@ function Avatar({ meta }: { meta: PersonMeta }) {
 }
 
 function avatarClass(level: string) {
-  if (level === 'high') return 'bg-red-500';
-  if (level === 'medium') return 'bg-amber-500';
-  return 'bg-blue-500';
+  if (level === 'high') return 'bg-danger';
+  if (level === 'medium') return 'bg-warning';
+  return 'bg-accent';
 }
 
 function displayNameOf(person: Person) {
@@ -251,14 +251,14 @@ function PersonHoverCard({ person, x, y }: { person: Person; x: number; y: numbe
   const displayName = displayNameOf(person);
   return (
     <div
-      className="pointer-events-none absolute z-20 w-64 rounded-lg border bg-white p-3 shadow-lg"
+      className="pointer-events-none absolute z-20 w-64 rounded-lg border bg-card p-3 shadow-lg"
       style={{ left: Math.max(8, Math.min(x - 128, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 280)), top: y + 6 }}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-semibold text-slate-900">{displayName}</span>
+        <span className="font-semibold text-text-primary">{displayName}</span>
         <span className={`badge ${sensitivityClass(person.sensitivityLevel)}`}>{sensitivityText(person.sensitivityLevel)}</span>
       </div>
-      <dl className="mt-2 space-y-1 text-xs text-slate-600">
+      <dl className="mt-2 space-y-1 text-xs text-text-secondary">
         {(person.company || person.title) && <Row label="公司/职位" value={[person.company, person.title].filter(Boolean).join(' / ')} />}
         {person.location && <Row label="城市" value={person.location} />}
         <Row label="关系强度" value={strengthText(person.relationshipStrength)} />
@@ -268,7 +268,7 @@ function PersonHoverCard({ person, x, y }: { person: Person; x: number; y: numbe
       {person.resourceTags.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {person.resourceTags.slice(0, 4).map((tag) => (
-            <span key={tag} className="badge bg-blue-50 text-blue-700">{tag}</span>
+            <span key={tag} className="badge bg-accent-light text-accent">{tag}</span>
           ))}
         </div>
       )}
@@ -279,7 +279,7 @@ function PersonHoverCard({ person, x, y }: { person: Person; x: number; y: numbe
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="grid grid-cols-[4rem_1fr] gap-2">
-      <dt className="text-slate-400">{label}</dt>
+      <dt className="text-muted">{label}</dt>
       <dd className="truncate">{value}</dd>
     </div>
   );
@@ -316,6 +316,8 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
   // 实例重建时用于恢复视野（同一子图切换圈选模式不丢失缩放/平移）
   const viewportRef = useRef<{ sig: string; zoom: number; pan: { x: number; y: number } } | null>(null);
   const [notice, setNotice] = useState('');
+  /** notice 是否为错误（错误走 danger 语义色，普通提示走 accent） */
+  const [noticeIsError, setNoticeIsError] = useState(false);
   const [tooltip, setTooltip] = useState<{ person: Person; x: number; y: number } | null>(null);
   // 外部初始焦点只应用一次，避免数据刷新后覆盖用户手动重置的焦点
   const appliedInitialFocusRef = useRef<string | null>(null);
@@ -459,6 +461,98 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
     // 全景模式"我"为中心辐射；焦点模式"我"也保留，仅通过一条虚拟边挂在焦点上
     const includeMe = !effectiveFocus;
 
+    // UX P0-2：画布颜色改从主题 CSS 令牌读取，三套主题下语义一致；
+    // data-theme 切换时由下方 MutationObserver 重新套用样式
+    const cssVar = (name: string, fallback: string) => {
+      const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return value || fallback;
+    };
+    const buildGraphStyle = (): cytoscape.StylesheetJson => {
+      const accent = cssVar('--accent-color', '#3b82f6');
+      const accentHover = cssVar('--accent-hover', '#2563eb');
+      const accentLight = cssVar('--accent-light', '#eff6ff');
+      const danger = cssVar('--danger-color', '#dc2626');
+      const warning = cssVar('--warning', '#d97706');
+      const success = cssVar('--success', '#16a34a');
+      const textPrimary = cssVar('--text-primary', '#0f172a');
+      const textSecondary = cssVar('--text-secondary', '#64748b');
+      const textMuted = cssVar('--text-muted', '#94a3b8');
+      const line = cssVar('--border-color', '#e2e8f0');
+      const card = cssVar('--bg-card', '#ffffff');
+      return [
+        {
+          selector: 'node',
+          style: {
+            label: 'data(label)',
+            width: 'data(size)',
+            height: 'data(size)',
+            'background-color': accent,
+            color: textPrimary,
+            'font-size': isLarge ? '10px' : '12px',
+            'text-valign': 'bottom',
+            'text-halign': 'center',
+            'text-margin-y': 4,
+            'min-zoomed-font-size': 8,
+          },
+        },
+        { selector: 'node[sensitivityLevel = "high"]', style: { 'background-color': danger } },
+        { selector: 'node[sensitivityLevel = "medium"]', style: { 'background-color': warning } },
+        { selector: 'node.cold', style: { 'background-opacity': 0.45 } },
+        { selector: 'node.focus', style: { 'border-width': 4, 'border-color': accentHover, 'font-weight': 'bold' } },
+        {
+          selector: 'node.me',
+          style: {
+            'background-color': accentHover,
+            'border-width': 4,
+            'border-color': accentLight,
+            color: textPrimary,
+            'font-weight': 'bold',
+            'font-size': isLarge ? '13px' : '15px',
+          },
+        },
+        {
+          selector: 'edge',
+          style: {
+            width: 2,
+            'line-color': textMuted,
+            'target-arrow-shape': 'none',
+            'curve-style': isLarge ? 'straight' : 'bezier',
+            label: 'data(label)',
+            'font-size': '10px',
+            color: textSecondary,
+            'text-rotation': 'autorotate',
+            'text-background-color': card,
+            'text-background-opacity': 0.85,
+            'text-background-padding': '2px',
+            // 大图缩得太小时隐藏标签避免糊成一团，放大后自动浮现
+            'min-zoomed-font-size': isLarge ? 10 : 5,
+          },
+        },
+        {
+          selector: 'edge.me-edge',
+          style: { width: 1, 'line-color': line, opacity: 0.6, label: '' },
+        },
+        {
+          // "我 → 焦点"虚拟边：灰色点线，与真实关系边（实线/橙色虚线）区分
+          selector: 'edge.me-focus-edge',
+          style: {
+            width: 1.5,
+            'line-style': 'dotted',
+            'line-color': line,
+            color: textMuted,
+            opacity: 0.8,
+          },
+        },
+        {
+          selector: 'edge.pending',
+          style: { 'line-style': 'dashed', 'line-color': warning, width: 2 },
+        },
+        { selector: 'node.onpath', style: { 'border-width': 4, 'border-color': success } },
+        { selector: 'edge.onpath', style: { 'line-color': success, width: 4 } },
+        { selector: '.faded', style: { opacity: 0.15 } },
+      ] as unknown as cytoscape.StylesheetJson;
+    };
+
     const cy = cytoscape({
       container: ref.current,
       elements: [
@@ -498,78 +592,7 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
           ].join(' '),
         })),
       ],
-      style: [
-        {
-          selector: 'node',
-          style: {
-            label: 'data(label)',
-            width: 'data(size)',
-            height: 'data(size)',
-            'background-color': '#2563eb',
-            color: '#0f172a',
-            'font-size': isLarge ? '10px' : '12px',
-            'text-valign': 'bottom',
-            'text-halign': 'center',
-            'text-margin-y': 4,
-            'min-zoomed-font-size': 8,
-          },
-        },
-        { selector: 'node[sensitivityLevel = "high"]', style: { 'background-color': '#dc2626' } },
-        { selector: 'node[sensitivityLevel = "medium"]', style: { 'background-color': '#d97706' } },
-        { selector: 'node.cold', style: { 'background-opacity': 0.45 } },
-        { selector: 'node.focus', style: { 'border-width': 4, 'border-color': '#1d4ed8', 'font-weight': 'bold' } },
-        {
-          selector: 'node.me',
-          style: {
-            'background-color': '#4f46e5',
-            'border-width': 4,
-            'border-color': '#c7d2fe',
-            color: '#312e81',
-            'font-weight': 'bold',
-            'font-size': isLarge ? '13px' : '15px',
-          },
-        },
-        {
-          selector: 'edge',
-          style: {
-            width: 2,
-            'line-color': '#94a3b8',
-            'target-arrow-shape': 'none',
-            'curve-style': isLarge ? 'straight' : 'bezier',
-            label: 'data(label)',
-            'font-size': '10px',
-            color: '#64748b',
-            'text-rotation': 'autorotate',
-            'text-background-color': '#ffffff',
-            'text-background-opacity': 0.85,
-            'text-background-padding': '2px',
-            // 大图缩得太小时隐藏标签避免糊成一团，放大后自动浮现
-            'min-zoomed-font-size': isLarge ? 10 : 5,
-          },
-        },
-        {
-          selector: 'edge.me-edge',
-          style: { width: 1, 'line-color': '#e2e8f0', opacity: 0.6, label: '' },
-        },
-        {
-          // "我 → 焦点"虚拟边：灰色点线，与真实关系边（实线/橙色虚线）区分
-          selector: 'edge.me-focus-edge',
-          style: {
-            width: 1.5,
-            'line-style': 'dotted',
-            'line-color': '#cbd5e1',
-            color: '#94a3b8',
-            opacity: 0.8,
-          },
-        },
-        {
-          selector: 'edge.pending',
-          style: { 'line-style': 'dashed', 'line-color': '#f59e0b', width: 2 },
-        },
-        { selector: 'node.onpath', style: { 'border-width': 4, 'border-color': '#16a34a' } },
-        { selector: 'edge.onpath', style: { 'line-color': '#16a34a', width: 4 } },
-        { selector: '.faded', style: { opacity: 0.15 } },
-      ],
+      style: buildGraphStyle(),
       layout: { name: 'preset' },
       minZoom: 0.05,
       maxZoom: 3,
@@ -585,6 +608,12 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
       hideEdgesOnViewport: isLarge && !boxMode,
     });
     cyRef.current = cy;
+
+    // UX P0-2：主题切换（data-theme）时重新套用画布样式，保持与 DOM 同主题
+    const themeObserver = new MutationObserver(() => {
+      cy.style(buildGraphStyle());
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
     // 布局手动执行：小图带"从中心展开"的构建动画，大图直接就位避免卡顿
     const layoutOptions = effectiveFocus
@@ -698,6 +727,7 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
 
     return () => {
       if (tapTimer) clearTimeout(tapTimer);
+      themeObserver.disconnect();
       // 保存视野，便于圈选模式切换重建实例后无缝恢复
       viewportRef.current = { sig, zoom: cy.zoom(), pan: cy.pan() };
       cyRef.current = null;
@@ -708,11 +738,13 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
   const handleInfer = async () => {
     setBusy(true);
     setNotice('');
+    setNoticeIsError(false);
     try {
       const { created } = await inferRelationships();
       setNotice(created > 0 ? `AI 新增 ${created} 条待确认关系（橙色虚线，点击可确认）` : '没有发现新的可推断关系');
       await onRefresh?.();
     } catch (err) {
+      setNoticeIsError(true);
       setNotice(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -727,6 +759,7 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
       setSelectedEdge(null);
       await onRefresh?.();
     } catch (err) {
+      setNoticeIsError(true);
       setNotice(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -743,8 +776,8 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
   return (
     <div className="relative">
       {/* 工具栏：焦点 / 路径目标 / AI 推断 */}
-      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3 text-sm shadow-sm">
-        <label className="text-slate-500">焦点</label>
+      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border bg-card p-3 text-sm shadow-sm">
+        <label className="text-text-secondary">焦点</label>
         <input
           className="input !w-40 !py-1.5"
           list="network-person-options"
@@ -757,21 +790,21 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
         />
         {focusLabel && (
           <>
-            <span className="rounded-full bg-blue-50 px-3 py-1 text-blue-700">当前：{focusLabel}</span>
-            <button type="button" className="text-blue-600 hover:underline" onClick={() => effectiveFocus && onNodeClick?.(effectiveFocus)}>
+            <span className="rounded-full bg-accent-light px-3 py-1 text-accent">当前：{focusLabel}</span>
+            <button type="button" className="text-accent hover:underline" onClick={() => effectiveFocus && onNodeClick?.(effectiveFocus)}>
               查看详情
             </button>
             <button
               type="button"
-              className="text-slate-500 hover:underline"
+              className="text-text-secondary hover:underline"
               onClick={() => { setFocusId(null); setFocusInput(''); setTargetId(null); setTargetInput(''); }}
             >
               重置
             </button>
           </>
         )}
-        <span className="mx-1 h-5 w-px bg-slate-200" />
-        <label className="text-slate-500">找路径到</label>
+        <span className="mx-1 h-5 w-px bg-line" />
+        <label className="text-text-secondary">找路径到</label>
         <input
           className="input !w-40 !py-1.5"
           list="network-person-options"
@@ -783,15 +816,15 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
             resolveInput(event.target.value, setTargetId);
           }}
         />
-        <span className="mx-1 h-5 w-px bg-slate-200" />
+        <span className="mx-1 h-5 w-px bg-line" />
         <button type="button" className="btn-secondary !py-1.5" onClick={handleInfer} disabled={busy}>
           {busy ? '处理中...' : 'AI 推断关系'}
         </button>
-        {pendingCount > 0 && <span className="rounded-full bg-amber-50 px-3 py-1 text-amber-700">待确认 {pendingCount}</span>}
-        <span className="mx-1 h-5 w-px bg-slate-200" />
+        {pendingCount > 0 && <span className="rounded-full bg-warning-light px-3 py-1 text-warning">待确认 {pendingCount}</span>}
+        <span className="mx-1 h-5 w-px bg-line" />
         <button
           type="button"
-          className={`rounded px-3 py-1.5 text-sm font-medium ${boxMode ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+          className={`rounded px-3 py-1.5 text-sm font-medium ${boxMode ? 'bg-accent text-white' : 'bg-secondary text-text-secondary hover:bg-surface'}`}
           disabled={!!effectiveFocus}
           title={effectiveFocus ? '圈选仅在全景模式下可用，请先重置焦点' : '开启后按住左键拖拽框选联系人'}
           onClick={() => setBoxMode((prev) => !prev)}
@@ -800,8 +833,8 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
         </button>
         {selection && (
           <>
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-emerald-700">已圈选 {selection.size} 人</span>
-            <button type="button" className="text-slate-500 hover:underline" onClick={() => setSelection(null)}>
+            <span className="rounded-full bg-success-light px-3 py-1 text-success">已圈选 {selection.size} 人</span>
+            <button type="button" className="text-text-secondary hover:underline" onClick={() => setSelection(null)}>
               清除圈选
             </button>
           </>
@@ -811,77 +844,77 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
         </datalist>
       </div>
 
-      {notice && <div className="mb-3 rounded bg-blue-50 p-2 text-sm text-blue-700">{notice}</div>}
+      {notice && <div className={`mb-3 rounded p-2 text-sm ${noticeIsError ? 'bg-danger-light text-danger' : 'bg-accent-light text-accent'}`}>{notice}</div>}
 
       <div className="relative">
         <div
           ref={ref}
-          className="h-[560px] w-full rounded-xl border bg-white"
+          className="h-[560px] w-full rounded-xl border bg-card"
           style={{ cursor: boxMode ? 'crosshair' : undefined }}
         />
         {building && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/40">
-            <div className="flex items-center gap-2.5 rounded-full bg-white px-5 py-2.5 text-sm text-slate-600 shadow-lg">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-card/40">
+            <div className="flex items-center gap-2.5 rounded-full bg-card px-5 py-2.5 text-sm text-text-secondary shadow-lg">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
               正在构建关系网络…
             </div>
           </div>
         )}
       </div>
-      <p className="mt-2 text-xs text-slate-400">
+      <p className="mt-2 text-xs text-muted">
         {boxMode
           ? '圈选模式：按住鼠标左键拖拽出矩形框选联系人，松开后只显示选中的人及其与"我"的连线；再次点击"圈选"按钮可退出。'
           : effectiveFocus
             ? '正在展示焦点 2 跳内的人脉；单击节点进入联系人详情，双击节点切换焦点，点"重置"回到以我为中心的全景。'
             : '以"我"为中心辐射展示：内圈=强关系、中圈=中等、外圈=弱关系；滚轮缩放视图，单击节点进入详情，双击节点聚焦其人脉圈，按住 Shift 拖拽可直接框选。'}
         边上标注关系类型；实线=已确认关系，橙色虚线=AI 推断待确认（点击边可确认/否认），冷却联系人显示为半透明。
-        <span className="ml-2 select-none text-slate-300">v20260731-boxfix</span>
+        <span className="ml-2 select-none text-muted">v20260731-boxfix</span>
       </p>
 
       {/* 路径结果面板 */}
       {targetId && effectiveFocus && (
-        <div className="mt-3 rounded-xl border bg-white p-4 shadow-sm">
+        <div className="mt-3 rounded-xl border bg-card p-4 shadow-sm">
           {path ? (
             <>
-              <h3 className="font-semibold text-slate-900">
+              <h3 className="font-semibold text-text-primary">
                 路径：{path.nodeIds.map((id) => labelById[id]).join(' → ')}
-                <span className="ml-2 text-sm font-normal text-slate-500">（{path.edges.length} 跳{path.includesPending ? '，含待确认关系' : ''}）</span>
+                <span className="ml-2 text-sm font-normal text-text-secondary">（{path.edges.length} 跳{path.includesPending ? '，含待确认关系' : ''}）</span>
               </h3>
-              <ol className="mt-2 space-y-1 text-sm text-slate-600">
+              <ol className="mt-2 space-y-1 text-sm text-text-secondary">
                 {path.edges.map((edge, index) => (
                   <li key={edge.id}>
                     第 {index + 1} 跳：{labelById[path.nodeIds[index]]} → {labelById[path.nodeIds[index + 1]]}
-                    <span className="text-slate-400">
+                    <span className="text-muted">
                       （{edge.inferenceReason ?? relationshipLabel(edge.label)}{edge.confirmationStatus === 'pending' ? '，待确认' : ''}）
                     </span>
                   </li>
                 ))}
               </ol>
-              <p className="mt-2 rounded bg-green-50 p-2 text-sm text-green-800">
+              <p className="mt-2 rounded bg-success-light p-2 text-sm text-success">
                 建议行动：联系 {labelById[path.nodeIds[1]]}
                 {path.nodeIds.length > 2 ? `，询问是否认识 ${labelById[path.nodeIds[2]]}，请求引荐` : '，可直接推进'}。
                 {path.includesPending ? ' 注意：路径中含未确认关系，建议先向对方核实。' : ''}
               </p>
             </>
           ) : (
-            <p className="text-sm text-slate-500">未找到 {focusLabel} 到 {labelById[targetId]} 的关系路径，可先补录中间人关系。</p>
+            <p className="text-sm text-text-secondary">未找到 {focusLabel} 到 {labelById[targetId]} 的关系路径，可先补录中间人关系。</p>
           )}
         </div>
       )}
 
       {/* 推断边确认面板 */}
       {selectedEdge && (
-        <div className="mt-3 rounded-xl border bg-white p-4 shadow-sm">
+        <div className="mt-3 rounded-xl border bg-card p-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-slate-900">
+            <h3 className="font-semibold text-text-primary">
               {labelById[selectedEdge.source]} — {labelById[selectedEdge.target]}
-              <span className="ml-2 text-sm font-normal text-slate-500">{relationshipLabel(selectedEdge.label)}</span>
+              <span className="ml-2 text-sm font-normal text-text-secondary">{relationshipLabel(selectedEdge.label)}</span>
             </h3>
-            <button type="button" className="text-slate-400 hover:text-slate-600" onClick={() => setSelectedEdge(null)}>✕</button>
+            <button type="button" className="text-muted hover:text-text-secondary" onClick={() => setSelectedEdge(null)}>✕</button>
           </div>
           {selectedEdge.confirmationStatus === 'pending' ? (
             <>
-              <p className="mt-1 text-sm text-slate-600">
+              <p className="mt-1 text-sm text-text-secondary">
                 AI 推断依据：{selectedEdge.inferenceReason ?? '未记录'}
                 {selectedEdge.confidence != null && `（置信度 ${(selectedEdge.confidence * 100).toFixed(0)}%）`}
               </p>
@@ -889,7 +922,7 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
                 <button type="button" className="btn-primary !py-1.5" disabled={busy} onClick={() => handleConfirm('confirmed')}>确认认识</button>
                 <button
                   type="button"
-                  className="rounded bg-slate-200 px-4 py-1.5 text-sm text-slate-700 hover:bg-slate-300"
+                  className="rounded bg-secondary px-4 py-1.5 text-sm text-text-primary hover:bg-surface"
                   disabled={busy}
                   onClick={() => handleConfirm('rejected')}
                 >
@@ -898,7 +931,7 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
               </div>
             </>
           ) : (
-            <p className="mt-1 text-sm text-slate-600">已确认的关系{selectedEdge.inferenceReason ? `（最初由 AI 推断：${selectedEdge.inferenceReason}）` : ''}。</p>
+            <p className="mt-1 text-sm text-text-secondary">已确认的关系{selectedEdge.inferenceReason ? `（最初由 AI 推断：${selectedEdge.inferenceReason}）` : ''}。</p>
           )}
         </div>
       )}
@@ -943,9 +976,9 @@ function sensitivityText(value: string) {
 }
 
 function sensitivityClass(value: string) {
-  if (value === 'high') return 'bg-red-50 text-red-700';
-  if (value === 'medium') return 'bg-amber-50 text-amber-700';
-  return 'bg-green-50 text-green-700';
+  if (value === 'high') return 'bg-danger-light text-danger';
+  if (value === 'medium') return 'bg-warning-light text-warning';
+  return 'bg-success-light text-success';
 }
 
 function statusText(value: string) {

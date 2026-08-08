@@ -32,9 +32,11 @@ export default {
         danger: {
           DEFAULT: "var(--danger-color)",
           hover: "var(--danger-hover)",
+          // UX P0-2：语义软背景（错误/成功/警示的浅底），三主题各自定义
+          light: "var(--danger-light)",
         },
-        success: "var(--success)",
-        warning: "var(--warning)",
+        success: { DEFAULT: "var(--success)", light: "var(--success-light)" },
+        warning: { DEFAULT: "var(--warning)", light: "var(--warning-light)" },
       },
       // 圆角三档：控件 8px / 卡片 12px / 弹层 16px
       borderRadius: {

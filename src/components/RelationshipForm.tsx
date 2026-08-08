@@ -34,7 +34,7 @@ export default function RelationshipForm({ persons, onCreated }: Props) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border bg-white p-4 shadow-sm">
+    <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border bg-card p-4 shadow-sm">
       <h2 className="text-lg font-semibold">关系链路</h2>
       <div className="grid grid-cols-2 gap-3">
         <select className="input" value={fromPersonId} onChange={(event) => setFromPersonId(event.target.value)}>
@@ -61,7 +61,7 @@ export default function RelationshipForm({ persons, onCreated }: Props) {
         </select>
       </div>
       <input className="input" placeholder="关系说明" value={description} onChange={(event) => setDescription(event.target.value)} />
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
       <button className="btn-primary w-full" type="submit">保存关系</button>
     </form>
   );

@@ -46,36 +46,36 @@ export default function VoiceRecorder({ onTranscript }: Props) {
   }, [voice.recording, voice.transcribing]);
 
   return (
-    <div className="rounded-lg border bg-slate-50 p-3">
+    <div className="rounded-lg border bg-secondary p-3">
       <div className="flex items-center gap-2">
         <button
           type="button"
           className={`rounded-lg px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
             voice.recording
-              ? 'animate-pulse bg-red-100 text-red-700'
-              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+              ? 'animate-pulse bg-danger-light text-danger'
+              : 'border border-line bg-card text-text-primary hover:bg-surface'
           }`}
           disabled={!voice.supported || voice.transcribing}
           onClick={() => voice.toggle()}
         >
           {voice.recording ? '⏹ 停止' : '🎤 语音转文字'}
         </button>
-        {voice.transcribing && <span className="text-sm text-slate-500">录音上传转写中...</span>}
+        {voice.transcribing && <span className="text-sm text-text-secondary">录音上传转写中...</span>}
         {voice.recording && (
-          <span className="text-sm text-slate-500">
+          <span className="text-sm text-text-secondary">
             正在聆听{voice.interimText ? `：${voice.interimText}` : '...'}
           </span>
         )}
       </div>
       {!voice.supported && (
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-text-secondary">
           {voice.unsupportedReason || '当前浏览器不支持语音输入，请使用文字输入。'}
         </p>
       )}
       {noAudioWarning && !voice.error && (
-        <p className="mt-2 text-sm text-amber-600">未检测到音频输入，请确认麦克风已连接并允许访问</p>
+        <p className="mt-2 text-sm text-warning">未检测到音频输入，请确认麦克风已连接并允许访问</p>
       )}
-      {voice.error && <p className="mt-2 text-sm text-red-600">{voice.error}</p>}
+      {voice.error && <p className="mt-2 text-sm text-danger">{voice.error}</p>}
     </div>
   );
 }

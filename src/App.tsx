@@ -148,7 +148,7 @@ function App() {
       {/* 主体内容 */}
       <main className="flex-1 overflow-hidden">
         {error && (
-          <div className="mx-4 mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</div>
+          <div className="mx-4 mt-3 rounded bg-danger-light p-2 text-sm text-danger">{error}</div>
         )}
 
         <Routes>
@@ -165,7 +165,7 @@ function App() {
                 <section className="space-y-4">
                   <div className="flex items-center justify-between">
                     <h2 className="text-xl font-semibold">联系人名片</h2>
-                    <span className="text-sm text-slate-500">共 {persons.length} 人</span>
+                    <span className="text-sm text-text-secondary">共 {persons.length} 人</span>
                   </div>
                   <PersonList
                     persons={persons}

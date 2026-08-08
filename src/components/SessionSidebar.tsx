@@ -112,7 +112,7 @@ export default function SessionSidebar({
             <button
               type="button"
               onClick={onClose}
-              className="w-8 h-8 rounded-full flex items-center justify-center transition hover:bg-gray-100"
+              className="w-8 h-8 rounded-full flex items-center justify-center transition hover:bg-surface"
               style={{ color: 'var(--text-secondary)' }}
             >
               ✕
@@ -141,7 +141,7 @@ export default function SessionSidebar({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full rounded-lg border px-3 py-2 pl-8 text-sm outline-none
-                       focus:ring-2 focus:ring-indigo-500/20 transition"
+                       focus:ring-2 focus:ring-accent-light transition"
               style={{
                 borderColor: 'var(--border-color)',
                 backgroundColor: 'var(--bg-primary)',
@@ -175,8 +175,8 @@ export default function SessionSidebar({
                   className={`group flex items-center rounded-lg px-3 py-2.5 cursor-pointer transition-all duration-150
                     ${
                       session.id === currentSessionId
-                        ? 'bg-indigo-50 border-l-2 border-indigo-500'
-                        : 'hover:bg-gray-50 border-l-2 border-transparent'
+                        ? 'bg-accent-light border-l-2 border-accent'
+                        : 'hover:bg-surface border-l-2 border-transparent'
                     }`}
                   onClick={() => {
                     if (editingId === session.id) return;
@@ -202,7 +202,7 @@ export default function SessionSidebar({
                           }
                         }}
                         className="w-full rounded border px-2 py-1 text-sm outline-none
-                                 focus:ring-2 focus:ring-indigo-500/20"
+                                 focus:ring-2 focus:ring-accent-light"
                         style={{
                           borderColor: 'var(--border-color)',
                           backgroundColor: 'var(--bg-primary)',
@@ -213,7 +213,7 @@ export default function SessionSidebar({
                       <p
                         className={`text-sm font-medium truncate ${
                           session.id === currentSessionId
-                            ? 'text-indigo-700'
+                            ? 'text-accent'
                             : ''
                         }`}
                         style={
@@ -238,7 +238,7 @@ export default function SessionSidebar({
                           e.stopPropagation();
                           startRename(session);
                         }}
-                        className="opacity-0 group-hover:opacity-100 hover:text-indigo-600
+                        className="opacity-0 group-hover:opacity-100 hover:text-accent
                                  text-xs ml-2 px-1.5 py-0.5 rounded transition-all shrink-0"
                         style={{ color: 'var(--text-secondary)' }}
                       >
@@ -250,7 +250,7 @@ export default function SessionSidebar({
                           e.stopPropagation();
                           onDeleteSession(session.id);
                         }}
-                        className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 
+                        className="opacity-0 group-hover:opacity-100 text-danger hover:text-danger-hover 
                                  text-xs ml-1 px-1.5 py-0.5 rounded transition-all shrink-0"
                       >
                         删除

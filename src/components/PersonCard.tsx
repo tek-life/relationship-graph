@@ -22,12 +22,12 @@ export default function PersonCard({ person, lastInteraction, selected, onSelect
           onSelect?.(person);
         }
       }}
-      className={`w-full cursor-pointer rounded-xl border bg-white p-4 text-left shadow-sm transition hover:shadow-md ${selected ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200'}`}
+      className={`w-full cursor-pointer rounded-xl border bg-card p-4 text-left shadow-sm transition hover:shadow-md ${selected ? 'border-accent ring-2 ring-accent-light' : 'border-line'}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-xl font-semibold text-slate-900">{displayName}</h3>
-          <p className="mt-1 text-sm text-slate-500">昵称/代称：{alias}</p>
+          <h3 className="text-xl font-semibold text-text-primary">{displayName}</h3>
+          <p className="mt-1 text-sm text-text-secondary">昵称/代称：{alias}</p>
         </div>
         <span className={`badge ${sensitivityClass(person.sensitivityLevel)}`}>{sensitivityText(person.sensitivityLevel)}</span>
       </div>
@@ -35,14 +35,14 @@ export default function PersonCard({ person, lastInteraction, selected, onSelect
       {person.sensitivityLevel !== 'low' && (
         <div className="mt-3">
           <SensitivityGuard level={person.sensitivityLevel} fallback={<span>真实姓名已隐藏</span>}>
-            <p className="text-sm text-slate-700">真实姓名：{person.name}</p>
-            {person.phone && <p className="text-sm text-slate-700">电话：{person.phone}</p>}
-            {person.email && <p className="text-sm text-slate-700">邮箱：{person.email}</p>}
+            <p className="text-sm text-text-primary">真实姓名：{person.name}</p>
+            {person.phone && <p className="text-sm text-text-primary">电话：{person.phone}</p>}
+            {person.email && <p className="text-sm text-text-primary">邮箱：{person.email}</p>}
           </SensitivityGuard>
         </div>
       )}
 
-      <dl className="mt-4 space-y-2 text-sm text-slate-700">
+      <dl className="mt-4 space-y-2 text-sm text-text-primary">
         <Row label="公司/职位" value={[person.company, person.title].filter(Boolean).join(' / ') || '未填写'} />
         <Row label="认识背景" value={person.background || '未填写'} />
         <Row label="关系强度" value={strengthText(person.relationshipStrength)} />
@@ -54,9 +54,9 @@ export default function PersonCard({ person, lastInteraction, selected, onSelect
 
       <div className="mt-4 flex flex-wrap gap-2">
         {person.resourceTags.length === 0 ? (
-          <span className="badge bg-slate-100 text-slate-600">无标签</span>
+          <span className="badge bg-secondary text-text-secondary">无标签</span>
         ) : (
-          person.resourceTags.map((tag) => <span key={tag} className="badge bg-blue-50 text-blue-700">{tag}</span>)
+          person.resourceTags.map((tag) => <span key={tag} className="badge bg-accent-light text-accent">{tag}</span>)
         )}
       </div>
     </div>
@@ -66,7 +66,7 @@ export default function PersonCard({ person, lastInteraction, selected, onSelect
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="grid grid-cols-[5rem_1fr] gap-3">
-      <dt className="text-slate-400">{label}</dt>
+      <dt className="text-muted">{label}</dt>
       <dd className="line-clamp-2">{value}</dd>
     </div>
   );
@@ -89,9 +89,9 @@ function sensitivityText(value: string) {
 }
 
 function sensitivityClass(value: string) {
-  if (value === 'high') return 'bg-red-50 text-red-700';
-  if (value === 'medium') return 'bg-amber-50 text-amber-700';
-  return 'bg-green-50 text-green-700';
+  if (value === 'high') return 'bg-danger-light text-danger';
+  if (value === 'medium') return 'bg-warning-light text-warning';
+  return 'bg-success-light text-success';
 }
 
 function statusText(value: string) {

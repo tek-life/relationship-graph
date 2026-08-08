@@ -21,7 +21,7 @@ export default function PersonList({ persons, selectedPersonId, interactionsByPe
   }, [keyword]);
 
   if (persons.length === 0) {
-    return <div className="rounded-xl border border-dashed p-8 text-center text-slate-500">暂无联系人，先从左侧新增一位。</div>;
+    return <div className="rounded-xl border border-dashed p-8 text-center text-text-secondary">暂无联系人，先从左侧新增一位。</div>;
   }
 
   const terms = keyword.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -62,11 +62,11 @@ export default function PersonList({ persons, selectedPersonId, interactionsByPe
           />
         ))}
       </div>
-      {filtered.length === 0 && <p className="py-8 text-center text-slate-400">没有匹配的联系人</p>}
+      {filtered.length === 0 && <p className="py-8 text-center text-muted">没有匹配的联系人</p>}
       {filtered.length > visibleCount && (
         <button
           type="button"
-          className="w-full rounded-lg border border-dashed py-2 text-sm text-slate-600 hover:bg-slate-50"
+          className="w-full rounded-lg border border-dashed py-2 text-sm text-text-secondary hover:bg-surface"
           onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
         >
           加载更多（已显示 {visible.length} / {filtered.length}）

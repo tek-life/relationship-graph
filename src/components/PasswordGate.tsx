@@ -94,7 +94,7 @@ export default function PasswordGate({ children }: Props) {
   };
 
   if (loading) {
-    return <div className="flex min-h-screen items-center justify-center bg-slate-100 text-slate-600">正在连接服务端...</div>;
+    return <div className="flex min-h-screen items-center justify-center bg-primary text-text-secondary">正在连接服务端...</div>;
   }
 
   if (mode === 'ready') {
@@ -143,7 +143,7 @@ export default function PasswordGate({ children }: Props) {
             onChange={(event) => setMigratePassword(event.target.value)}
             autoFocus
           />
-          {error && <p className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+          {error && <p className="mt-3 rounded bg-danger-light p-3 text-sm text-danger">{error}</p>}
           <button className="btn-primary mt-6 w-full" type="submit">
             完成升级并登录
           </button>
@@ -159,10 +159,10 @@ export default function PasswordGate({ children }: Props) {
 
   // 兜底：网络错误等
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
-      <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-lg">
-        <h1 className="text-2xl font-bold text-slate-900">无法连接服务端</h1>
-        <p className="mt-2 text-sm text-red-600">{error}</p>
+    <div className="flex min-h-screen items-center justify-center bg-primary p-6">
+      <div className="w-full max-w-md rounded-2xl bg-card p-8 shadow-lg">
+        <h1 className="text-2xl font-bold text-text-primary">无法连接服务端</h1>
+        <p className="mt-2 text-sm text-danger">{error}</p>
         <button
           className="btn-primary mt-6 w-full"
           type="button"

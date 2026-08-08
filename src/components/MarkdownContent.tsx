@@ -34,7 +34,7 @@ export default function MarkdownContent({ content, className = '' }: MarkdownCon
           ),
           p: ({ children }) => <p className="my-2 leading-7 first:mt-0 last:mb-0">{children}</p>,
           blockquote: ({ children }) => (
-            <blockquote className="my-3 border-l-4 border-slate-300 pl-3 text-sm text-slate-600">
+            <blockquote className="my-3 border-l-4 border-line pl-3 text-sm text-text-secondary">
               {children}
             </blockquote>
           ),
@@ -44,28 +44,28 @@ export default function MarkdownContent({ content, className = '' }: MarkdownCon
           a: ({ href, children }) => (
             <a
               href={href}
-              className="text-blue-600 underline underline-offset-2"
+              className="text-accent underline underline-offset-2"
               target="_blank"
               rel="noreferrer"
             >
               {children}
             </a>
           ),
-          hr: () => <hr className="my-4 border-slate-200" />,
+          hr: () => <hr className="my-4 border-line" />,
           img: ({ src, alt }) => (
-            <img src={src} alt={alt ?? ''} className="my-3 max-w-full rounded-xl border border-slate-200" />
+            <img src={src} alt={alt ?? ''} className="my-3 max-w-full rounded-xl border border-line" />
           ),
           table: ({ children }) => (
             <div className="my-3 overflow-x-auto">
               <table className="w-full border-collapse text-sm">{children}</table>
             </div>
           ),
-          thead: ({ children }) => <thead className="bg-slate-50">{children}</thead>,
+          thead: ({ children }) => <thead className="bg-secondary">{children}</thead>,
           th: ({ children }) => (
-            <th className="border border-slate-200 px-3 py-1.5 text-left font-semibold">{children}</th>
+            <th className="border border-line px-3 py-1.5 text-left font-semibold">{children}</th>
           ),
           td: ({ children }) => (
-            <td className="border border-slate-200 px-3 py-1.5 align-top">{children}</td>
+            <td className="border border-line px-3 py-1.5 align-top">{children}</td>
           ),
           code: ({ className: codeClassName, children, ...rest }) => {
             const text = String(children ?? '').replace(/\n$/, '');
@@ -77,7 +77,7 @@ export default function MarkdownContent({ content, className = '' }: MarkdownCon
             }
             return (
               <code
-                className="rounded bg-slate-100 px-1.5 py-0.5 text-[0.9em] text-slate-800"
+                className="rounded bg-secondary px-1.5 py-0.5 text-[0.9em] text-text-primary"
                 {...rest}
               >
                 {children}
@@ -108,14 +108,14 @@ function CodeBlock({ language, code }: { language?: string; code: string }) {
   };
 
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-slate-200">
-      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-100/80 px-3 py-1.5">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+    <div className="my-3 overflow-hidden rounded-xl border border-line">
+      <div className="flex items-center justify-between border-b border-line bg-secondary px-3 py-1.5">
+        <span className="text-xs font-medium uppercase tracking-wide text-text-secondary">
           {language ?? 'text'}
         </span>
         <button
           type="button"
-          className="rounded-md px-2 py-0.5 text-xs text-slate-500 transition hover:bg-slate-200 hover:text-slate-700"
+          className="rounded-md px-2 py-0.5 text-xs text-text-secondary transition hover:bg-surface hover:text-text-primary"
           onClick={handleCopy}
         >
           {copied ? '已复制' : '复制'}

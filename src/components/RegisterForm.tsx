@@ -122,7 +122,7 @@ export default function RegisterForm({ inviteToken, onRegistered }: RegisterForm
         {error && (
           <div
             className="mb-4 rounded-lg p-3 text-sm"
-            style={{ background: 'rgba(220,38,38,0.08)', color: 'var(--danger-color)' }}
+            style={{ background: 'var(--danger-light)', color: 'var(--danger-color)' }}
           >
             {error}
           </div>

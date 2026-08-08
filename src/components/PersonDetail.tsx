@@ -87,7 +87,7 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
   if (error || !person) {
     return (
       <div className="rounded-xl border p-8 text-center" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-        <p className="text-red-600">{error || '联系人不存在'}</p>
+        <p className="text-danger">{error || '联系人不存在'}</p>
         <button type="button" className="btn-primary mt-4" onClick={onBack}>返回</button>
       </div>
     );
@@ -106,7 +106,7 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
           {onNetworkView && (
             <button
               type="button"
-              className="rounded bg-purple-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-700"
+              className="rounded bg-accent-hover px-4 py-1.5 text-sm font-medium text-white hover:opacity-90"
               onClick={() => onNetworkView(personId)}
             >
               关系网络
@@ -114,14 +114,14 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
           )}
           <button
             type="button"
-            className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+            className="rounded bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-accent-hover"
             onClick={() => setEditing((prev) => !prev)}
           >
             {editing ? '取消编辑' : '编辑资料'}
           </button>
           <button
             type="button"
-            className="rounded bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+            className="rounded bg-danger px-4 py-1.5 text-sm font-medium text-white hover:bg-danger-hover"
             onClick={handleDelete}
           >
             删除联系人
@@ -144,7 +144,7 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
           {sensitive && (
             <div className="mt-4">
               <SensitivityGuard level={person.sensitivityLevel} fallback={<span>真实姓名与联系方式已隐藏</span>}>
-                <div className="rounded-md bg-slate-50 p-3 text-sm text-slate-700">
+                <div className="rounded-md bg-secondary p-3 text-sm text-text-primary">
                   <p>真实姓名：{person.name}</p>
                   {person.phone && <p>电话：{person.phone}</p>}
                   {person.email && <p>邮箱：{person.email}</p>}
@@ -172,9 +172,9 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
 
           <div className="mt-4 flex flex-wrap gap-2">
             {person.resourceTags.length === 0 ? (
-              <span className="badge bg-slate-100 text-slate-600">无标签</span>
+              <span className="badge bg-secondary text-text-secondary">无标签</span>
             ) : (
-              person.resourceTags.map((tag) => <span key={tag} className="badge bg-blue-50 text-blue-700">{tag}</span>)
+              person.resourceTags.map((tag) => <span key={tag} className="badge bg-accent-light text-accent">{tag}</span>)
             )}
           </div>
         </div>
@@ -199,10 +199,10 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
                     type="button"
                     disabled={!other}
                     onClick={() => other && onOpenPerson(otherId)}
-                    className={`block w-full rounded-lg bg-slate-50 p-3 text-left ${other ? 'cursor-pointer transition hover:bg-blue-50' : 'cursor-default'}`}
+                    className={`block w-full rounded-lg bg-secondary p-3 text-left ${other ? 'cursor-pointer transition hover:bg-accent-light' : 'cursor-default'}`}
                   >
-                    <span className={`font-medium ${other ? 'text-blue-700 hover:underline' : ''}`}>{otherName}</span>
-                    <span className="ml-2 text-slate-500">{relationshipTypeText(rel.relationshipType)}{rel.description ? `（${rel.description}）` : ''}</span>
+                    <span className={`font-medium ${other ? 'text-accent hover:underline' : ''}`}>{otherName}</span>
+                    <span className="ml-2 text-text-secondary">{relationshipTypeText(rel.relationshipType)}{rel.description ? `（${rel.description}）` : ''}</span>
                   </button>
                 );
               })
@@ -260,9 +260,9 @@ function sensitivityText(value: string) {
 }
 
 function sensitivityClass(value: string) {
-  if (value === 'high') return 'bg-red-50 text-red-700';
-  if (value === 'medium') return 'bg-amber-50 text-amber-700';
-  return 'bg-green-50 text-green-700';
+  if (value === 'high') return 'bg-danger-light text-danger';
+  if (value === 'medium') return 'bg-warning-light text-warning';
+  return 'bg-success-light text-success';
 }
 
 function statusText(value: string) {

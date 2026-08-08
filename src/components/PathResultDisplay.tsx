@@ -13,7 +13,7 @@ export default function PathResultDisplay({ path, onPersonClick }: PathResultDis
         <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
           <span>{path.hops} 跳</span>
           {path.includesPending && (
-            <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-700">含待确认关系</span>
+            <span className="rounded bg-warning-light px-2 py-0.5 text-warning">含待确认关系</span>
           )}
         </div>
       </div>
@@ -46,7 +46,7 @@ export default function PathResultDisplay({ path, onPersonClick }: PathResultDis
                   <span className="whitespace-nowrap rounded px-1 py-0.5" style={{ backgroundColor: 'var(--surface-hover)' }}>
                     {edge.relationshipType}
                     {edge.confirmationStatus === 'pending' && (
-                      <span className="ml-1 text-amber-600">?</span>
+                      <span className="ml-1 text-warning">?</span>
                     )}
                   </span>
                   <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

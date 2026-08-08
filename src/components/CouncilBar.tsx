@@ -42,8 +42,8 @@ export default function CouncilBar({ selectedAgentIds, onPickAgent }: CouncilBar
                 className={`block w-10 h-10 rounded-full overflow-hidden border-2 transition-all duration-200
                   ${
                     isSelected
-                      ? 'border-indigo-500 shadow-lg shadow-indigo-500/30 scale-110'
-                      : 'border-transparent hover:border-gray-300 hover:scale-105'
+                      ? 'border-accent shadow-lg scale-110'
+                      : 'border-transparent hover:border-line hover:scale-105'
                   }`}
               >
                 {agent.avatar ? (
@@ -53,7 +53,7 @@ export default function CouncilBar({ selectedAgentIds, onPickAgent }: CouncilBar
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <span className="w-full h-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-sm">
+                  <span className="w-full h-full bg-accent-light flex items-center justify-center text-accent font-bold text-sm">
                     {agent.displayName[0]}
                   </span>
                 )}
@@ -69,15 +69,15 @@ export default function CouncilBar({ selectedAgentIds, onPickAgent }: CouncilBar
             {/* Tooltip */}
             <div
               className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 
-                          bg-gray-800 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 
+                          bg-text-primary text-bg-primary text-xs rounded-lg opacity-0 group-hover:opacity-100 
                           transition-opacity pointer-events-none whitespace-nowrap z-50"
             >
               <div className="font-semibold">{agent.displayName}</div>
               {agent.description && (
-                <div className="mt-1 text-gray-300">{agent.description}</div>
+                <div className="mt-1 opacity-80">{agent.description}</div>
               )}
               {/* 小三角 */}
-              <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-800" />
+              <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-text-primary" />
             </div>
           </div>
         );

@@ -87,10 +87,10 @@ export default function InteractionForm({ person, onCreated }: Props) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border bg-white p-4 shadow-sm">
+    <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border bg-card p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">互动记录</h2>
-        <span className="text-sm text-slate-500">{person ? `当前联系人：${person.name}` : '请先选择联系人'}</span>
+        <span className="text-sm text-text-secondary">{person ? `当前联系人：${person.name}` : '请先选择联系人'}</span>
       </div>
       <VoiceRecorder onTranscript={handleTranscript} />
       <textarea
@@ -106,14 +106,14 @@ export default function InteractionForm({ person, onCreated }: Props) {
         <button type="submit" className="btn-primary" disabled={loading || !person || !content.trim()}>保存互动</button>
       </div>
       {summary && (
-        <div className="rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+        <div className="rounded-lg bg-secondary p-3 text-sm text-text-primary">
           <p><span className="font-medium">摘要：</span>{summary}</p>
           <p><span className="font-medium">话题：</span>{topics.join('、') || '无'}</p>
           <p><span className="font-medium">待办：</span>{actionItems.join('、') || '无'}</p>
         </div>
       )}
       <EntityResolver mentions={mentions} onResolved={setResolved} />
-      {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+      {error && <p className="rounded bg-danger-light p-3 text-sm text-danger">{error}</p>}
     </form>
   );
 }

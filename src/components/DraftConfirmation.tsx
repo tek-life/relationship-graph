@@ -62,7 +62,7 @@ function CreatePersonDraftForm({
       <div className="flex items-center justify-between">
         <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>新增联系人确认</h3>
         {draft.confidence < 50 && (
-          <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700">置信度较低，请核实</span>
+          <span className="rounded bg-warning-light px-2 py-0.5 text-xs text-warning">置信度较低，请核实</span>
         )}
       </div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -124,11 +124,11 @@ function UpdatePersonDraftForm({
       <div className="flex items-center justify-between">
         <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>更新联系人确认</h3>
         {draft.confidence < 50 && (
-          <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700">置信度较低，请核实</span>
+          <span className="rounded bg-warning-light px-2 py-0.5 text-xs text-warning">置信度较低，请核实</span>
         )}
       </div>
       {draft.errorHint && (
-        <p className="text-sm text-amber-700 bg-amber-50 rounded p-2">{draft.errorHint}</p>
+        <p className="text-sm text-warning bg-warning-light rounded p-2">{draft.errorHint}</p>
       )}
       {!selectedPerson && draft.candidates.length > 0 && (
         <div className="space-y-1">
@@ -212,7 +212,7 @@ function AddInteractionDraftForm({
       <div className="flex items-center justify-between">
         <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>新增互动确认</h3>
         {draft.confidence < 50 && (
-          <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700">置信度较低，请核实</span>
+          <span className="rounded bg-warning-light px-2 py-0.5 text-xs text-warning">置信度较低，请核实</span>
         )}
       </div>
       {!selectedPerson && draft.candidates.length > 0 && (
@@ -294,7 +294,7 @@ function DeletePersonDraftForm({
     <div className="rounded-xl border p-4 space-y-3" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
       <h3 className="font-semibold" style={{ color: 'var(--text-primary)' }}>删除联系人确认</h3>
       {draft.errorHint && (
-        <p className="text-sm text-amber-700 bg-amber-50 rounded p-2">{draft.errorHint}</p>
+        <p className="text-sm text-warning bg-warning-light rounded p-2">{draft.errorHint}</p>
       )}
       {!selectedPerson && draft.candidates.length > 0 && (
         <div className="space-y-1">
@@ -320,7 +320,7 @@ function DeletePersonDraftForm({
             目标：<span className="font-medium" style={{ color: 'var(--text-primary)' }}>{selectedPerson.name}</span>
             {selectedPerson.company ? `（${selectedPerson.company}）` : ''}
           </p>
-          <p className="text-sm text-red-600 bg-red-50 rounded p-2">删除后其互动记录与关系也会一并删除，且不可恢复。</p>
+          <p className="text-sm text-danger bg-danger-light rounded p-2">删除后其互动记录与关系也会一并删除，且不可恢复。</p>
         </>
       )}
       <div className="flex justify-end gap-2 pt-2">
@@ -330,7 +330,7 @@ function DeletePersonDraftForm({
         <button
           type="button"
           className="rounded px-4 py-2 text-sm text-white"
-          style={{ backgroundColor: '#dc2626' }}
+          style={{ backgroundColor: 'var(--danger-color)' }}
           disabled={!selectedPerson}
           onClick={handleSubmit}
         >
