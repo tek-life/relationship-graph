@@ -366,28 +366,29 @@ mod legacy_client_tests {
     }
 }
 
-async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str, web_search: bool) -> Result<String, String> {
+async fn call_generate(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str, web_search: bool) -> Result<String, String> {
     // P1-6：非流式调用统一套指数退避重试（超时 / 5xx / 429 最多重试 2 次，
     // 0.5s → 1.5s）；流式链路不经过本函数，天然不重试。
-    retry_transient(fn_name, || call_ollama_once(prompt, format, timeout, fn_name, web_search)).await
+    retry_transient(fn_name, || call_generate_once(prompt, format, timeout, fn_name, web_search)).await
 }
 
-/// 单次调用（不含重试）：三值通道分发 + legacy reqwest 实现。
+/// 单次调用（不含重试）：通道分发收敛到 provider_for（P0-1）。
 /// 错误按 LlmError 分类供 retry_transient 决策。
-async fn call_ollama_once(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str, web_search: bool) -> Result<String, LlmError> {
-    // 三值通道分发：RG_LLM_BACKEND=rig/cloud 时全量走对应通道；legacy 模式下
-    // 命中 RG_LLM_CLOUD_FNS / RG_LLM_RIG_FNS 白名单的函数分别走 cloud / rig
-    //（函数级灰度，cloud 优先），其余走原 reqwest legacy 实现（默认行为与
-    // 改造前完全一致）。详见 llm_channel_for 注释。
-    // web_search 仅 cloud 通道生效（百炼 enable_search），legacy/rig 忽略。
-    match llm_channel(fn_name) {
-        Channel::Rig => return call_rig(prompt, format, timeout).await,
-        // Cloud 尊重调用方传入的 timeout（聊天类 120s、抽取类 45s），
-        // 避免长调用（generate_profile_document / compress_context）被 60s 截断
-        Channel::Cloud => return call_cloud(prompt, format, timeout, fn_name, web_search).await,
-        Channel::Legacy => {}
-    }
+async fn call_generate_once(prompt: &str, format: Option<&str>, timeout: Duration, fn_name: &str, web_search: bool) -> Result<String, LlmError> {
+    // RG_LLM_BACKEND=rig/cloud 时全量走对应 provider；legacy 模式下命中
+    // RG_LLM_CLOUD_FNS / RG_LLM_RIG_FNS 白名单的函数分别走 cloud / rig
+    //（函数级灰度，cloud 优先），其余走 OllamaProvider Legacy 模式
+    //（reqwest Ollama 原生 API，默认行为与改造前完全一致）。详见
+    // llm_channel_for 注释。web_search 仅 cloud 通道生效。
+    provider_for(fn_name)
+        .generate(fn_name, prompt, format, timeout, web_search)
+        .await
+}
 
+/// Ollama 原生 API 单 prompt 非流式调用（OllamaProvider Legacy 模式实现体）：
+/// /api/generate + format。即 legacy 通道协议，向后兼容保留（P0-1 决策）。
+/// 错误按 LlmError 分类（P1-6）。
+async fn ollama_generate_once(prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, LlmError> {
     let client = legacy_http_client();
     let model = ollama_model();
 
@@ -469,13 +470,10 @@ fn cloud_chat_model_for(web_search: bool) -> String {
     }
 }
 
-/// 按通道路由通用聊天模型（纯逻辑，可单测）：cloud 通道按 web_search
-/// 选择搜索/聊天模型，其余通道走本地 Ollama
+/// 按通道路由通用聊天模型（纯逻辑，可单测）：分发收敛到 provider_for_channel
+///（P0-1）——cloud 通道按 web_search 选择搜索/聊天模型，其余通道走本地 Ollama
 fn chat_model_route(channel: Channel, web_search: bool) -> String {
-    match channel {
-        Channel::Cloud => cloud_chat_model_for(web_search),
-        _ => ollama_model(),
-    }
+    provider_for_channel(channel).chat_model(web_search)
 }
 
 /// 云端抽取首选模型（无思考开销，json_object 正常）：Token Plan 网关
@@ -487,7 +485,7 @@ fn cloud_extract_model() -> String {
 /// 云端默认超时（RG_CLOUD_TIMEOUT_SECS 可覆盖）：仅作为 cloud 流式
 /// （cloud_chat_stream）建连超时的默认值，默认值对齐聊天超时语义
 ///（与 DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS 同档）；非流式 call_cloud 由
-/// call_ollama 分发时尊重调用方传入的 timeout，不受此 env 覆盖。
+/// call_generate 分发时尊重调用方传入的 timeout，不受此 env 覆盖。
 fn cloud_timeout() -> Duration {
     ollama_timeout("RG_CLOUD_TIMEOUT_SECS", DEFAULT_CLOUD_TIMEOUT_SECS)
 }
@@ -617,6 +615,246 @@ fn llm_channel(fn_name: &str) -> Channel {
         cloud_fns_whitelist().as_deref(),
         fn_name,
     )
+}
+
+// ---------- Provider trait 与实现（P0-1：通道分发结构收敛） ----------
+//
+// 设计概览：
+// - trait LlmProvider 收敛三个通道共性能力：单 prompt 非流式（generate）、
+//   messages 非流式（chat）、messages 流式（chat_stream），以及通道标识与
+//   聊天模型路由元数据；接口 dyn-safe，经 Box<dyn LlmProvider> 动态分发；
+// - OllamaProvider：Ollama 本地实现，覆盖 legacy / rig 两个通道（见下）；
+// - OpenAiCompatProvider：OpenAI 兼容端点实现，即 cloud 通道（阿里云百炼
+//   兼容端点，经 rig openai CompletionsClient）；
+// - provider_for / provider_for_channel 是唯一通道分发入口，替代原散落在
+//   call_generate_once / general_chat / general_chat_stream / chat_model_route /
+//   general_chat_backend 五处的 Channel match 分发；重试语义不变（非流式
+//   调用由 retry_transient 在外层包装，流式链路不重试）。
+//
+// legacy 通道决策（P0-1）：保留 legacy 通道，将其收编为 OllamaProvider 的
+// Legacy 模式——它是 Ollama provider 的 Ollama 私有协议实现体
+//（/api/generate + format:"json" 单 prompt，多轮时 /api/chat），向后兼容
+// 存量部署的默认行为（RG_LLM_BACKEND=legacy 且未配置白名单时全部函数走
+// 原生 API）；rig 通道是同一 Ollama 服务的 rig-core 路径（Rig 模式）。
+// 不删除任何通道，不改变 RG_LLM_BACKEND / RG_LLM_RIG_FNS /
+// RG_LLM_CLOUD_FNS 开关语义。Agent 工具循环（cloud_agent_stream）是
+// cloud 专属 Function Calling 能力，Ollama 通道无工具能力（§8.2-3），
+// 不纳入 trait，保留独立实现。
+
+/// 对外流式输出流类型（SSE 契约：Reasoning → thinking_delta；
+/// Text → text_delta；Done → done）
+pub type ChatEventStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>;
+
+/// 统一 Provider 接口：通道能力抽象层（dyn-safe）。所有方法均不含重试，
+/// 重试/不重试语义由调用方按「非流式重试、流式不重试」约定决定。
+trait LlmProvider: Send + Sync {
+    /// 通道标识（"legacy" / "rig" / "cloud"），供 SSE routing 事件
+    fn channel_name(&self) -> &'static str;
+    /// 按 web_search 路由的聊天模型名（供 SSE llm_call 事件）
+    fn chat_model(&self, web_search: bool) -> String;
+    /// 单 prompt 非流式调用
+    fn generate<'a>(
+        &'a self,
+        fn_name: &'a str,
+        prompt: &'a str,
+        format: Option<&'a str>,
+        timeout: Duration,
+        web_search: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, LlmError>> + Send + 'a>>;
+    /// messages 非流式调用（system → 历史轮次 → 本轮问题）
+    fn chat<'a>(
+        &'a self,
+        system: &'a str,
+        history: &'a ChatHistory,
+        query: &'a str,
+        web_search: bool,
+        timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, LlmError>> + Send + 'a>>;
+    /// messages 流式调用（实现体各自保持建连超时语义：Ollama 用
+    /// RG_OLLAMA_CHAT_TIMEOUT_SECS，cloud 用 RG_CLOUD_TIMEOUT_SECS）
+    fn chat_stream<'a>(
+        &'a self,
+        system: &'a str,
+        history: &'a ChatHistory,
+        query: &'a str,
+        web_search: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ChatEventStream, String>> + Send + 'a>>;
+}
+
+/// Ollama 本地 Provider：Legacy 模式 = Ollama 原生 HTTP API（legacy 通道），
+/// Rig 模式 = 经 rig-core 调用同一 Ollama 服务（rig 通道）
+struct OllamaProvider {
+    mode: OllamaMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OllamaMode {
+    Legacy,
+    Rig,
+}
+
+impl LlmProvider for OllamaProvider {
+    fn channel_name(&self) -> &'static str {
+        match self.mode {
+            OllamaMode::Legacy => "legacy",
+            OllamaMode::Rig => "rig",
+        }
+    }
+
+    /// Ollama 通道无联网能力，不按 web_search 分流，固定本地模型
+    fn chat_model(&self, _web_search: bool) -> String {
+        ollama_model()
+    }
+
+    fn generate<'a>(
+        &'a self,
+        _fn_name: &'a str,
+        prompt: &'a str,
+        format: Option<&'a str>,
+        timeout: Duration,
+        _web_search: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, LlmError>> + Send + 'a>> {
+        let mode = self.mode;
+        Box::pin(async move {
+            match mode {
+                // legacy 通道：Ollama 私有 /api/generate + format（向后兼容）
+                OllamaMode::Legacy => ollama_generate_once(prompt, format, timeout).await,
+                OllamaMode::Rig => call_rig(prompt, format, timeout).await,
+            }
+        })
+    }
+
+    fn chat<'a>(
+        &'a self,
+        system: &'a str,
+        history: &'a ChatHistory,
+        query: &'a str,
+        _web_search: bool,
+        timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, LlmError>> + Send + 'a>> {
+        let mode = self.mode;
+        Box::pin(async move {
+            match mode {
+                // legacy 通道：reqwest 直连 Ollama /api/chat
+                OllamaMode::Legacy => ollama_chat_messages(system, history, query, timeout).await,
+                OllamaMode::Rig => rig_chat_messages(system, history, query, timeout).await,
+            }
+        })
+    }
+
+    fn chat_stream<'a>(
+        &'a self,
+        system: &'a str,
+        history: &'a ChatHistory,
+        query: &'a str,
+        _web_search: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ChatEventStream, String>> + Send + 'a>> {
+        // 两种模式共用同一实现：改造前 legacy/rig 通道的流式即统一经
+        // rig-core（legacy 通道未集成 Ollama 原生 API 流式），行为原样保留
+        Box::pin(ollama_chat_stream(system, history, query))
+    }
+}
+
+/// OpenAI 兼容端点 Provider（cloud 通道：阿里云百炼兼容端点）
+struct OpenAiCompatProvider;
+
+impl LlmProvider for OpenAiCompatProvider {
+    fn channel_name(&self) -> &'static str {
+        "cloud"
+    }
+
+    fn chat_model(&self, web_search: bool) -> String {
+        cloud_chat_model_for(web_search)
+    }
+
+    fn generate<'a>(
+        &'a self,
+        fn_name: &'a str,
+        prompt: &'a str,
+        format: Option<&'a str>,
+        timeout: Duration,
+        web_search: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, LlmError>> + Send + 'a>> {
+        // 尊重调用方传入的 timeout（聊天类 120s、抽取类 45s），避免长调用
+        //（generate_profile_document / compress_context）被默认值截断
+        Box::pin(call_cloud(prompt, format, timeout, fn_name, web_search))
+    }
+
+    fn chat<'a>(
+        &'a self,
+        system: &'a str,
+        history: &'a ChatHistory,
+        query: &'a str,
+        web_search: bool,
+        timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, LlmError>> + Send + 'a>> {
+        Box::pin(cloud_chat_messages(system, history, query, web_search, timeout))
+    }
+
+    fn chat_stream<'a>(
+        &'a self,
+        system: &'a str,
+        history: &'a ChatHistory,
+        query: &'a str,
+        web_search: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ChatEventStream, String>> + Send + 'a>> {
+        Box::pin(cloud_chat_stream(system, history, query, web_search))
+    }
+}
+
+/// 通道 → Provider（唯一分发入口）：legacy/rig 为 OllamaProvider 的两种
+/// 模式，cloud 为 OpenAiCompatProvider
+fn provider_for_channel(channel: Channel) -> Box<dyn LlmProvider> {
+    match channel {
+        Channel::Legacy => Box::new(OllamaProvider { mode: OllamaMode::Legacy }),
+        Channel::Rig => Box::new(OllamaProvider { mode: OllamaMode::Rig }),
+        Channel::Cloud => Box::new(OpenAiCompatProvider),
+    }
+}
+
+/// 函数 → Provider：按函数级通道决策（llm_channel）选择实现体
+fn provider_for(fn_name: &str) -> Box<dyn LlmProvider> {
+    provider_for_channel(llm_channel(fn_name))
+}
+
+#[cfg(test)]
+mod provider_dispatch_tests {
+    use super::*;
+
+    /// 通道 → Provider 映射与通道标识（唯一分发入口回归）
+    #[test]
+    fn provider_for_channel_maps_channels_to_providers() {
+        assert_eq!(provider_for_channel(Channel::Legacy).channel_name(), "legacy");
+        assert_eq!(provider_for_channel(Channel::Rig).channel_name(), "rig");
+        assert_eq!(provider_for_channel(Channel::Cloud).channel_name(), "cloud");
+    }
+
+    /// 聊天模型路由收敛到 trait：仅 cloud 按 web_search 分流，
+    /// Ollama 两通道固定本地模型（与改造前 chat_model_route 语义一致）
+    #[test]
+    fn provider_chat_model_routing() {
+        let cloud = provider_for_channel(Channel::Cloud);
+        assert_eq!(cloud.chat_model(true), cloud_search_model());
+        assert_eq!(cloud.chat_model(false), cloud_chat_model());
+        for channel in [Channel::Legacy, Channel::Rig] {
+            let ollama = provider_for_channel(channel);
+            assert_eq!(ollama.chat_model(true), ollama_model());
+            assert_eq!(ollama.chat_model(false), ollama_model());
+        }
+    }
+
+    /// OllamaProvider 模式标识：Legacy/Rig 两种模式通道名不同，
+    /// 对应 RG_LLM_BACKEND 的 legacy / rig 两个取值
+    #[test]
+    fn ollama_provider_mode_channel_names() {
+        let legacy = OllamaProvider { mode: OllamaMode::Legacy };
+        let rig = OllamaProvider { mode: OllamaMode::Rig };
+        assert_eq!(legacy.channel_name(), "legacy");
+        assert_eq!(rig.channel_name(), "rig");
+        // 两种模式均为本地模型路由
+        assert_eq!(legacy.chat_model(false), rig.chat_model(false));
+    }
 }
 
 #[cfg(test)]
@@ -879,7 +1117,7 @@ fn rig_client() -> Result<ollama::Client, String> {
     Ok(client)
 }
 
-/// 通过 rig-core 调用 Ollama /api/chat，与 legacy 的 call_ollama 平行。
+/// 通过 rig-core 调用 Ollama /api/chat，与 legacy 通道（ollama_generate_once）平行。
 /// 超时与错误文案与 legacy 通道保持一致。
 /// format 为 Some 时设置宽松 JSON Schema 约束（Ollama provider 会将
 /// output_schema 映射为请求体的 format 字段），等价于 legacy 的 format:"json"。
@@ -1643,12 +1881,9 @@ fn general_chat_prompt(query: &str, skills: &str, web_search: bool, documents: &
 }
 
 /// 当前 general_chat 实际走的通道（"rig" / "cloud" / "legacy"），供 SSE 端点发 routing 事件
+///（通道标识由 provider trait 统一提供，P0-1）
 pub fn general_chat_backend() -> &'static str {
-    match llm_channel("general_chat") {
-        Channel::Rig => "rig",
-        Channel::Cloud => "cloud",
-        Channel::Legacy => "legacy",
-    }
+    provider_for("general_chat").channel_name()
 }
 
 /// 当前对话模型名，供 SSE 端点发 llm_call 事件：cloud 通道且 web_search
@@ -1670,27 +1905,19 @@ pub async fn general_chat(
 ) -> Result<String, String> {
     let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
     if history.is_empty() {
-        // 无历史：行为与改造前逐字节一致（单 prompt + 三通道分发）
+        // 无历史：行为与改造前逐字节一致（单 prompt + provider 三通道分发）
         let prompt = general_chat_prompt(query, skills, web_search, documents);
-        return call_ollama(&prompt, None, timeout, "general_chat", web_search).await;
+        return call_generate(&prompt, None, timeout, "general_chat", web_search).await;
     }
     // 有历史：messages 数组化（system → 摘要 → 历史轮次 → 本轮问题），
-    // 按通道分发：cloud 百炼 / rig Ollama（经 rig）/ legacy Ollama /api/chat；
+    // 经 provider trait 分发：cloud 百炼 / rig Ollama（经 rig）/ legacy Ollama /api/chat；
     // 非流式调用同样套 P1-6 指数退避重试（仅瞬时错误）
     let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
-    match llm_channel("general_chat") {
-        Channel::Cloud => retry_transient("general_chat", || {
-            cloud_chat_messages(&system, history, query, web_search, timeout)
-        })
-        .await,
-        Channel::Rig => {
-            retry_transient("general_chat", || rig_chat_messages(&system, history, query, timeout)).await
-        }
-        Channel::Legacy => retry_transient("general_chat", || {
-            ollama_chat_messages(&system, history, query, timeout)
-        })
-        .await,
-    }
+    let provider = provider_for("general_chat");
+    retry_transient("general_chat", || {
+        provider.chat(&system, history, query, web_search, timeout)
+    })
+    .await
 }
 
 /// messages 模式的非流式聊天（cloud 通道）：对齐 call_cloud 参数语义
@@ -1939,30 +2166,40 @@ pub enum ChatStreamEvent {
     Done(Option<(usize, usize)>),
 }
 
-/// general_chat 的 rig 流式版本：通过 rig `model.stream()` 调用 Ollama /api/chat，
-/// 将 StreamedAssistantContent::Reasoning / ReasoningDelta 映射为 Reasoning 事件、
-/// Text 映射为 Text 事件、Final 映射为 Done（usage 取 prompt_eval_count / eval_count，
-/// 缺失时为 None）。复用 rig client 缓存、ollama_url()/ollama_model() 与聊天超时
-/// （RG_OLLAMA_CHAT_TIMEOUT_SECS），超时文案与 call_rig 一致。
-/// 客户端断开时流自然 drop（rig stream 支持 cancel）。
+/// general_chat 的流式版本：分发收敛到 provider trait（P0-1）——
+/// cloud 走 OpenAiCompatProvider（百炼聊天模型开思考，web_search 时合入
+/// enable_search），legacy/rig 走 OllamaProvider（经 rig-core 流式）。
+/// SSE 事件契约不变（Reasoning → thinking_delta；Text → text_delta；
+/// Done → done）；流式链路不重试。
 pub async fn general_chat_stream(
     query: &str,
     skills: &str,
     web_search: bool,
     documents: &str,
     history: &ChatHistory,
-) -> Result<
-    std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatStreamEvent, String>> + Send>>,
-    String,
-> {
-    // cloud 通道：百炼聊天模型（开思考，web_search 时合入 enable_search），
+) -> Result<ChatEventStream, String> {
     // messages 序列 = system（角色+技能+文档+摘要）→ 历史轮次 → 本轮问题；
-    // SSE 事件契约与 rig ollama 路径一致
-    if llm_channel("general_chat") == Channel::Cloud {
-        let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
-        return cloud_chat_stream(&system, history, query, web_search).await;
-    }
+    // 历史为空时 OllamaProvider 内部退化为单 prompt（与旧格式逐字节一致）
+    let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
+    provider_for("general_chat")
+        .chat_stream(&system, history, query, web_search)
+        .await
+}
 
+/// Ollama provider 的流式实现体（legacy/rig 通道共用，OllamaProvider::chat_stream）：
+/// 通过 rig `model.stream()` 调用 Ollama /api/chat，将 StreamedAssistantContent::
+/// Reasoning / ReasoningDelta 映射为 Reasoning 事件、Text 映射为 Text 事件、
+/// Final 映射为 Done（usage 取 prompt_eval_count / eval_count，缺失时为 None）。
+/// 复用 rig client 缓存、ollama_url()/ollama_model() 与聊天超时
+///（RG_OLLAMA_CHAT_TIMEOUT_SECS），超时文案与 call_rig 一致。
+/// 客户端断开时流自然 drop（rig stream 支持 cancel）。
+/// 注：改造前 legacy/rig 通道的流式即统一经 rig-core（legacy 通道未集成
+/// Ollama 原生 API 流式），P0-1 仅做结构收敛，行为原样保留。
+async fn ollama_chat_stream(
+    system: &str,
+    history: &ChatHistory,
+    query: &str,
+) -> Result<ChatEventStream, String> {
     let client = rig_client()?;
     let model_name = ollama_model();
     let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
@@ -1971,7 +2208,10 @@ pub async fn general_chat_stream(
     // P1-5：输出上限（max_tokens → options.num_predict）+ num_ctx 上下文
     // 窗口（经 additional_params 合入 options），两个分支统一携带
     let request = if history.is_empty() {
-        let prompt = general_chat_prompt(query, skills, web_search, documents);
+        // 等价于改造前 general_chat_prompt(query, skills, web_search, documents)：
+        // 历史为空时 summary 必为空（ChatHistory::is_empty 语义），system 即
+        // 纯「角色+技能+文档」，追加「用户问题：」尾段后与旧格式逐字节一致
+        let prompt = format!("{}\n\n用户问题：{}", system, query);
         info!(
             target: "llm",
             "rig_stream_request url={} model={} prompt_len={}",
@@ -1985,7 +2225,6 @@ pub async fn general_chat_stream(
             .additional_params(serde_json::json!({"num_ctx": ollama_num_ctx()}))
             .build()
     } else {
-        let system = build_system_with_summary(skills, web_search, documents, history.summary.as_deref());
         info!(
             target: "llm",
             "rig_stream_request url={} model={} system_len={} history_turns={}",
@@ -1994,7 +2233,7 @@ pub async fn general_chat_stream(
             system.len(),
             history.turns.len()
         );
-        let mut messages = chat_message_sequence(&system, history, query);
+        let mut messages = chat_message_sequence(system, history, query);
         let last = messages.pop().expect("消息序列非空");
         model
             .completion_request(last)
@@ -2081,7 +2320,7 @@ pub async fn profile_qa_chat(system_prompt: &str, user_message: &str) -> Result<
         system_prompt, user_message
     );
 
-    call_ollama(
+    call_generate(
         &prompt,
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
@@ -2098,7 +2337,7 @@ pub async fn generate_profile_document(system_prompt: &str, conversation: &str) 
         system_prompt, conversation
     );
 
-    call_ollama(
+    call_generate(
         &prompt,
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
@@ -2121,12 +2360,12 @@ fn build_json_fix_prompt(original_prompt: &str, parse_error: &str) -> String {
 }
 
 /// JSON 结构化抽取通用调用（P1-6）：
-/// - 首次调用失败（超时/网络/HTTP 错误）由 call_ollama 内部退避重试后仍失败 → 显性报错；
+/// - 首次调用失败（超时/网络/HTTP 错误）由 call_generate 内部退避重试后仍失败 → 显性报错；
 /// - 模型返回非法 JSON → 带解析错误信息拼入纠错 prompt 重试 1 次；
 /// - 纠错后仍非法 → 显性报错（不再静默降级为空草稿/默认值）。
 async fn call_json_extract(fn_name: &str, prompt: &str) -> Result<serde_json::Value, String> {
     let timeout = ollama_timeout("RG_OLLAMA_TIMEOUT_SECS", DEFAULT_OLLAMA_TIMEOUT_SECS);
-    let raw = call_ollama(prompt, Some("json"), timeout, fn_name, false)
+    let raw = call_generate(prompt, Some("json"), timeout, fn_name, false)
         .await
         .map_err(|e| format!("模型调用失败：{}", e))?;
     match serde_json::from_str::<serde_json::Value>(&raw) {
@@ -2139,7 +2378,7 @@ async fn call_json_extract(fn_name: &str, prompt: &str) -> Result<serde_json::Va
                 fn_name
             );
             let fix_prompt = build_json_fix_prompt(prompt, &parse_err.to_string());
-            let raw = call_ollama(&fix_prompt, Some("json"), timeout, fn_name, false)
+            let raw = call_generate(&fix_prompt, Some("json"), timeout, fn_name, false)
                 .await
                 .map_err(|e| format!("模型调用失败：{}", e))?;
             serde_json::from_str::<serde_json::Value>(&raw)
@@ -2339,7 +2578,7 @@ pub async fn compress_context(
 
     info!(target: "llm", "compress_context message_count={} total_chars={}", messages.len(), conversation_text.len());
 
-    call_ollama(
+    call_generate(
         &prompt,
         None,
         ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS),
