@@ -10,7 +10,7 @@ use crate::state::SharedState;
 use crate::types::{
     ChatRequest, ChatResponse, CreateUserRequest,
     CreateEntityMentionRequest, CreateInteractionRequest, CreatePersonRequest,
-    CreateRelationshipRequest, EntityMention, GraphData, GraphEdge, GraphNode, Interaction,
+    CreateRelationshipRequest, EntityMention, FieldChange, GraphData, GraphEdge, GraphNode, Interaction,
     LoginResponse, NlqConfirmRequest, NlqMultiRequest, NlqResponse, Person, Relationship, User,
 };
 use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
@@ -20,6 +20,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use chrono::Utc;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -1385,25 +1386,113 @@ async fn nlq_confirm_handler(
     let conn = get_conn(&guard)?;
 
     match req.intent_type.as_str() {
-        "create_person" => {
+        // 前端草稿确认使用 camelCase（createPersonDraft 等），旧调用方使用 snake_case，两者均接受
+        "create_person" | "createPersonDraft" => {
             let create_req: CreatePersonRequest = serde_json::from_value(req.data)
                 .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?;
             let created = person::create(conn, &owner_id, create_req)?;
             Ok(Json(serde_json::to_value(created).unwrap()))
         }
-        "update_person" => {
-            let id = req.data["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::bad_request("Missing person id"))?
-                .to_string();
-            let update_req: CreatePersonRequest = serde_json::from_value(req.data)
-                .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?;
-            let updated = person::update(conn, &owner_id, &id, update_req)?;
-            Ok(Json(serde_json::to_value(updated).unwrap()))
+        "update_person" | "updatePersonDraft" => {
+            if req.data.get("changes").is_some() {
+                // 前端草稿确认契约：{personId, changes:[{field, oldValue, newValue}]}
+                // 在现有联系人全量字段上叠加 changes 后走 person::update
+                let id = req.data["personId"]
+                    .as_str()
+                    .ok_or_else(|| ApiError::bad_request("Missing person id"))?
+                    .to_string();
+                let existing = person::get_by_id(conn, &owner_id, &id)?
+                    .ok_or_else(|| ApiError::not_found("数据不存在或无权访问"))?;
+                let changes: Vec<FieldChange> = serde_json::from_value(req.data["changes"].clone())
+                    .map_err(|e| ApiError::bad_request(format!("Invalid changes: {}", e)))?;
+                let mut update_req = CreatePersonRequest {
+                    name: existing.name.clone(),
+                    aliases: existing.aliases.clone(),
+                    avatar: existing.avatar.clone(),
+                    phone: existing.phone.clone(),
+                    email: existing.email.clone(),
+                    company: existing.company.clone(),
+                    title: existing.title.clone(),
+                    location: existing.location.clone(),
+                    background: existing.background.clone(),
+                    relationship_strength: existing.relationship_strength.clone(),
+                    resource_tags: existing.resource_tags.clone(),
+                    sensitivity_level: existing.sensitivity_level.clone(),
+                    status: Some(existing.status.clone()),
+                    next_step: existing.next_step.clone(),
+                    notes: existing.notes.clone(),
+                    school: existing.school.clone(),
+                    projects: existing.projects.clone(),
+                };
+                for c in &changes {
+                    let v = match c.new_value.trim() {
+                        "" => None,
+                        s => Some(s.to_string()),
+                    };
+                    match c.field.as_str() {
+                        "name" => {
+                            if let Some(v) = v {
+                                update_req.name = v;
+                            }
+                        }
+                        "company" => update_req.company = v,
+                        "title" => update_req.title = v,
+                        "location" => update_req.location = v,
+                        "school" => update_req.school = v,
+                        "background" => update_req.background = v,
+                        "phone" => update_req.phone = v,
+                        "email" => update_req.email = v,
+                        "status" => update_req.status = v,
+                        "next_step" | "nextStep" => update_req.next_step = v,
+                        "notes" => update_req.notes = v,
+                        _ => {}
+                    }
+                }
+                let updated = person::update(conn, &owner_id, &id, update_req)?;
+                Ok(Json(serde_json::to_value(updated).unwrap()))
+            } else {
+                // 旧契约：{id, ...完整字段}
+                let id = req.data["id"]
+                    .as_str()
+                    .ok_or_else(|| ApiError::bad_request("Missing person id"))?
+                    .to_string();
+                let update_req: CreatePersonRequest = serde_json::from_value(req.data)
+                    .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?;
+                let updated = person::update(conn, &owner_id, &id, update_req)?;
+                Ok(Json(serde_json::to_value(updated).unwrap()))
+            }
         }
-        "add_interaction" => {
-            let create_req: CreateInteractionRequest = serde_json::from_value(req.data)
-                .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?;
+        "add_interaction" | "addInteractionDraft" => {
+            let create_req = if req.data.get("content").is_none() {
+                // 前端草稿确认契约：{personId, topic, summary, actionItems}
+                let person_id = req.data["personId"]
+                    .as_str()
+                    .ok_or_else(|| ApiError::bad_request("Missing person id"))?
+                    .to_string();
+                let topic = req.data["topic"]
+                    .as_str()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let summary = req.data["summary"]
+                    .as_str()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let action_items: Vec<String> =
+                    serde_json::from_value(req.data["actionItems"].clone()).unwrap_or_default();
+                let content = summary.clone().or_else(|| topic.clone()).unwrap_or_default();
+                CreateInteractionRequest {
+                    person_id,
+                    timestamp: Utc::now().to_rfc3339(),
+                    content,
+                    summary,
+                    topics: topic.into_iter().collect(),
+                    action_items,
+                }
+            } else {
+                // 旧契约：完整 CreateInteractionRequest
+                serde_json::from_value(req.data)
+                    .map_err(|e| ApiError::bad_request(format!("Invalid data: {}", e)))?
+            };
             let created = interaction::create(conn, &owner_id, create_req)?;
             Ok(Json(serde_json::to_value(created).unwrap()))
         }

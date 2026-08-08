@@ -58,6 +58,7 @@ pub struct Person {
 #[serde(rename_all = "camelCase")]
 pub struct CreatePersonRequest {
     pub name: String,
+    #[serde(default)]
     pub aliases: Vec<String>,
     pub avatar: Option<String>,
     pub phone: Option<String>,
@@ -67,7 +68,10 @@ pub struct CreatePersonRequest {
     pub location: Option<String>,
     pub background: Option<String>,
     pub relationship_strength: Option<String>,
+    #[serde(default)]
     pub resource_tags: Vec<String>,
+    // 草稿确认链路（DraftConfirmation）不传敏感级别，缺省 low
+    #[serde(default = "default_sensitivity_level")]
     pub sensitivity_level: String,
     pub status: Option<String>,
     pub next_step: Option<String>,
@@ -75,6 +79,10 @@ pub struct CreatePersonRequest {
     pub school: Option<String>,
     #[serde(default)]
     pub projects: Vec<String>,
+}
+
+fn default_sensitivity_level() -> String {
+    "low".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -625,5 +633,24 @@ mod chat_request_tests {
                 .unwrap();
         assert_eq!(req.web_search, Some(false));
         assert_eq!(req.documents.unwrap().len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod create_person_request_tests {
+    use super::*;
+
+    /// 前端草稿确认（DraftConfirmation）payload 缺 aliases/sensitivityLevel 也能解析，敏感级别缺省 low
+    #[test]
+    fn create_person_request_accepts_draft_payload() {
+        let req: CreatePersonRequest = serde_json::from_str(
+            r#"{"name":"王志江","company":"中科院","title":"","location":"上海",
+               "school":"","background":"","resourceTags":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(req.name, "王志江");
+        assert_eq!(req.sensitivity_level, "low");
+        assert!(req.aliases.is_empty());
+        assert!(req.resource_tags.is_empty());
     }
 }
