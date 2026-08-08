@@ -54,7 +54,21 @@ const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOc
       return;
     }
 
-    setPreview(URL.createObjectURL(file));
+    // 时序关键：先把全部字节读入内存，再立即清空 input（保持“可重复选择同一文件”语义）。
+    // 若先清 value 再异步读文件，File 引用会失效并报读取权限错误；
+    // 后续预览与识别一律基于已取得的字节工作。
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch {
+      setError('图片读取失败，请重试');
+      return;
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+    const imageBlob = new Blob([buffer], { type: file.type });
+
+    setPreview(URL.createObjectURL(imageBlob));
     setError('');
     setProgress(0);
     setRunning(true);
@@ -88,7 +102,7 @@ const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOc
     }
 
     try {
-      const { data } = await worker.recognize(file);
+      const { data } = await worker.recognize(imageBlob);
       const text = data.text.replace(/[ \t]+/g, ' ').trim();
       if (!text) {
         setError('未识别到文字，请更换更清晰的图片重新上传');
@@ -128,8 +142,9 @@ const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOc
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];
-          if (file) processFile(file);
-          event.target.value = '';
+          // 不在这里同步清空 value：processFile 会在读完字节后立即清空，
+          // 避免先清 value 导致 File 引用失效（读取权限错误）
+          if (file) void processFile(file);
         }}
       />
       <button

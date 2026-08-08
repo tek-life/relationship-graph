@@ -39,20 +39,20 @@ function truncateText(text: string): string {
   return `${text.slice(0, MAX_DOC_CHARS - TRUNCATE_MARK.length)}${TRUNCATE_MARK}`;
 }
 
-/** .txt / .md：直接读取文本 */
-async function extractPlainText(file: File): Promise<string> {
-  return (await file.text()).trim();
+/** .txt / .md：从已读入的字节解码为文本 */
+function extractPlainText(buffer: ArrayBuffer): string {
+  return new TextDecoder('utf-8').decode(buffer).trim();
 }
 
-/** .pdf：懒加载 pdfjs-dist 逐页 getTextContent 拼接 */
+/** .pdf：懒加载 pdfjs-dist 逐页 getTextContent 拼接（基于已读入的字节） */
 async function extractPdfText(
-  file: File,
+  buffer: ArrayBuffer,
   onProgress: (page: number, total: number) => void,
 ): Promise<string> {
   const pdfjs = await import('pdfjs-dist');
   pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_SRC;
 
-  const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const doc = await pdfjs.getDocument({ data: buffer }).promise;
   const parts: string[] = [];
   try {
     for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
@@ -73,10 +73,10 @@ async function extractPdfText(
   return parts.join('\n\n');
 }
 
-/** .docx：懒加载 mammoth 抽取纯文本 */
-async function extractDocxText(file: File): Promise<string> {
+/** .docx：懒加载 mammoth 抽取纯文本（基于已读入的字节） */
+async function extractDocxText(buffer: ArrayBuffer): Promise<string> {
   const mammoth = await import('mammoth/mammoth.browser');
-  const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+  const result = await mammoth.extractRawText({ arrayBuffer: buffer });
   return (result.value ?? '').trim();
 }
 
@@ -116,20 +116,38 @@ export default function DocumentAttachButton({ onDocument, disabled }: Props) {
     const started = performance.now();
     const kind = detected.kind;
 
+    // 时序关键：先把全部字节读入内存，再立即清空 input（保持“可重复选择同一文件”语义）。
+    // 若先清 value 再异步读文件，File 引用会失效并报读取权限错误，
+    // 后续解析分支一律基于已取得的 buffer 工作。
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch (err) {
+      console.warn('[doc] read_failed', {
+        fileName: file.name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      setError('文件读取失败，请重试');
+      setRunning(false);
+      return;
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+
     try {
       let raw = '';
       if (kind === 'text') {
         setStatusText('正在读取文本...');
-        raw = await extractPlainText(file);
+        raw = extractPlainText(buffer);
       } else if (kind === 'pdf') {
         setStatusText('正在解析 PDF...');
-        raw = await extractPdfText(file, (page, total) => {
+        raw = await extractPdfText(buffer, (page, total) => {
           setStatusText(`正在提取第 ${page}/${total} 页...`);
           setProgress(Math.round((page / total) * 100));
         });
       } else {
         setStatusText('正在解析 Word 文档...');
-        raw = await extractDocxText(file);
+        raw = await extractDocxText(buffer);
       }
 
       const text = raw.replace(/\n{3,}/g, '\n\n').trim();
@@ -176,8 +194,9 @@ export default function DocumentAttachButton({ onDocument, disabled }: Props) {
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];
-          if (file) processFile(file);
-          event.target.value = '';
+          // 不在这里同步清空 value：processFile 会在读完字节后立即清空，
+          // 避免先清 value 导致 File 引用失效（读取权限错误）
+          if (file) void processFile(file);
         }}
       />
       <button
