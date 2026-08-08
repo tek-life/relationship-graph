@@ -181,6 +181,18 @@ relationship-graph/
 - **SSE 事件**：新增 step stage `tool_loop`（已启用提示）与 `tool_call`（正在调用工具 X）；thinking_delta/text_delta/done 契约不变，done 的 usage 取末轮。
 - **实测基线**（qwen3.7-plus）：tools + enable_thinking 共存正常；流式 + tools 正常；二轮 role:tool 回传正常。未尽项见 §8.2。
 
+### 5.8 聊天会话历史注入（多轮对话）
+
+解决模型每轮“失忆”：chat / chat-stream 两条链路携带会话历史，支持多轮追问。
+
+- **契约**：`ChatRequest.sessionId`（camelCase，可选，`#[serde(default)]`）；缺省（旧客户端仅传 query）保持单轮行为，向后兼容；前端 `stream.ts` / `useChat.ts` 透传当前会话 id。
+- **安全**：携带 sessionId 时前置归属校验（`verify_chat_session_owned`），不匹配/不存在一律 404「数据不存在或无权访问」，不泄露存在性；`GET /api/sessions/:id/messages` 同步修复越权读。
+- **历史组装**（`resolve_chat_history`，`server/src/api/mod.rs`）：取严格早于请求时刻的最近消息（排除本轮刚落库的 user 消息，`created_at < request_at`）→ 提取最近 `[对话摘要]` system 消息（窗口内优先，否则补查 DB）→ user/assistant 轮次从新到旧按字符预算累加，预算 `RG_CHAT_HISTORY_CHARS`（默认 8000）；最近一条即使单独超预算也保留。
+- **注入顺序**：角色+技能+文档 → 摘要 → 最近历史轮次 → 本轮 query；技能/文档仍拼 system。
+- **LLM 层 messages 数组化**：cloud（百炼 messages）/ rig（Ollama 经 rig）/ legacy（Ollama 改 `/api/chat`）三通道均已支持；无历史时行为与改造前逐字节一致。工具循环（`cloud_agent_stream`）同步携带历史。
+- **降级与隔离**：历史读取失败降级为空历史继续聊天，永不阻断；日志只记元数据；NLQ 链路（联系人管家）不注入历史。
+- **压缩竞态防护**：`AppState.compressing_sessions` per-session 内存标记，并发请求同时越过 50 条阈值时只触发一次压缩，其余跳过（消息已落库）。
+
 ---
 
 ## 6. 架构设计
@@ -258,7 +270,7 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 
 1. **Provider 抽象层**：`server/src/llm.rs` 中 9 个函数硬编码 Ollama 私有格式（`/api/generate` + `format:"json"`），无接口分层；需用 rig（Rust Agent 框架，Apache-2.0，统一 API 覆盖 20+ provider）重构传输层，实现 Ollama / OpenAI 兼容双 provider，按场景绑定不同模型。估 3-4 天。
 2. **API Key 安全存储**：`settings` 表在 schema 中存在，但服务端无任何读写函数（空壳）；需实现读写 API + SQLCipher 对称加密存储 + admin 配置页。这是接入云端模型的先决条件。估 1.5-2 天。
-3. **会话历史注入**：`/api/chat` 完全无状态（`ChatRequest` 只有 query 字段，连 sessionId 都没有），历史消息仅用于界面回显、从未喂给 LLM，模型每轮“失忆”；需为 ChatRequest 增加 session_id、由 chat_handler 组装 messages 数组（最近 N 条 + `[对话摘要]` system 消息）、Ollama 改用 `/api/chat` messages 格式。估 2-3 天。
+3. **会话历史注入**（✅ 已实现 2026-08-08，见 §5.8）：~~`/api/chat` 完全无状态~~——ChatRequest 已增 sessionId，chat/chat-stream 均从 DB 组装 messages 数组（摘要 + 字符预算截取），Ollama 已改 `/api/chat` messages 格式。
 
 **P1 — 对话体验核心（约 7-10 人天）**
 
@@ -271,7 +283,7 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 
 8. **消息重新生成与编辑重发**：依赖流式输出。估 2-3 天。
 9. **Markdown 渲染升级**：自研 `MarkdownContent.tsx` 不支持表格 / 图片 / 语法高亮，而大模型高频输出表格；换 react-markdown + remark-gfm。估 0.5 天。
-10. **压缩竞态防护**：两个并发请求同时越过 50 条压缩阈值会重复压缩，需加“压缩进行中”标记。估 0.5 天。
+10. **压缩竞态防护**（✅ 已实现 2026-08-08，见 §5.8）：~~两个并发请求同时越过 50 条压缩阈值会重复压缩~~——已加 `AppState.compressing_sessions` per-session 内存标记。
 11. **reqwest Client 单例化**：当前每次 LLM 调用新建 TCP 连接，应将 Client 放入 AppState 复用。估 0.5 天。
 
 **已达标项（无需整改）**
@@ -285,7 +297,7 @@ Windows 增强客户端（Tauri） → 本地 SQLCipher 高敏感数据库 + 远
 当前落地的是只读工具 + cloud 通道的最小闭环，以下能力尚未实现：
 
 1. **写工具 / 草稿链路**：三个工具均只读，模型不能经工具新增/修改联系人、录入互动；若后续支持写工具，必须复用 NLQ 草稿 + 用户确认机制（§10 设计原则），禁止工具直写库。
-2. **会话历史注入**：工具循环当前为单轮（system + user），未携带会话历史（与 §8.1 P0-3 同源缺口）；多轮追问时模型不记得上一轮工具结果。
+2. **会话历史注入**（✅ 已实现 2026-08-08）：~~工具循环当前为单轮~~——`cloud_agent_stream` 已携带摘要 + 历史轮次（与 §5.8 同源实现）。
 3. **rig / legacy 通道工具支持**：工具仅 cloud 通道生效，本地 Ollama 通道无工具能力（qwen2 系列原生 tools 支持弱，短期不做）。
 4. **工具调用详情 UI**：前端仅展示 step 文案，未展示工具名/参数/结果摘要与多轮思考过程；后续可把 ToolCall 事件扩展为携带参数的结构化 step。
 5. **大规模数据分页**：`search_contacts` LIMIT 30 + 整包 8000 字截断，千级联系人全量盘点仍可能截断；未支持 offset/分页参数与聚合统计类工具（如 count_by_location）。
