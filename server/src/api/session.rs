@@ -159,9 +159,17 @@ pub async fn add_message(
         }
     }; // guard 在此处释放，避免跨 .await 持有锁
 
-    // 第二阶段：异步调用 LLM 压缩（不持有 DB 锁）
+    // 第二阶段：压缩竞态防护（per-session 内存标记）：并发请求同时越过
+    // 阈值时只触发一次压缩，其余跳过本次压缩（消息已落库，永不阻断）
     if let Some((message, old_msgs)) = old_messages {
-        match llm::compress_context(&old_msgs, MAX_SUMMARY_TOKENS).await {
+        if !state.try_begin_compression(&session_id) {
+            log::info!(target: "session", "compression_skipped_in_progress session={}", session_id);
+            return Ok(Json(message));
+        }
+        // 异步调用 LLM 压缩（不持有 DB 锁）；无论成败均释放压缩标记
+        let outcome = llm::compress_context(&old_msgs, MAX_SUMMARY_TOKENS).await;
+        state.end_compression(&session_id);
+        match outcome {
             Ok(summary) => {
                 // 第三阶段：重新获取锁，删除旧消息并插入摘要
                 let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
