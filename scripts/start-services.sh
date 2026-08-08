@@ -16,9 +16,10 @@ set -euo pipefail
 #
 # 云端模型（阿里百炼）可选覆盖项（均有服务端默认值，无需必填）：
 #   RG_LLM_BACKEND            通道开关 legacy|rig|cloud（本脚本默认 cloud）
-#   RG_CLOUD_BASE_URL         兼容端点（默认 dashscope compatible-mode/v1）
+#   RG_CLOUD_BASE_URL         兼容端点（默认 Token Plan 专属网关
+#                             token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1）
 #   RG_CLOUD_CHAT_MODEL       聊天模型（默认 qwen3.7-plus，开思考）
-#   RG_CLOUD_EXTRACT_MODEL    抽取模型（默认 qwen-flash，关思考）
+#   RG_CLOUD_EXTRACT_MODEL    抽取模型（默认 qwen3.6-flash，关思考）
 #   RG_CLOUD_TIMEOUT_SECS     云端调用超时（默认 120）
 #   RG_CLOUD_API_KEY          云端 API Key（优先 env；缺省由服务端自动读取
 #                             ~/.config/rg-cloud-api-key，脚本不传 Key、严禁打印）

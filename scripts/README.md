@@ -1,4 +1,4 @@
-# scripts/ 部署与运维脚本说明
+*/# scripts/ 部署与运维脚本说明
 
 本目录包含个人智能 AI 平台的部署、启动、重启、依赖安装与测试辅助脚本。
 
@@ -108,7 +108,7 @@ RG_LLM_BACKEND=legacy ./scripts/dev.sh
 RG_LLM_BACKEND=legacy RG_USE_OLLAMA=1 ./scripts/start-services.sh
 
 # 覆盖云端聊天模型（示例）
-RG_CLOUD_CHAT_MODEL=qwen-plus ./scripts/start-services.sh
+RG_CLOUD_CHAT_MODEL=qwen3.8-max ./scripts/start-services.sh
 ```
 
 **约定（保持不变）**：后端端口 8790；数据目录 `~/.local/share/relationship-graph`（db.key 密钥文件启动即自动解锁，无主密码流程）。
@@ -327,10 +327,10 @@ RG_WEB_ROOT=~/relationship-graph/web caddy run --config scripts/Caddyfile   # �
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `RG_LLM_BACKEND` | 脚本默认 `cloud` | 通道开关：`legacy`（本地 Ollama）/ `rig`（rig 框架）/ `cloud`（百炼全量）。legacy 下可用 `RG_LLM_CLOUD_FNS` 做函数级灰度 |
-| `RG_CLOUD_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 兼容端点，一般无需改 |
+| `RG_CLOUD_BASE_URL` | `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` | Token Plan 专属网关（sk-sp- 前缀 Key 仅在此生效）；普通百炼 Key 覆盖回 `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `RG_CLOUD_CHAT_MODEL` | `qwen3.7-plus` | 聊天/画像模型（流式开思考，SSE 带 thinking_delta） |
-| `RG_CLOUD_SEARCH_MODEL` | `qwen-plus` | 联网搜索模型：qwen3.7-plus 平台侧已忽略 enable_search（2026-08-08 实测），web_search 请求路由到本模型 |
-| `RG_CLOUD_EXTRACT_MODEL` | `qwen-flash` | 抽取/压缩模型（关思考 + json_object，低延迟低成本） |
+| `RG_CLOUD_SEARCH_MODEL` | `qwen3.7-plus` | 联网搜索模型：Token Plan 网关上 qwen3.7-plus 支持 enable_search（2026-08-08 实测），默认与聊天模型统一；保留路由机制作为逃生门 |
+| `RG_CLOUD_EXTRACT_MODEL` | `qwen3.6-flash` | 抽取/压缩模型（关思考 + json_object，低延迟低成本）；Token Plan 网关无 qwen-flash |
 | `RG_CLOUD_TIMEOUT_SECS` | `120` | 云端调用超时（秒） |
 | `RG_CLOUD_API_KEY` | 无 | API Key。**优先 env**；缺省由服务端自动读取 `~/.config/rg-cloud-api-key` |
 | `RG_SKILL_BUDGET_CHARS` | 脚本默认 `8000` | 技能/画像注入总字符预算 |
@@ -353,7 +353,7 @@ RG_CLOUD_API_KEY='sk-xxx' ./scripts/start-services.sh
 ### 模型分工
 
 - **聊天/画像/技能注入**：`qwen3.7-plus`，流式输出且开启思考（前端可见 thinking_delta 思考流）；
-- **信息抽取/上下文压缩等结构化任务**：`qwen-flash`，关闭思考 + `response_format=json_object`，延迟约 1s、成本最低。
+- **信息抽取/上下文压缩等结构化任务**：`qwen3.6-flash`，关闭思考 + `response_format=json_object`，低延迟低成本。
 
 ### 回退本地模型（应急）
 

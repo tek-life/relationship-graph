@@ -102,10 +102,12 @@ async fn call_ollama(prompt: &str, format: Option<&str>, timeout: Duration, fn_n
 
 const DEFAULT_CLOUD_TIMEOUT_SECS: u64 = 120;
 
-/// 云端（阿里云百炼）兼容端点
+/// 云端（阿里云百炼）兼容端点：默认走 Token Plan 专属网关
+///（sk-sp- 前缀 Key 仅在此网关生效；普通百炼 Key 用 RG_CLOUD_BASE_URL 覆盖回
+/// dashscope.aliyuncs.com/compatible-mode/v1）
 fn cloud_base_url() -> String {
     std::env::var("RG_CLOUD_BASE_URL")
-        .unwrap_or_else(|_| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string())
+        .unwrap_or_else(|_| "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string())
 }
 
 /// 云端聊天主力模型（开思考）
@@ -113,11 +115,11 @@ fn cloud_chat_model() -> String {
     std::env::var("RG_CLOUD_CHAT_MODEL").unwrap_or_else(|_| "qwen3.7-plus".to_string())
 }
 
-/// 云端联网搜索模型：实测（2026-08-08）qwen3.7-plus 平台侧已静默忽略
-/// enable_search（流式/非流式、turbo/max 均无效），qwen-plus 正常，
-/// 故 web_search 请求路由到本模型（RG_CLOUD_SEARCH_MODEL 可覆盖）
+/// 云端联网搜索模型：Token Plan 网关上 qwen3.7-plus 已支持 enable_search
+///（2026-08-08 实测，流式+思考均正常），故默认与聊天模型统一；保留本
+/// 路由机制作为逃生门（平台行为再变时可 env 切换到其它搜索可用模型）
 fn cloud_search_model() -> String {
-    std::env::var("RG_CLOUD_SEARCH_MODEL").unwrap_or_else(|_| "qwen-plus".to_string())
+    std::env::var("RG_CLOUD_SEARCH_MODEL").unwrap_or_else(|_| "qwen3.7-plus".to_string())
 }
 
 /// 云端聊天模型路由（纯逻辑入口，回归单测见 model_routing_tests）：
@@ -139,9 +141,10 @@ fn chat_model_route(channel: Channel, web_search: bool) -> String {
     }
 }
 
-/// 云端抽取首选模型（无思考开销，json_object 正常）
+/// 云端抽取首选模型（无思考开销，json_object 正常）：Token Plan 网关
+/// 无 qwen-flash，用其上的轻量模型 qwen3.6-flash（2026-08-08 实测 json_object 正常）
 fn cloud_extract_model() -> String {
-    std::env::var("RG_CLOUD_EXTRACT_MODEL").unwrap_or_else(|_| "qwen-flash".to_string())
+    std::env::var("RG_CLOUD_EXTRACT_MODEL").unwrap_or_else(|_| "qwen3.6-flash".to_string())
 }
 
 /// 云端默认超时（RG_CLOUD_TIMEOUT_SECS 可覆盖）：仅作为 cloud 流式
@@ -392,7 +395,7 @@ mod channel_tests {
         assert!(!is_cloud_chat_fn("compress_context"));
         // 默认模型名（env 未设置时）
         assert_eq!(cloud_model_for("general_chat"), "qwen3.7-plus");
-        assert_eq!(cloud_model_for("compress_context"), "qwen-flash");
+        assert_eq!(cloud_model_for("compress_context"), "qwen3.6-flash");
     }
 }
 
@@ -410,17 +413,14 @@ mod model_routing_tests {
     }
 
     /// 默认值基线（仅在对应 env 未设置时断言，避免并发测试改 env 竞态）：
-    /// 搜索模型与聊天模型必须是不同模型，否则路由无意义
+    /// Token Plan 网关上搜索/聊天统一 qwen3.7-plus（网关支持 enable_search）；
+    /// 路由机制本身由相对断言测试保障，两者同值时路由退化为恒等不影响正确性
     #[test]
-    fn search_and_chat_default_models_differ() {
-        if std::env::var("RG_CLOUD_SEARCH_MODEL").is_ok()
-            || std::env::var("RG_CLOUD_CHAT_MODEL").is_ok()
-        {
+    fn search_model_default_baseline() {
+        if std::env::var("RG_CLOUD_SEARCH_MODEL").is_ok() {
             return;
         }
-        assert_eq!(cloud_search_model(), "qwen-plus");
-        assert_eq!(cloud_chat_model(), "qwen3.7-plus");
-        assert_ne!(cloud_search_model(), cloud_chat_model());
+        assert_eq!(cloud_search_model(), "qwen3.7-plus");
     }
 
     /// 通道路由语义：仅 cloud 通道按 web_search 分流，其余通道固定本地 Ollama
@@ -621,7 +621,7 @@ fn cloud_client() -> Result<openai::CompletionsClient, String> {
 /// timeout 尊重调用方传入值（聊天类 120s / 抽取类 45s）；RG_CLOUD_TIMEOUT_SECS
 /// 仅作 cloud 流式建连默认值，不覆盖此处。
 /// 模型按 fn 类别选择：聊天类 → RG_CLOUD_CHAT_MODEL（默认 qwen3.7-plus），
-/// 抽取/压缩类 → RG_CLOUD_EXTRACT_MODEL（默认 qwen-flash）。
+/// 抽取/压缩类 → RG_CLOUD_EXTRACT_MODEL（默认 qwen3.6-flash）。
 /// format=Some 时经 additional_params 注入 response_format=json_object
 ///（不用 output_schema 的 json_schema strict 模式，宽松 schema 可能被拒）。
 /// web_search=true 时额外合入百炼 enable_search + search_strategy=turbo
