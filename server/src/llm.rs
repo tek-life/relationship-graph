@@ -446,6 +446,11 @@ fn is_retryable_status(status: u16) -> bool {
 /// 传输层错误分类（纯函数，可单测）：rig/cloud 通道的错误以字符串呈现，
 /// 按常见瞬时错误标记（超时/连接/429/5xx 文案）归类；无法识别一律视为
 /// Permanent（宁可少重试，不可重复产生副作用）。
+///
+/// 状态码判定改词边界提取（修复子串误判）：原实现用 "429"/"500" 等
+/// 子串匹配，错误正文中的 token 数（如 "33500" 命中 "500"）、URL 端口
+///（如 ":4290" 命中 "429"）会被误判为可重试；现改为提取独立成词的
+/// 状态码（等价正则 \b(429|5\d{2})\b）。
 fn classify_transport_error(message: &str) -> LlmError {
     const TRANSIENT_MARKERS: &[&str] = &[
         "timeout",
@@ -458,18 +463,45 @@ fn classify_transport_error(message: &str) -> LlmError {
         "bad gateway",
         "gateway timeout",
         "internal server error",
-        "429",
-        "500",
-        "502",
-        "503",
-        "504",
     ];
     let lower = message.to_lowercase();
-    if TRANSIENT_MARKERS.iter().any(|m| lower.contains(m)) {
+    if TRANSIENT_MARKERS.iter().any(|m| lower.contains(m))
+        || contains_retryable_status_code(&lower)
+    {
         LlmError::Transient(message.to_string())
     } else {
         LlmError::Permanent(message.to_string())
     }
+}
+
+/// 词边界状态码提取（纯函数，可单测）：扫描文本中的极大连续数字串，
+/// 仅当其前后均不与单词字符（字母/数字/下划线）相邻（等价正则 \b）
+/// 且值为 429 或 5xx 时才命中。避免 token 数 "33500" 命中 "500"、
+/// 端口 ":4290" 命中 "429"、时长 "500ms" 命中 "500" 等子串误判。
+fn contains_retryable_status_code(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let is_word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            // 极大数字串已排除相邻数字；再排除相邻字母/下划线（\b 语义）
+            let left_boundary_ok = start == 0 || !is_word_char(chars[start - 1]);
+            let right_boundary_ok = i >= chars.len() || !is_word_char(chars[i]);
+            if left_boundary_ok && right_boundary_ok {
+                let run: String = chars[start..i].iter().collect();
+                if run == "429" || (run.len() == 3 && run.starts_with('5')) {
+                    return true;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 /// 退避间隔表（P1-6）：最多重试 2 次，间隔 0.5s → 1.5s
@@ -573,6 +605,49 @@ mod retry_policy_tests {
                 msg
             );
         }
+    }
+
+    /// 词边界状态码提取：独立成词的 429/5xx 命中；token 数/端口/时长
+    /// 等非状态码数字不误判（修复子串匹配误判回归）
+    #[test]
+    fn status_code_word_boundary_extraction() {
+        // 命中：独立成词的 429 / 5xx
+        assert!(contains_retryable_status_code("http status 429"));
+        assert!(contains_retryable_status_code("status: 500."));
+        assert!(contains_retryable_status_code("upstream returned 502"));
+        assert!(contains_retryable_status_code("code=503"));
+        assert!(contains_retryable_status_code("599"));
+        // 不命中：token 数 / 端口 / 时长 / 4xx（非 429）/ 非 5xx
+        assert!(!contains_retryable_status_code("context is 33500 tokens"));
+        assert!(!contains_retryable_status_code("url http://api.example:4290/v1"));
+        assert!(!contains_retryable_status_code("took 500ms"));
+        assert!(!contains_retryable_status_code("status 400"));
+        assert!(!contains_retryable_status_code("status 404"));
+        assert!(!contains_retryable_status_code("error 600"));
+        assert!(!contains_retryable_status_code("err_500_code"));
+        assert!(!contains_retryable_status_code("no digits at all"));
+    }
+
+    /// 误判回归：错误正文含 token 数 / 端口时不得误判为可重试
+    #[test]
+    fn transport_error_classification_no_substring_false_positive() {
+        for msg in [
+            "context length exceeded: prompt is 33500 tokens",
+            "invalid request for url (http://api.example:4290/v1)",
+            "model refused: took 500ms then aborted",
+        ] {
+            assert_eq!(
+                classify_transport_error(msg),
+                LlmError::Permanent(msg.to_string()),
+                "数字子串不应误判为瞬时错误：{}",
+                msg
+            );
+        }
+        // 对照：真正的状态码仍判瞬时
+        assert_eq!(
+            classify_transport_error("provider returned status 500"),
+            LlmError::Transient("provider returned status 500".to_string())
+        );
     }
 
     /// 瞬时错误首次失败后退避重试 1 次即成功：总尝试 2 次

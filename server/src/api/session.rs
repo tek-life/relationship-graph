@@ -162,13 +162,19 @@ pub async fn add_message(
     // 第二阶段：压缩竞态防护（per-session 内存标记）：并发请求同时越过
     // 阈值时只触发一次压缩，其余跳过本次压缩（消息已落库，永不阻断）
     if let Some((message, old_msgs)) = old_messages {
-        if !state.try_begin_compression(&session_id) {
-            log::info!(target: "session", "compression_skipped_in_progress session={}", session_id);
-            return Ok(Json(message));
-        }
-        // 异步调用 LLM 压缩（不持有 DB 锁）；无论成败均释放压缩标记
+        // RAII 守卫：Drop 时自动释放压缩标记。修复泄漏：原手工
+        // try/end 配对在 compress_context await 期间请求被取消时
+        // end_compression 永不执行，该会话永远无法再压缩；守卫在
+        // 取消/panic 路径也必经 Drop
+        let _compression_guard = match state.begin_compression(&session_id) {
+            Some(guard) => guard,
+            None => {
+                log::info!(target: "session", "compression_skipped_in_progress session={}", session_id);
+                return Ok(Json(message));
+            }
+        };
+        // 异步调用 LLM 压缩（不持有 DB 锁）；无论成败/取消，守卫 Drop 均释放标记
         let outcome = llm::compress_context(&old_msgs, MAX_SUMMARY_TOKENS).await;
-        state.end_compression(&session_id);
         match outcome {
             Ok(summary) => {
                 // 第三阶段：重新获取锁，删除旧消息并插入摘要

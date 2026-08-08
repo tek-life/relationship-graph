@@ -43,6 +43,21 @@ impl AppState {
         }
     }
 
+    /// 尝试获取压缩 RAII 守卫：无压缩进行中时占位并返回 Some(guard)，
+    /// guard 在 Drop 时自动释放标记（含 await 期间请求被取消/panic 的
+    /// 路径）；已有并发压缩进行中返回 None（调用方应跳过本次压缩）。
+    /// 优先于手工 try/end 配对使用，避免标记泄漏导致会话永远无法再压缩。
+    pub fn begin_compression(&self, session_id: &str) -> Option<CompressionGuard<'_>> {
+        if self.try_begin_compression(session_id) {
+            Some(CompressionGuard {
+                state: self,
+                session_id: session_id.to_string(),
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn db_path(&self) -> PathBuf {
         self.data_dir.join("app.db")
     }
@@ -55,6 +70,22 @@ impl AppState {
     /// 老库（仅 salt.hex）需先走 /api/auth/migrate 一次性迁移生成。
     pub fn key_file_path(&self) -> PathBuf {
         self.data_dir.join("db.key")
+    }
+}
+
+/// 压缩标记 RAII 守卫：Drop 时自动释放会话压缩标记。
+///
+/// 泄漏防护：原手工 try_begin/end 配对在 compress_context await 期间
+/// 请求被取消时 end_compression 永不执行，该会话永远无法再压缩；
+/// 改用守卫后取消/panic 路径也必经 Drop。
+pub struct CompressionGuard<'a> {
+    state: &'a AppState,
+    session_id: String,
+}
+
+impl Drop for CompressionGuard<'_> {
+    fn drop(&mut self) {
+        self.state.end_compression(&self.session_id);
     }
 }
 
@@ -77,5 +108,23 @@ mod tests {
         state.end_compression("s1");
         state.end_compression("s2");
         assert!(state.try_begin_compression("s2"));
+    }
+
+    /// RAII 守卫语义：持守期间占位互斥，Drop 后自动释放可再次获取；
+    /// 模拟 await 期间请求取消（守卫提前 drop）不泄漏标记
+    #[test]
+    fn compression_guard_releases_mark_on_drop() {
+        let state = AppState::new(PathBuf::from("/tmp"));
+        {
+            let _guard = state.begin_compression("s1").expect("首次获取成功");
+            // 持守期间同会话再次获取失败
+            assert!(state.begin_compression("s1").is_none());
+            // 跨会话不受影响
+            let _other = state.begin_compression("s2").expect("跨会话独立");
+        } // _guard 与其他守卫在此 Drop，模拟请求取消提前释放
+        // Drop 后标记已释放，可再次获取（不泄漏）
+        let guard = state.begin_compression("s1").expect("Drop 后可再次获取");
+        drop(guard);
+        assert!(state.begin_compression("s1").is_some());
     }
 }

@@ -100,6 +100,17 @@ async fn main() {
                     if let Err(e) = db::schema::migrate(&conn) {
                         log::error!(target: "server", "startup_migrate_failed error={}", e);
                     } else {
+                        // 启动时清理一次超过保留期的 LLM 用量行（防 llm_usages
+                        // 无界增长）；失败仅 warn 不阻断启动
+                        match db::model_config::prune_expired_usages(&conn) {
+                            Ok(0) => {}
+                            Ok(n) => {
+                                log::info!(target: "server", "llm_usages_pruned count={}", n)
+                            }
+                            Err(e) => {
+                                log::warn!(target: "server", "llm_usages_prune_failed error={}", e)
+                            }
+                        }
                         let mut guard = state.db.lock().expect("db mutex poisoned");
                         *guard = Some(conn);
                         log::info!(target: "server", "startup_auto_unlock success");

@@ -197,6 +197,29 @@ pub fn recent_usages(conn: &Connection, limit: i64) -> Result<Vec<UsageRow>, rus
     rows.collect::<Result<Vec<_>, _>>()
 }
 
+/// llm_usages 保留期（天）：超期行在服务启动时清理一次，防止
+/// 只追加遥测表无界增长（占用磁盘与拖慢倒序查询）
+pub const USAGE_RETENTION_DAYS: i64 = 30;
+
+/// 清理 created_at 早于 cutoff（RFC3339）的用量行，返回删除行数。
+/// created_at 写入格式统一为 chrono to_rfc3339（UTC），字符串字典序
+/// 比较即时序正确。由启动时调用一次（prune_expired_usages），
+/// 不在每次写入时清理，避免高频全表扫描。
+pub fn prune_usages_older_than(conn: &Connection, cutoff_rfc3339: &str) -> Result<usize, rusqlite::Error> {
+    let deleted = conn.execute(
+        "DELETE FROM llm_usages WHERE created_at < ?1",
+        [cutoff_rfc3339],
+    )?;
+    Ok(deleted)
+}
+
+/// 清理超过保留期（USAGE_RETENTION_DAYS）的用量行（启动时调用一次，幂等）
+pub fn prune_expired_usages(conn: &Connection) -> Result<usize, rusqlite::Error> {
+    let cutoff =
+        (chrono::Utc::now() - chrono::Duration::days(USAGE_RETENTION_DAYS)).to_rfc3339();
+    prune_usages_older_than(conn, &cutoff)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +361,63 @@ mod tests {
         assert_ne!(rows[0].id, rows[1].id);
         // limit 生效
         assert_eq!(recent_usages(&conn, 1).unwrap().len(), 1);
+    }
+
+    /// 保留期清理：仅删超期行，新近行保留；二次清理幂等返回 0
+    #[test]
+    fn prune_expired_usages_removes_only_old_rows() {
+        let conn = test_db();
+        let insert_at = |id: &str, created_at: &str| {
+            conn.execute(
+                "INSERT INTO llm_usages
+                    (id, scenario, channel, model, fn_name, prompt_tokens, completion_tokens, elapsed_ms, created_at)
+                 VALUES (?1, 'chat', 'cloud', 'm', 'f', NULL, NULL, 0, ?2)",
+                rusqlite::params![id, created_at],
+            )
+            .expect("insert");
+        };
+        // 两条远古行（远超 30 天保留期）+ 两条新近行
+        insert_at("old1", "2020-01-01T00:00:00+00:00");
+        insert_at("old2", "2020-06-15T12:00:00+00:00");
+        insert_at(
+            "new1",
+            &(chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339(),
+        );
+        insert_at("new2", &chrono::Utc::now().to_rfc3339());
+
+        let deleted = prune_expired_usages(&conn).expect("prune");
+        assert_eq!(deleted, 2);
+        let rows = recent_usages(&conn, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"new1") && ids.contains(&"new2"));
+        // 幂等：再清理返回 0
+        assert_eq!(prune_expired_usages(&conn).unwrap(), 0);
+    }
+
+    /// 显式 cutoff 版本：恰好早于 cutoff 的行被删，等于/晚于的保留
+    #[test]
+    fn prune_usages_older_than_explicit_cutoff() {
+        let conn = test_db();
+        conn.execute(
+            "INSERT INTO llm_usages
+                (id, scenario, channel, model, fn_name, prompt_tokens, completion_tokens, elapsed_ms, created_at)
+             VALUES (?1, 'chat', 'cloud', 'm', 'f', NULL, NULL, 0, ?2)",
+            rusqlite::params!["a", "2026-01-01T00:00:00+00:00"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO llm_usages
+                (id, scenario, channel, model, fn_name, prompt_tokens, completion_tokens, elapsed_ms, created_at)
+             VALUES (?1, 'chat', 'cloud', 'm', 'f', NULL, NULL, 0, ?2)",
+            rusqlite::params!["b", "2026-02-01T00:00:00+00:00"],
+        )
+        .unwrap();
+        // cutoff 在两者之间：仅 a 被删
+        assert_eq!(
+            prune_usages_older_than(&conn, "2026-01-15T00:00:00+00:00").unwrap(),
+            1
+        );
+        assert_eq!(recent_usages(&conn, 10).unwrap()[0].id, "b");
     }
 }
