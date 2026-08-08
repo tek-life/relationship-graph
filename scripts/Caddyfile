@@ -38,13 +38,18 @@
 	root * {$RG_WEB_ROOT:/home/hfli/personal_ai_workspace/dist}
 
 	# API 反向代理到 Axum 后端
-	reverse_proxy /api/* localhost:8790
+	# 必须用 handle 块保证 /api/* 优先且排他地走反代：Caddy 默认指令顺序中
+	# try_files 先于 reverse_proxy 执行，平铺写法会把 /api/xxx 重写成
+	# /index.html 后落入 file_server，POST 请求返回 405
+	handle /api/* {
+		reverse_proxy localhost:8790
+	}
 
-	# 静态文件服务
-	file_server
-
-	# SPA fallback（所有未匹配的路径返回 index.html，支持前端路由）
-	try_files {path} /index.html
+	# 静态文件服务 + SPA fallback（与 /api 块互斥，不会干扰反代）
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
 
 	# PWA Service Worker 不缓存（开发阶段确保 SW 更新即时生效）
 	@sw path /sw.js

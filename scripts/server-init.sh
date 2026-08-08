@@ -69,12 +69,17 @@ cat > "${APP_DIR}/Caddyfile" <<EOF
 :${CADDY_PORT} {
     root * ${APP_DIR}/web
 
-    reverse_proxy /api/* localhost:8790
+    # handle 块保证 /api/* 优先且排他走反代（try_files 默认先于 reverse_proxy
+    # 执行，平铺写法会把 /api/xxx 重写成 /index.html 后落 file_server 返回 405）
+    handle /api/* {
+        reverse_proxy localhost:8790
+    }
 
-    file_server
-
-    # SPA fallback
-    try_files {path} /index.html
+    # 静态文件 + SPA fallback（与 /api 块互斥）
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
 
     # PWA Service Worker / manifest 不缓存
     @sw path /sw.js
