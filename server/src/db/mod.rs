@@ -1,6 +1,7 @@
 pub mod agent_config;
 pub mod crypto;
 pub mod interaction;
+pub mod model_config;
 pub mod person;
 pub mod relationship;
 pub mod schema;

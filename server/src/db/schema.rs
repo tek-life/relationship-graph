@@ -1,4 +1,4 @@
-use crate::db::{agent_config, skill_package};
+use crate::db::{agent_config, model_config, skill_package};
 use rusqlite::Connection;
 use std::time::Instant;
 
@@ -193,6 +193,27 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             FOREIGN KEY (package_id) REFERENCES skill_packages(id) ON DELETE CASCADE
         );
 
+        -- 模型配置与 LLM 用量（P1-7：按场景模型配置表 + token usage 落库）
+        -- model_configs：场景 → 模型映射（env 覆盖层 > 本表 > 硬编码默认，
+        -- 解析优先级决策见 db/model_config.rs 模块注释）；
+        -- llm_usages：只追加的调用元数据遥测（不落对话内容）。
+        CREATE TABLE IF NOT EXISTS model_configs (
+            scenario TEXT PRIMARY KEY,
+            model TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS llm_usages (
+            id TEXT PRIMARY KEY,
+            scenario TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            model TEXT NOT NULL,
+            fn_name TEXT NOT NULL DEFAULT '',
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            elapsed_ms INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+
         -- Profile QA 指令配置
         CREATE TABLE IF NOT EXISTS qa_instruction_modules (
             id TEXT PRIMARY KEY,
@@ -219,6 +240,8 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_skill_files_package ON skill_package_files(package_id);
         CREATE INDEX IF NOT EXISTS idx_skill_bindings_package ON agent_skill_bindings(package_id);
         CREATE INDEX IF NOT EXISTS idx_qa_modules_active ON qa_instruction_modules(is_active);
+        CREATE INDEX IF NOT EXISTS idx_llm_usages_created ON llm_usages(created_at);
+        CREATE INDEX IF NOT EXISTS idx_llm_usages_scenario ON llm_usages(scenario);
         "
     );
     match &result {
@@ -239,6 +262,15 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         log::warn!(
             target: "db",
             "migrate_legacy_skills_failed error={}（下次启动重试）",
+            error
+        );
+    }
+    // 模型配置种子（P1-7）：INSERT OR IGNORE 幂等，已有配置零覆盖；
+    // 失败不阻断启动（解析层有 env/硬编码默认兜底，下次启动可重跑）
+    if let Err(error) = model_config::seed_default_models(conn) {
+        log::warn!(
+            target: "db",
+            "seed_default_models_failed error={}（下次启动重试）",
             error
         );
     }

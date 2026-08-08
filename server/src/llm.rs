@@ -116,8 +116,206 @@ fn ollama_url() -> String {
     std::env::var("RG_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string())
 }
 
+// ---------- 按场景模型解析（P1-7：model_configs 表 + env 覆盖层） ----------
+//
+// 解析优先级（向后兼容决策）：env 覆盖层（实时）> DB model_configs 表 > 硬编码默认。
+// 理由：存量部署依赖 RG_OLLAMA_MODEL / RG_CLOUD_*_MODEL 的行为逐字节不变，
+// 且运维可随时通过 env 紧急回滚；DB 层为管理后台的持久化配置面（种子值与
+// 硬编码默认同源，见 db::model_config::seed_default_models）。未配置时
+//（DB 无行且 env 未设置）结果与改造前 env 路由默认逐一致。
+
+/// DB model_configs 读取器注册表：由 main.rs 启动时注入（读 model_configs
+/// 表），llm.rs 不直接依赖 AppState（与云端 Key 的 CLOUD_KEY_DB_READER 同模式）。
+/// 注册前/注册失败时 DB 层视为无值（回退 env/默认，行为与改造前一致）。
+type ModelConfigReader = dyn Fn(&str) -> Option<String> + Send + Sync;
+static MODEL_CONFIG_DB_READER: OnceLock<Box<ModelConfigReader>> = OnceLock::new();
+
+/// 注册 DB model_configs 读取器（仅首次生效）。读取器约束：短持锁、
+/// 不在持锁期间做 LLM 调用。
+pub fn register_model_config_reader(reader: Box<ModelConfigReader>) {
+    if MODEL_CONFIG_DB_READER.set(reader).is_err() {
+        log::warn!(target: "llm", "model_config_reader_already_registered（忽略重复注册）");
+    }
+}
+
+fn read_db_model(scenario: &str) -> Option<String> {
+    MODEL_CONFIG_DB_READER
+        .get()
+        .and_then(|reader| reader(scenario))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// 模型调用场景（P1-7）：与 db::model_config::SCENARIO_METAS 的场景键一一对应
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelScenario {
+    /// 本地 Ollama 通道（legacy/rig）：聊天/抽取等全部本地调用共用单一模型
+    Local,
+    /// cloud 聊天主力模型（开思考）
+    Chat,
+    /// cloud 联网搜索模型
+    ChatSearch,
+    /// cloud 结构化抽取
+    Extract,
+    /// 上下文压缩摘要
+    Summarize,
+}
+
+impl ModelScenario {
+    /// 场景键（model_configs / llm_usages 的 scenario 字段取值）
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelScenario::Local => "local",
+            ModelScenario::Chat => "chat",
+            ModelScenario::ChatSearch => "chat_search",
+            ModelScenario::Extract => "extract",
+            ModelScenario::Summarize => "summarize",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<ModelScenario> {
+        match key {
+            "local" => Some(ModelScenario::Local),
+            "chat" => Some(ModelScenario::Chat),
+            "chat_search" => Some(ModelScenario::ChatSearch),
+            "extract" => Some(ModelScenario::Extract),
+            "summarize" => Some(ModelScenario::Summarize),
+            _ => None,
+        }
+    }
+
+    /// 该场景的 env 覆盖键。summarize 与 extract 共用 RG_CLOUD_EXTRACT_MODEL：
+    /// 改造前 compress_context 走抽取模型（读同一 env），共用覆盖键保证
+    /// 存量 env 部署行为不变（向后兼容决策）。
+    fn env_keys(&self) -> &'static [&'static str] {
+        match self {
+            ModelScenario::Local => &["RG_OLLAMA_MODEL"],
+            ModelScenario::Chat => &["RG_CLOUD_CHAT_MODEL"],
+            ModelScenario::ChatSearch => &["RG_CLOUD_SEARCH_MODEL"],
+            ModelScenario::Extract => &["RG_CLOUD_EXTRACT_MODEL"],
+            ModelScenario::Summarize => &["RG_CLOUD_EXTRACT_MODEL"],
+        }
+    }
+
+    /// 硬编码默认模型（与改造前 env 路由默认同源）
+    fn default_model(&self) -> &'static str {
+        crate::db::model_config::default_model_for(self.as_str())
+    }
+}
+
+/// 模型解析纯函数（可单测）：env 值按顺序取第一个 trim 后非空者 >
+/// DB 值 trim 后非空取之 > 硬编码默认。
+fn resolve_scenario_model(db_value: Option<&str>, env_values: &[Option<String>], default: &str) -> String {
+    for env_value in env_values {
+        if let Some(value) = env_value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            return value.to_string();
+        }
+    }
+    if let Some(value) = db_value.map(str::trim).filter(|v| !v.is_empty()) {
+        return value.to_string();
+    }
+    default.to_string()
+}
+
+/// 解析场景生效模型：env 覆盖层 > DB model_configs > 硬编码默认
+///（优先级决策见本节顶部注释）
+fn resolve_model_for_scenario(scenario: ModelScenario) -> String {
+    let env_values: Vec<Option<String>> = scenario
+        .env_keys()
+        .iter()
+        .map(|key| std::env::var(key).ok())
+        .collect();
+    resolve_scenario_model(
+        read_db_model(scenario.as_str()).as_deref(),
+        &env_values,
+        scenario.default_model(),
+    )
+}
+
+/// 场景当前设置的 env 覆盖值（按覆盖键顺序取第一个非空；无则 None）。
+/// 供 admin 配置页展示覆盖状态；仅回 env 变量名与模型名，无敏感信息。
+pub fn env_override_for_scenario(scenario_key: &str) -> Option<String> {
+    let scenario = ModelScenario::from_key(scenario_key)?;
+    scenario.env_keys().iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+/// 场景当前生效的模型名（env > DB > 默认），供 admin 配置页展示；
+/// 未知场景返回 None。仅返回模型名，无敏感信息。
+pub fn effective_model_for(scenario_key: &str) -> Option<String> {
+    ModelScenario::from_key(scenario_key).map(resolve_model_for_scenario)
+}
+
+/// fn → 场景映射（供 usage 落库 scenario 字段）：聊天类函数或开启联网
+/// 搜索 → chat；compress_context → summarize；其余抽取类 → extract。
+/// 本地通道的 fn 同样按此映射（scenario 语义与 cloud 对齐，model 字段
+/// 记录实际生效的本地模型）。
+pub fn scenario_for_fn(fn_name: &str, web_search: bool) -> &'static str {
+    if is_cloud_chat_fn(fn_name) || web_search {
+        ModelScenario::Chat.as_str()
+    } else if fn_name == "compress_context" {
+        ModelScenario::Summarize.as_str()
+    } else {
+        ModelScenario::Extract.as_str()
+    }
+}
+
+// ---------- token usage 落库（P1-7：只落元数据，绝不落对话内容） ----------
+
+/// LLM 调用用量元数据（与 db::model_config::UsageInsert 一一对应）。
+/// 全部字段为调用元数据，不含任何 prompt / 回复内容；prompt/completion
+/// token 数在 provider 未回传时为 None。
+#[derive(Debug, Clone)]
+pub struct LlmUsageRecord {
+    pub scenario: &'static str,
+    pub channel: &'static str,
+    pub model: String,
+    pub fn_name: String,
+    pub prompt_tokens: Option<usize>,
+    pub completion_tokens: Option<usize>,
+    pub elapsed_ms: u64,
+}
+
+/// usage 落库写入器注册表：由 main.rs 启动时注入（短持 DB 锁写入，
+/// 失败记 warn 日志不阻断主链路）。未注册（如测试环境）时静默丢弃。
+type UsageWriter = dyn Fn(LlmUsageRecord) + Send + Sync;
+static USAGE_WRITER: OnceLock<Box<UsageWriter>> = OnceLock::new();
+
+pub fn register_usage_writer(writer: Box<UsageWriter>) {
+    if USAGE_WRITER.set(writer).is_err() {
+        log::warn!(target: "llm", "usage_writer_already_registered（忽略重复注册）");
+    }
+}
+
+/// 记录一条用量元数据：fire-and-forget，写入失败不影响主链路；
+/// 日志与落库均只含 token 数/耗时等数字元数据，无对话内容。
+fn record_usage(record: LlmUsageRecord) {
+    if let Some(writer) = USAGE_WRITER.get() {
+        writer(record);
+    }
+}
+
+/// rig 非流式响应的 usage 提取（可单测）：provider 未回传时 rig 置全 0，
+/// 此时映射为 None（与流式路径 usage=null 语义一致）
+fn usage_from_rig_response<T>(
+    response: &rig_core::completion::CompletionResponse<T>,
+) -> (Option<usize>, Option<usize>) {
+    let input = response.usage.input_tokens;
+    let output = response.usage.output_tokens;
+    (
+        if input == 0 { None } else { Some(input as usize) },
+        if output == 0 { None } else { Some(output as usize) },
+    )
+}
+
+/// Ollama 本地模型（legacy/rig 通道唯一模型）：P1-7 按场景解析，
+/// 优先级 env RG_OLLAMA_MODEL > DB model_configs > 默认 qwen2.5:7b
 fn ollama_model() -> String {
-    std::env::var("RG_OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_string())
+    resolve_model_for_scenario(ModelScenario::Local)
 }
 
 fn ollama_timeout(env_key: &str, default_secs: u64) -> Duration {
@@ -143,6 +341,12 @@ struct OllamaRequest {
 #[derive(Deserialize)]
 struct OllamaResponse {
     response: Option<String>,
+    /// 用量元数据（P1-7）：Ollama /api/generate 回传 token 计数，
+    /// 旧版本可能缺失 → None（仅用于 usage 落库，不影响回复内容）
+    #[serde(default)]
+    prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    eval_count: Option<u64>,
 }
 
 // ---------- 重试退避基础设施（P1-6） ----------
@@ -387,10 +591,11 @@ async fn call_generate_once(prompt: &str, format: Option<&str>, timeout: Duratio
 
 /// Ollama 原生 API 单 prompt 非流式调用（OllamaProvider Legacy 模式实现体）：
 /// /api/generate + format。即 legacy 通道协议，向后兼容保留（P0-1 决策）。
-/// 错误按 LlmError 分类（P1-6）。
-async fn ollama_generate_once(prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, LlmError> {
+/// 错误按 LlmError 分类（P1-6）；成功时 usage 落库（P1-7，仅元数据）。
+async fn ollama_generate_once(fn_name: &str, prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, LlmError> {
     let client = legacy_http_client();
     let model = ollama_model();
+    let started = Instant::now();
 
     let req = OllamaRequest {
         model: model.clone(),
@@ -433,7 +638,21 @@ async fn ollama_generate_once(prompt: &str, format: Option<&str>, timeout: Durat
     }
 
     let data: OllamaResponse = resp.json().await.map_err(|e| LlmError::Permanent(format!("Parse error: {}", e)))?;
-    data.response.ok_or_else(|| LlmError::Permanent("Empty response from Ollama".to_string()))
+    let text = data
+        .response
+        .ok_or_else(|| LlmError::Permanent("Empty response from Ollama".to_string()))?;
+    // usage 落库（P1-7）：Ollama 原生 API 回传 prompt_eval_count / eval_count，
+    // 旧版本可能缺失 → None；只落元数据，不落内容
+    record_usage(LlmUsageRecord {
+        scenario: scenario_for_fn(fn_name, false),
+        channel: "legacy",
+        model,
+        fn_name: fn_name.to_string(),
+        prompt_tokens: data.prompt_eval_count.map(|v| v as usize),
+        completion_tokens: data.eval_count.map(|v| v as usize),
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    });
+    Ok(text)
 }
 
 // ---------- 通道分发（legacy | rig | cloud 三值） ----------
@@ -448,16 +667,18 @@ fn cloud_base_url() -> String {
         .unwrap_or_else(|_| "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string())
 }
 
-/// 云端聊天主力模型（开思考）
+/// 云端聊天主力模型（开思考）：P1-7 按场景解析，
+/// 优先级 env RG_CLOUD_CHAT_MODEL > DB model_configs > 默认
 fn cloud_chat_model() -> String {
-    std::env::var("RG_CLOUD_CHAT_MODEL").unwrap_or_else(|_| "qwen3.7-plus".to_string())
+    resolve_model_for_scenario(ModelScenario::Chat)
 }
 
 /// 云端联网搜索模型：Token Plan 网关上 qwen3.7-plus 已支持 enable_search
 ///（2026-08-08 实测，流式+思考均正常），故默认与聊天模型统一；保留本
-/// 路由机制作为逃生门（平台行为再变时可 env 切换到其它搜索可用模型）
+/// 路由机制作为逃生门（平台行为再变时可 env 切换到其它搜索可用模型）。
+/// P1-7 按场景解析，优先级 env RG_CLOUD_SEARCH_MODEL > DB > 默认
 fn cloud_search_model() -> String {
-    std::env::var("RG_CLOUD_SEARCH_MODEL").unwrap_or_else(|_| "qwen3.7-plus".to_string())
+    resolve_model_for_scenario(ModelScenario::ChatSearch)
 }
 
 /// 云端聊天模型路由（纯逻辑入口，回归单测见 model_routing_tests）：
@@ -477,9 +698,17 @@ fn chat_model_route(channel: Channel, web_search: bool) -> String {
 }
 
 /// 云端抽取首选模型（无思考开销，json_object 正常）：Token Plan 网关
-/// 无 qwen-flash，用其上的轻量模型 qwen3.6-flash（2026-08-08 实测 json_object 正常）
+/// 无 qwen-flash，用其上的轻量模型 qwen3.6-flash（2026-08-08 实测 json_object 正常）。
+/// P1-7 按场景解析，优先级 env RG_CLOUD_EXTRACT_MODEL > DB > 默认
 fn cloud_extract_model() -> String {
-    std::env::var("RG_CLOUD_EXTRACT_MODEL").unwrap_or_else(|_| "qwen3.6-flash".to_string())
+    resolve_model_for_scenario(ModelScenario::Extract)
+}
+
+/// 云端压缩摘要模型（P1-7 新场景）：改造前 compress_context 与抽取共用
+/// 模型，故默认与 extract 同源（qwen3.6-flash），env 覆盖层同样共用
+/// RG_CLOUD_EXTRACT_MODEL（向后兼容）；管理后台可单独配置绑定不同模型
+fn cloud_summarize_model() -> String {
+    resolve_model_for_scenario(ModelScenario::Summarize)
 }
 
 /// 云端默认超时（RG_CLOUD_TIMEOUT_SECS 可覆盖）：仅作为 cloud 流式
@@ -613,9 +842,14 @@ fn is_cloud_chat_fn(fn_name: &str) -> bool {
     matches!(fn_name, "general_chat" | "profile_qa_chat" | "generate_profile_document")
 }
 
+/// 云端模型类别（P1-7 场景化）：聊天类函数用 chat 场景模型，
+/// compress_context 用 summarize 场景模型（默认与 extract 同源），
+/// 其余抽取类用 extract 场景模型
 fn cloud_model_for(fn_name: &str) -> String {
     if is_cloud_chat_fn(fn_name) {
         cloud_chat_model()
+    } else if fn_name == "compress_context" {
+        cloud_summarize_model()
     } else {
         cloud_extract_model()
     }
@@ -790,7 +1024,7 @@ impl LlmProvider for OllamaProvider {
 
     fn generate<'a>(
         &'a self,
-        _fn_name: &'a str,
+        fn_name: &'a str,
         prompt: &'a str,
         format: Option<&'a str>,
         timeout: Duration,
@@ -800,8 +1034,8 @@ impl LlmProvider for OllamaProvider {
         Box::pin(async move {
             match mode {
                 // legacy 通道：Ollama 私有 /api/generate + format（向后兼容）
-                OllamaMode::Legacy => ollama_generate_once(prompt, format, timeout).await,
-                OllamaMode::Rig => call_rig(prompt, format, timeout).await,
+                OllamaMode::Legacy => ollama_generate_once(fn_name, prompt, format, timeout).await,
+                OllamaMode::Rig => call_rig(fn_name, prompt, format, timeout).await,
             }
         })
     }
@@ -832,8 +1066,9 @@ impl LlmProvider for OllamaProvider {
         _web_search: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ChatEventStream, String>> + Send + 'a>> {
         // 两种模式共用同一实现：改造前 legacy/rig 通道的流式即统一经
-        // rig-core（legacy 通道未集成 Ollama 原生 API 流式），行为原样保留
-        Box::pin(ollama_chat_stream(system, history, query))
+        // rig-core（legacy 通道未集成 Ollama 原生 API 流式），行为原样保留；
+        // 通道名透传给流内 usage 落库（P1-7）区分 channel 字段
+        Box::pin(ollama_chat_stream(self.channel_name(), system, history, query))
     }
 }
 
@@ -1126,6 +1361,108 @@ mod model_routing_tests {
 }
 
 #[cfg(test)]
+mod scenario_model_tests {
+    use super::*;
+
+    /// 解析优先级纯函数：env > DB > 默认（不依赖真实 env，无并发竞态）
+    #[test]
+    fn resolve_scenario_model_priority_order() {
+        // 全空 → 默认
+        assert_eq!(resolve_scenario_model(None, &[None], "def"), "def");
+        // 仅 DB 值 → 取 DB
+        assert_eq!(resolve_scenario_model(Some("db-model"), &[None], "def"), "db-model");
+        // env 值覆盖 DB
+        let env = [Some("env-model".to_string())];
+        assert_eq!(resolve_scenario_model(Some("db-model"), &env, "def"), "env-model");
+        // env 空白/空白串不算覆盖，回退 DB
+        let blank = [Some("  ".to_string()), None];
+        assert_eq!(resolve_scenario_model(Some("db-model"), &blank, "def"), "db-model");
+        // 多 env 键取第一个非空（且 trim）
+        let multi = [Some(" ".to_string()), Some(" second ".to_string())];
+        assert_eq!(resolve_scenario_model(None, &multi, "def"), "second");
+        // DB 空白同样回退默认
+        assert_eq!(resolve_scenario_model(Some("   "), &[None], "def"), "def");
+    }
+
+    /// 场景键 ↔ 枚举双向映射齐备，且与 db::model_config 元数据一致
+    #[test]
+    fn scenario_keys_align_with_db_metadata() {
+        let keys = ["local", "chat", "chat_search", "extract", "summarize"];
+        for key in keys {
+            let scenario = ModelScenario::from_key(key).expect("已知场景应可解析");
+            assert_eq!(scenario.as_str(), key);
+            assert_eq!(
+                scenario.default_model(),
+                crate::db::model_config::default_model_for(key),
+                "默认模型应与 SCENARIO_METAS 同源"
+            );
+        }
+        assert!(ModelScenario::from_key("unknown").is_none());
+    }
+
+    /// fn → 场景映射：聊天类/联网搜索 → chat；compress_context →
+    /// summarize；其余抽取类 → extract
+    #[test]
+    fn scenario_for_fn_mapping() {
+        assert_eq!(scenario_for_fn("general_chat", false), "chat");
+        assert_eq!(scenario_for_fn("extract_any", true), "chat");
+        assert_eq!(scenario_for_fn("compress_context", false), "summarize");
+        assert_eq!(scenario_for_fn("extract_contact_fields", false), "extract");
+        assert_eq!(scenario_for_fn("whatever_else", false), "extract");
+    }
+
+    /// 未配置（DB 无行且 env 未设置）时 getter 与改造前 env 路由默认
+    /// 逐一致（仅在对应 env 未设置时断言，避免并发改 env 竞态）
+    #[test]
+    fn getter_default_baseline_without_env() {
+        if std::env::var("RG_CLOUD_CHAT_MODEL").is_ok() {
+            return;
+        }
+        assert_eq!(cloud_chat_model(), "qwen3.7-plus");
+        if std::env::var("RG_CLOUD_EXTRACT_MODEL").is_ok() {
+            return;
+        }
+        assert_eq!(cloud_extract_model(), "qwen3.6-flash");
+        // summarize 与 extract 共用 env 覆盖键（向后兼容），同为 qwen3.6-flash
+        assert_eq!(cloud_summarize_model(), "qwen3.6-flash");
+        if std::env::var("RG_OLLAMA_MODEL").is_ok() {
+            return;
+        }
+        assert_eq!(ollama_model(), "qwen2.5:7b");
+    }
+
+    /// summarize 与 extract 共用 RG_CLOUD_EXTRACT_MODEL 覆盖键（向后兼容决策）
+    #[test]
+    fn summarize_shares_extract_env_key() {
+        assert_eq!(ModelScenario::Summarize.env_keys(), &["RG_CLOUD_EXTRACT_MODEL"]);
+        assert_eq!(ModelScenario::Extract.env_keys(), &["RG_CLOUD_EXTRACT_MODEL"]);
+    }
+
+    /// rig 响应 usage 提取：全 0 → (None, None)，非 0 → Some
+    #[test]
+    fn rig_usage_extraction_zero_means_absent() {
+        use rig_core::completion::CompletionResponse;
+        let make = |input: u64, output: u64| {
+            let mut usage = rig_core::completion::Usage::new();
+            usage.input_tokens = input;
+            usage.output_tokens = output;
+            usage.total_tokens = input + output;
+            CompletionResponse::<()> {
+                choice: rig_core::OneOrMany::one(rig_core::completion::AssistantContent::Text(
+                    rig_core::completion::message::Text::new(""),
+                )),
+                usage,
+                raw_response: (),
+                message_id: None,
+            }
+        };
+        assert_eq!(usage_from_rig_response(&make(0, 0)), (None, None));
+        assert_eq!(usage_from_rig_response(&make(10, 5)), (Some(10), Some(5)));
+        assert_eq!(usage_from_rig_response(&make(0, 5)), (None, Some(5)));
+    }
+}
+
+#[cfg(test)]
 mod general_chat_prompt_tests {
     use super::*;
 
@@ -1237,9 +1574,11 @@ fn rig_client() -> Result<ollama::Client, String> {
 /// format 为 Some 时设置宽松 JSON Schema 约束（Ollama provider 会将
 /// output_schema 映射为请求体的 format 字段），等价于 legacy 的 format:"json"。
 /// 错误按 LlmError 分类（P1-6）：超时/连接类为 Transient，其余 Permanent。
-async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, LlmError> {
+/// 成功时 usage 落库（P1-7，仅元数据）。
+async fn call_rig(fn_name: &str, prompt: &str, format: Option<&str>, timeout: Duration) -> Result<String, LlmError> {
     let client = rig_client().map_err(LlmError::Permanent)?;
     let model_name = ollama_model();
+    let started = Instant::now();
     info!(
         target: "llm",
         "rig_request url={} model={} prompt_len={} format={:?}",
@@ -1269,6 +1608,7 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
 
     match tokio::time::timeout(timeout, model.completion(request)).await {
         Ok(Ok(response)) => {
+            let (prompt_tokens, completion_tokens) = usage_from_rig_response(&response);
             // 取 choices 中的 Text 内容拼接
             let text: String = response
                 .choice
@@ -1282,6 +1622,16 @@ async fn call_rig(prompt: &str, format: Option<&str>, timeout: Duration) -> Resu
             if text.is_empty() {
                 Err(LlmError::Permanent("Empty response from Ollama".to_string()))
             } else {
+                // usage 落库（P1-7）：rig 未回传 token 时为 None；只落元数据
+                record_usage(LlmUsageRecord {
+                    scenario: scenario_for_fn(fn_name, false),
+                    channel: "rig",
+                    model: model_name,
+                    fn_name: fn_name.to_string(),
+                    prompt_tokens,
+                    completion_tokens,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                });
                 Ok(text)
             }
         }
@@ -1417,6 +1767,18 @@ async fn call_cloud(
             if text.is_empty() {
                 Err(LlmError::Permanent("云端模型返回内容为空".to_string()))
             } else {
+                // usage 落库（P1-7）：rig CompletionResponse 的 usage 由 provider
+                // 从百炼响应映射（未回传时为 None）；只落元数据，不落内容
+                let (prompt_tokens, completion_tokens) = usage_from_rig_response(&response);
+                record_usage(LlmUsageRecord {
+                    scenario: scenario_for_fn(fn_name, web_search),
+                    channel: "cloud",
+                    model: model_name,
+                    fn_name: fn_name.to_string(),
+                    prompt_tokens,
+                    completion_tokens,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                });
                 Ok(text)
             }
         }
@@ -1490,6 +1852,7 @@ async fn cloud_chat_stream(
     let client = cloud_client()?;
     // web_search 路由到搜索可用模型（qwen3.7-plus 平台侧已忽略 enable_search）
     let model_name = cloud_chat_model_for(web_search);
+    let started = Instant::now();
     // 超时对齐聊天超时语义（默认 120s，RG_CLOUD_TIMEOUT_SECS 可覆盖）：
     // 同时覆盖建流阶段与流消费阶段每次 stream.next() 的兑底，
     // 避免云端公网链路中途 stall 时 SSE 无限挂起
@@ -1549,6 +1912,7 @@ async fn cloud_chat_stream(
     );
     let mapped = futures::stream::try_unfold(stream, move |mut stream| {
         let stall_error = stall_error.clone();
+        let model_name = model_name.clone();
         async move {
             use futures::StreamExt;
             loop {
@@ -1593,6 +1957,19 @@ async fn cloud_chat_stream(
                         let input = final_response.usage.prompt_tokens;
                         let output = final_response.usage.completion_tokens.unwrap_or(0);
                         let usage = if input == 0 && output == 0 { None } else { Some((input, output)) };
+                        // usage 落库（P1-7）：provider 回了 usage 才记录；elapsed 取
+                        // 建流到 Final 的整流耗时；只落元数据，不落内容
+                        if let Some((input_tokens, output_tokens)) = usage {
+                            record_usage(LlmUsageRecord {
+                                scenario: scenario_for_fn("general_chat", web_search),
+                                channel: "cloud",
+                                model: model_name.clone(),
+                                fn_name: "general_chat".to_string(),
+                                prompt_tokens: Some(input_tokens),
+                                completion_tokens: Some(output_tokens),
+                                elapsed_ms: started.elapsed().as_millis() as u64,
+                            });
+                        }
                         return Ok(Some((ChatStreamEvent::Done(usage), stream)));
                     }
                     // ToolCall / ToolCallDelta / Unknown 等与通用聊天无关，忽略
@@ -1744,6 +2121,10 @@ struct AgentCtx {
     pending_calls: Vec<CloudToolCall>,
     /// 最近一轮 Final 携带的 usage（流结束时随 Done 事件对外输出）
     last_usage: Option<(usize, usize)>,
+    /// 当前轮使用的模型名（供 usage 落库，P1-7）
+    model: String,
+    /// 当前轮流开始时刻（usage 落库的耗时口径，P1-7）
+    round_started: Instant,
 }
 
 /// 工具循环的流式版本（/api/chat/stream）：Reasoning/Text 增量透传，
@@ -1772,6 +2153,7 @@ pub async fn cloud_agent_stream(
         }
     }
     messages.push(rig_core::completion::Message::user(query));
+    let round_model = cloud_chat_model_for(web_search);
     let stream = cloud_agent_round_stream(messages.clone(), web_search).await?;
     let ctx = AgentCtx {
         state,
@@ -1783,6 +2165,8 @@ pub async fn cloud_agent_stream(
         current: Some(stream),
         pending_calls: Vec::new(),
         last_usage: None,
+        model: round_model,
+        round_started: Instant::now(),
     };
     let timeout = cloud_timeout();
     let stall_error = "云端流式响应超时：长时间未返回新内容，请稍后重试。".to_string();
@@ -1840,6 +2224,7 @@ pub async fn cloud_agent_stream(
                     let next = cloud_agent_round_stream(ctx.messages.clone(), ctx.web_search).await?;
                     ctx.turn += 1;
                     ctx.current = Some(next);
+                    ctx.round_started = Instant::now();
                 }
 
                 let stream = ctx.current.as_mut().expect("current stream");
@@ -1922,6 +2307,19 @@ pub async fn cloud_agent_stream(
                         } else {
                             Some((input, output))
                         };
+                        // usage 落库（P1-7）：工具循环每轮流式各记一条（多轮
+                        // 累计需自行求和）；只落元数据，不落内容
+                        if let Some((input_tokens, output_tokens)) = ctx.last_usage {
+                            record_usage(LlmUsageRecord {
+                                scenario: ModelScenario::Chat.as_str(),
+                                channel: "cloud",
+                                model: ctx.model.clone(),
+                                fn_name: "agent_tool_loop".to_string(),
+                                prompt_tokens: Some(input_tokens),
+                                completion_tokens: Some(output_tokens),
+                                elapsed_ms: ctx.round_started.elapsed().as_millis() as u64,
+                            });
+                        }
                         continue;
                     }
                     // ToolCallDelta / Unknown 等：完整 ToolCall 事件会随后到达，忽略
@@ -2112,6 +2510,17 @@ async fn cloud_chat_messages(
             if text.is_empty() {
                 Err(LlmError::Permanent("云端模型返回内容为空".to_string()))
             } else {
+                // usage 落库（P1-7，仅元数据）
+                let (prompt_tokens, completion_tokens) = usage_from_rig_response(&response);
+                record_usage(LlmUsageRecord {
+                    scenario: scenario_for_fn("general_chat", web_search),
+                    channel: "cloud",
+                    model: model_name,
+                    fn_name: "general_chat".to_string(),
+                    prompt_tokens,
+                    completion_tokens,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                });
                 Ok(text)
             }
         }
@@ -2138,6 +2547,7 @@ async fn rig_chat_messages(
 ) -> Result<String, LlmError> {
     let client = rig_client().map_err(LlmError::Permanent)?;
     let model_name = ollama_model();
+    let started = Instant::now();
     info!(
         target: "llm",
         "rig_messages_request url={} model={} system_len={} history_turns={}",
@@ -2161,6 +2571,7 @@ async fn rig_chat_messages(
 
     match tokio::time::timeout(timeout, model.completion(request)).await {
         Ok(Ok(response)) => {
+            let (prompt_tokens, completion_tokens) = usage_from_rig_response(&response);
             let text: String = response
                 .choice
                 .iter()
@@ -2173,6 +2584,16 @@ async fn rig_chat_messages(
             if text.is_empty() {
                 Err(LlmError::Permanent("Empty response from Ollama".to_string()))
             } else {
+                // usage 落库（P1-7，仅元数据）
+                record_usage(LlmUsageRecord {
+                    scenario: ModelScenario::Chat.as_str(),
+                    channel: "rig",
+                    model: model_name,
+                    fn_name: "general_chat".to_string(),
+                    prompt_tokens,
+                    completion_tokens,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                });
                 Ok(text)
             }
         }
@@ -2206,6 +2627,11 @@ struct OllamaChatRequest {
 #[derive(Deserialize)]
 struct OllamaChatResponse {
     message: Option<OllamaChatMessage>,
+    /// 用量元数据（P1-7）：Ollama /api/chat 回传 token 计数，可能缺失 → None
+    #[serde(default)]
+    prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    eval_count: Option<u64>,
 }
 
 async fn ollama_chat_messages(
@@ -2215,6 +2641,7 @@ async fn ollama_chat_messages(
     timeout: Duration,
 ) -> Result<String, LlmError> {
     let client = legacy_http_client();
+    let started = Instant::now();
 
     let mut messages = vec![OllamaChatMessage {
         role: "system".to_string(),
@@ -2278,10 +2705,22 @@ async fn ollama_chat_messages(
     }
 
     let data: OllamaChatResponse = resp.json().await.map_err(|e| LlmError::Permanent(format!("Parse error: {}", e)))?;
-    data.message
+    let text = data
+        .message
         .map(|m| m.content)
         .filter(|c| !c.is_empty())
-        .ok_or_else(|| LlmError::Permanent("Empty response from Ollama".to_string()))
+        .ok_or_else(|| LlmError::Permanent("Empty response from Ollama".to_string()))?;
+    // usage 落库（P1-7）：只落元数据，不落内容
+    record_usage(LlmUsageRecord {
+        scenario: ModelScenario::Chat.as_str(),
+        channel: "legacy",
+        model: req.model,
+        fn_name: "general_chat".to_string(),
+        prompt_tokens: data.prompt_eval_count.map(|v| v as usize),
+        completion_tokens: data.eval_count.map(|v| v as usize),
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    });
+    Ok(text)
 }
 
 /// general_chat_stream 的流式输出事件：
@@ -2319,15 +2758,18 @@ pub async fn general_chat_stream(
 /// 复用 rig client 缓存、ollama_url()/ollama_model() 与聊天超时
 ///（RG_OLLAMA_CHAT_TIMEOUT_SECS），超时文案与 call_rig 一致。
 /// 客户端断开时流自然 drop（rig stream 支持 cancel）。
+/// channel 参数供 usage 落库区分 legacy / rig（P1-7）。
 /// 注：改造前 legacy/rig 通道的流式即统一经 rig-core（legacy 通道未集成
 /// Ollama 原生 API 流式），P0-1 仅做结构收敛，行为原样保留。
 async fn ollama_chat_stream(
+    channel: &'static str,
     system: &str,
     history: &ChatHistory,
     query: &str,
 ) -> Result<ChatEventStream, String> {
     let client = rig_client()?;
     let model_name = ollama_model();
+    let started = Instant::now();
     let timeout = ollama_timeout("RG_OLLAMA_CHAT_TIMEOUT_SECS", DEFAULT_OLLAMA_CHAT_TIMEOUT_SECS);
 
     let model = client.completion_model(&model_name);
@@ -2388,7 +2830,11 @@ async fn ollama_chat_stream(
     };
 
     let stream = Box::pin(rig_stream);
-    let mapped = futures::stream::try_unfold(stream, |mut stream| async move {
+    // move 捕获：映射闭包随返回的流存活，必须持有 model_name 所有权
+    //（channel/started 均为 Copy）；usage 落库在 Final 分支（P1-7）
+    let mapped = futures::stream::try_unfold(stream, move |mut stream| {
+        let model_name = model_name.clone();
+        async move {
         use futures::StreamExt;
         loop {
             match stream.next().await {
@@ -2428,12 +2874,26 @@ async fn ollama_chat_stream(
                             Some((input.unwrap_or(0) as usize, output.unwrap_or(0) as usize))
                         }
                     };
+                    // usage 落库（P1-7）：Ollama 回传了 token 计数才记录；
+                    // 只落元数据，不落内容
+                    if let Some((input_tokens, output_tokens)) = usage {
+                        record_usage(LlmUsageRecord {
+                            scenario: ModelScenario::Chat.as_str(),
+                            channel,
+                            model: model_name.clone(),
+                            fn_name: "general_chat".to_string(),
+                            prompt_tokens: Some(input_tokens),
+                            completion_tokens: Some(output_tokens),
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                        });
+                    }
                     return Ok(Some((ChatStreamEvent::Done(usage), stream)));
                 }
                 // ToolCall / ToolCallDelta / Unknown 等与通用聊天无关，忽略
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => return Err(format!("Ollama 流式响应失败：{}", e)),
             }
+        }
         }
     });
     Ok(Box::pin(mapped))

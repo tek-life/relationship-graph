@@ -10,7 +10,7 @@ use crate::types::{
     InviteToken, QaInstructionModule, SkillBinding, SkillPackage, SkillPackageFile,
     UpdateRoleRequest, UpdateSkillBindingsRequest, User,
 };
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use chrono::Utc;
@@ -625,6 +625,119 @@ pub async fn delete_cloud_api_key(
         summary["source"].as_str().unwrap_or("none")
     );
     Ok(Json(serde_json::json!({ "deleted": true, "cloudApiKey": summary })))
+}
+
+// ---------- 按场景模型配置（P1-7：model_configs 表） ----------
+//
+// 日志只记场景键与模型名（非敏感），不落对话内容。
+
+/// PUT /api/admin/model-configs/:scenario 请求体
+#[derive(serde::Deserialize)]
+pub struct UpdateModelConfigRequest {
+    pub model: String,
+}
+
+/// GET /api/admin/llm-usages 查询参数（limit 缺省 50，上限 500）
+#[derive(serde::Deserialize)]
+pub struct ListUsagesQuery {
+    pub limit: Option<i64>,
+}
+
+/// 单场景配置视图：默认值 / DB 配置值 / env 覆盖值 / 实际生效值
+fn scenario_config_view(
+    scenario: &str,
+    default_model: &str,
+    description: &str,
+    configured: Option<&str>,
+) -> serde_json::Value {
+    let env_override = crate::llm::env_override_for_scenario(scenario);
+    serde_json::json!({
+        "scenario": scenario,
+        "description": description,
+        "defaultModel": default_model,
+        "model": configured,
+        "envOverride": env_override,
+        "effectiveModel": crate::llm::effective_model_for(scenario),
+    })
+}
+
+/// GET /api/admin/model-configs — 列出全部场景的模型配置（含默认值/
+/// env 覆盖/实际生效模型），按 SCENARIO_METAS 定义顺序
+pub async fn list_model_configs(
+    State(state): State<SharedState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let configs = crate::db::model_config::list_configs(conn)?;
+    drop(guard);
+
+    let items: Vec<serde_json::Value> = crate::db::model_config::SCENARIO_METAS
+        .iter()
+        .map(|(scenario, default_model, description)| {
+            let configured = configs
+                .iter()
+                .find(|(key, _, _)| key == scenario)
+                .map(|(_, model, _)| model.as_str());
+            scenario_config_view(scenario, default_model, description, configured)
+        })
+        .collect();
+    log::info!(target: "admin", "list_model_configs count={}", items.len());
+    Ok(Json(serde_json::json!({ "configs": items })))
+}
+
+/// PUT /api/admin/model-configs/:scenario — 更新场景模型（未知场景/空白
+/// 模型名拒绝）。注意：env 覆盖层优先级更高，设置了 RG_*_MODEL 时 DB
+/// 值不会生效，响应中 envOverride/effectiveModel 如实反映。
+pub async fn update_model_config(
+    State(state): State<SharedState>,
+    Path(scenario): Path<String>,
+    Json(req): Json<UpdateModelConfigRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !crate::db::model_config::is_known_scenario(&scenario) {
+        return Err(ApiError::bad_request(format!("未知场景：{}", scenario)));
+    }
+    let model = req.model.trim().to_string();
+    if model.is_empty() {
+        return Err(ApiError::bad_request("模型名不能为空，如需清除请使用 DELETE"));
+    }
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    crate::db::model_config::set_model(conn, &scenario, &model)?;
+    drop(guard);
+    log::info!(target: "admin", "update_model_config scenario={} model={}", scenario, model);
+    Ok(Json(serde_json::json!({ "updated": true, "scenario": scenario, "model": model })))
+}
+
+/// DELETE /api/admin/model-configs/:scenario — 清除场景配置行（幂等），
+/// 解析回退 env/硬编码默认
+pub async fn delete_model_config(
+    State(state): State<SharedState>,
+    Path(scenario): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !crate::db::model_config::is_known_scenario(&scenario) {
+        return Err(ApiError::bad_request(format!("未知场景：{}", scenario)));
+    }
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    crate::db::model_config::delete_model(conn, &scenario)?;
+    drop(guard);
+    log::info!(target: "admin", "delete_model_config scenario={}", scenario);
+    Ok(Json(serde_json::json!({ "deleted": true, "scenario": scenario })))
+}
+
+/// GET /api/admin/llm-usages?limit=N — 最近 N 条 LLM 用量元数据
+///（默认 50，上限 500）。只含 token 数/耗时等元数据，不含对话内容。
+pub async fn list_llm_usages(
+    State(state): State<SharedState>,
+    Query(query): Query<ListUsagesQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+    let conn = get_conn(&guard)?;
+    let usages = crate::db::model_config::recent_usages(conn, limit)?;
+    drop(guard);
+    log::info!(target: "admin", "list_llm_usages limit={} count={}", limit, usages.len());
+    Ok(Json(serde_json::json!({ "usages": usages })))
 }
 
 #[cfg(test)]

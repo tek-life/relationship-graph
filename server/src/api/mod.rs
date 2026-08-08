@@ -152,6 +152,13 @@ pub fn router(state: SharedState) -> Router {
             "/api/admin/config/cloud-api-key",
             put(admin::update_cloud_api_key).delete(admin::delete_cloud_api_key),
         )
+        // 按场景模型配置 + LLM 用量（P1-7）
+        .route("/api/admin/model-configs", get(admin::list_model_configs))
+        .route(
+            "/api/admin/model-configs/:scenario",
+            put(admin::update_model_config).delete(admin::delete_model_config),
+        )
+        .route("/api/admin/llm-usages", get(admin::list_llm_usages))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
     Router::new()

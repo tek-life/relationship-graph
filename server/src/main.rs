@@ -46,6 +46,49 @@ async fn main() {
         }));
     }
 
+    // 注册场景模型配置的 DB 读取器（P1-7：env > DB > 默认）。短持锁读
+    // model_configs 表后立刻释放；失败降级为无值（回退 env/默认，行为
+    // 与改造前一致），读取器内部不打日志。
+    {
+        let reader_state = state.clone();
+        llm::register_model_config_reader(Box::new(move |scenario| {
+            let guard = reader_state.db.lock().ok()?;
+            let conn = db::get_conn(&guard).ok()?;
+            db::model_config::get_model(conn, scenario).ok().flatten()
+        }));
+    }
+
+    // 注册 LLM usage 落库写入器（P1-7：只落 token 数/耗时等元数据，
+    // 绝不落对话内容）。短持锁写入，失败记 warn 不阻断聊天链路。
+    {
+        let writer_state = state.clone();
+        llm::register_usage_writer(Box::new(move |record| {
+            let guard = match writer_state.db.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    log::warn!(target: "llm", "usage_write_skipped reason=db_lock_poisoned");
+                    return;
+                }
+            };
+            let conn = match db::get_conn(&guard) {
+                Ok(conn) => conn,
+                Err(_) => return, // 库未解锁/不可用时静默丢弃，不影响主链路
+            };
+            let insert = db::model_config::UsageInsert {
+                scenario: record.scenario,
+                channel: record.channel,
+                model: &record.model,
+                fn_name: &record.fn_name,
+                prompt_tokens: record.prompt_tokens.map(|v| v as i64),
+                completion_tokens: record.completion_tokens.map(|v| v as i64),
+                elapsed_ms: record.elapsed_ms as i64,
+            };
+            if let Err(e) = db::model_config::insert_usage(conn, &insert) {
+                log::warn!(target: "llm", "usage_write_failed error={}", e);
+            }
+        }));
+    }
+
     // 启动自动解锁：存在密钥文件即用其打开加密库，无需任何人工解锁步骤。
     // 密钥文件缺失但库存在（老库）时保持锁定，等待 /api/auth/migrate 一次性迁移。
     match std::fs::read_to_string(state.key_file_path()) {
