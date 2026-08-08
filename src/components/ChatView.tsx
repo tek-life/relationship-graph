@@ -14,19 +14,20 @@ import {
   type KeyboardEvent,
   type RefObject,
 } from 'react';
-import { Check, ChevronDown, FileText, Globe, Loader2, Menu, Mic, Paperclip, Send, Sparkles, Square, X } from 'lucide-react';
+import { Check, ChevronDown, FileText, Globe, Loader2, Menu, Mic, PanelLeftOpen, Paperclip, Send, Sparkles, Square, X } from 'lucide-react';
 import { useChat, type ChatDisplayMessage, type ChatThinking } from '../hooks/useChat';
 import CouncilBar from './CouncilBar';
-import SessionSidebar from './SessionSidebar';
+import SessionSidebar, { DockedSessionSidebar } from './SessionSidebar';
 import DraftConfirmation from './DraftConfirmation';
 import NlqResultCard from './NlqResultCard';
 import PathResultDisplay from './PathResultDisplay';
 import MarkdownContent from './MarkdownContent';
 import ImageOcrButton, { type ImageOcrHandle } from './ImageOcrButton';
 import DocumentAttachButton, { type DocumentAttachment } from './DocumentAttachButton';
+import { ConfirmDialog, IconBtn } from './ui';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
-import { isLastAssistantMessage } from '../hooks/chatMessageOps';
+import { isLastAssistantMessage, isGroupStart } from '../hooks/chatMessageOps';
 import { DIGITAL_AGENTS, CONTACT_MANAGER_AGENT_ID, type DigitalAgent } from '../services/digitalAgents';
 import { resolveTextDisplay } from '../services/contentPolicy';
 import type { NlqResponse } from '../types';
@@ -79,6 +80,12 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
   const [query, setQuery] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** ≥lg 常驻会话左栏是否展开（可折叠） */
+  const [dockedOpen, setDockedOpen] = useState(true);
+  /** 待删除会话（非空时渲染全局 ConfirmDialog） */
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
+  /** 操作失败提示（如删除会话失败），自动消失 */
+  const [actionError, setActionError] = useState('');
   /** 联网搜索开关（默认关，仅影响本轮请求） */
   const [webSearchOn, setWebSearchOn] = useState(false);
   /** 待发送的文档附件（不注入 textarea，随请求以 documents 字段提交） */
@@ -276,20 +283,26 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
     [editAndResend],
   );
 
-  // 会话删除（先确认，删除当前会话后由 useChat 自动切换/回到空态）
+  // 会话删除：先弹全局 ConfirmDialog 确认，确认后才执行删除
   const handleDeleteSession = useCallback(
-    async (sessionId: string) => {
+    (sessionId: string) => {
       const target = sessions.find((s) => s.id === sessionId);
-      const label = target?.title || '新会话';
-      if (!window.confirm(`确定删除会话「${label}」吗？删除后不可恢复。`)) return;
-      try {
-        await deleteSession(sessionId);
-      } catch {
-        window.alert('删除失败，请重试');
-      }
+      setPendingDelete({ id: sessionId, title: target?.title || '新会话' });
     },
-    [sessions, deleteSession],
+    [sessions],
   );
+
+  const confirmDeleteSession = useCallback(async () => {
+    if (!pendingDelete) return;
+    const { id } = pendingDelete;
+    setPendingDelete(null);
+    try {
+      await deleteSession(id);
+    } catch {
+      setActionError('删除失败，请重试');
+      window.setTimeout(() => setActionError(''), 4000);
+    }
+  }, [pendingDelete, deleteSession]);
 
   // 右侧面板操作
   const showPanel = useCallback((content: string, title: string) => {
@@ -311,42 +324,53 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
   const panelIsVisible = Boolean(panelContent);
 
   return (
-    <div className="flex flex-col h-full w-full" style={{ minHeight: '70vh' }}>
-      {/* 顶部工具栏 */}
-      <div
-        className="flex items-center gap-3 px-4 py-2 border-b shrink-0"
-        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-card)' }}
-      >
-        <button
-          type="button"
-          onClick={() => setSidebarOpen(true)}
-          className="rounded-lg p-2 transition hover:bg-surface"
-          style={{ color: 'var(--text-secondary)' }}
-          title="会话列表"
-        >
-          <Menu size={20} aria-hidden="true" />
-        </button>
-        <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-          {currentSessionId
-            ? sessions.find((s) => s.id === currentSessionId)?.title || '新会话'
-            : '开始新对话'}
-        </span>
-      </div>
+    <div className="flex h-full w-full" style={{ minHeight: '70vh' }}>
+      {/* ≥lg 常驻会话左栏（可折叠） */}
+      {dockedOpen && (
+        <aside className="hidden h-full lg:block">
+          <DockedSessionSidebar
+            sessions={sessions}
+            currentSessionId={currentSessionId}
+            onSelectSession={switchSession}
+            onNewSession={createSession}
+            onRenameSession={handleRenameSession}
+            onDeleteSession={handleDeleteSession}
+            onCollapse={() => setDockedOpen(false)}
+          />
+        </aside>
+      )}
 
-      {/* 会话侧边栏 */}
+      {/* <lg 抽屉式会话侧边栏 */}
       <SessionSidebar
         sessions={sessions}
         currentSessionId={currentSessionId}
         onSelectSession={switchSession}
         onNewSession={createSession}
         onRenameSession={handleRenameSession}
-        onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
+        onDeleteSession={handleDeleteSession}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
 
-      {/* 主体区域：消息流 + 右侧面板 */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* 主列：会话入口开关 + 消息流 + 右侧面板 */}
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        {/* <lg：抽屉开关（≥lg 常驻栏展开时本行不占位） */}
+        <div className="flex shrink-0 items-center px-4 pt-2 lg:hidden">
+          <IconBtn title="会话列表" onClick={() => setSidebarOpen(true)}>
+            <Menu size={18} aria-hidden="true" />
+          </IconBtn>
+        </div>
+        {/* ≥lg 常驻栏折叠后：展开开关 */}
+        {!dockedOpen && (
+          <div className="hidden shrink-0 items-center px-4 pt-2 lg:flex">
+            <IconBtn title="展开会话列表" onClick={() => setDockedOpen(true)}>
+              <PanelLeftOpen size={18} aria-hidden="true" />
+            </IconBtn>
+          </div>
+        )}
+
+        {/* 主体区域：消息流 + 右侧面板 */}
+        <div className="flex-1 flex overflow-hidden">
         <div
           className={`grid gap-0 flex-1 ${
             panelIsVisible ? 'xl:grid-cols-[minmax(0,1fr)_420px]' : 'grid-cols-1'
@@ -357,11 +381,12 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
             <div className="flex-1 overflow-y-auto px-4 py-4">
               <div className={`mx-auto ${panelIsVisible ? 'w-full' : 'max-w-4xl'}`}>
                 {hasMessages ? (
-                  <div className="space-y-6">
-                    {messages.map((message) => (
+                  <div>
+                    {messages.map((message, index) => (
                       <ChatBubble
                         key={message.id}
                         message={message}
+                        groupStart={isGroupStart(messages, index)}
                         onPersonClick={onPersonClick}
                         onShowPanel={showPanel}
                         onClosePanel={closePanel}
@@ -392,6 +417,11 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
             {error && (
               <div className="px-4 pb-2">
                 <p className="rounded-2xl bg-danger-light px-4 py-3 text-sm text-danger">{error}</p>
+              </div>
+            )}
+            {actionError && (
+              <div className="px-4 pb-2">
+                <p className="rounded-2xl bg-danger-light px-4 py-3 text-sm text-danger" role="alert">{actionError}</p>
               </div>
             )}
 
@@ -441,6 +471,18 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
           )}
         </div>
       </div>
+      </div>
+
+      {/* 删除会话确认弹窗（替代 window.confirm） */}
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        danger
+        title="删除会话"
+        message={`确定删除会话「${pendingDelete?.title ?? ''}」吗？删除后不可恢复。`}
+        confirmLabel="删除"
+        onConfirm={() => void confirmDeleteSession()}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }
@@ -516,6 +558,8 @@ function EmptyState({ onApplyExample, onPickMention }: EmptyStateProps) {
 
 interface ChatBubbleProps {
   message: ChatDisplayMessage;
+  /** 是否为同角色连续消息组的首条（仅组首渲染头像与角色标签） */
+  groupStart: boolean;
   onPersonClick?: (personId: string) => void;
   onShowPanel: (content: string, title: string) => void;
   onClosePanel: () => void;
@@ -531,6 +575,7 @@ interface ChatBubbleProps {
 
 function ChatBubble({
   message,
+  groupStart,
   onPersonClick,
   onShowPanel,
   onClosePanel,
@@ -592,30 +637,37 @@ function ChatBubble({
   const isCollapsible = decision?.mode === 'collapsible' && !message.attachment;
 
   return (
-    <div className={`group flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`group flex ${groupStart ? 'mt-6' : 'mt-1.5'} ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={`flex w-full max-w-3xl gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
-        {/* 头像 */}
-        <div
-          className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-card shadow-sm"
-          style={{ borderColor: 'var(--border-color)' }}
-        >
-          {isUser ? (
-            <span className="text-sm font-semibold" style={{ color: 'var(--accent-color)' }}>
-              你
-            </span>
-          ) : (
-            <AssistantAvatar />
-          )}
-        </div>
+        {/* 头像：仅组首渲染，后续同角色消息用等宽占位保持对齐 */}
+        {groupStart ? (
+          <div
+            className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-card shadow-sm"
+            style={{ borderColor: 'var(--border-color)' }}
+          >
+            {isUser ? (
+              <span className="text-sm font-semibold" style={{ color: 'var(--accent-color)' }}>
+                你
+              </span>
+            ) : (
+              <AssistantAvatar />
+            )}
+          </div>
+        ) : (
+          <div className="w-8 shrink-0" aria-hidden="true" />
+        )}
 
         {/* 消息体 */}
         <div className={`min-w-0 flex-1 ${isUser ? 'flex justify-end' : 'flex justify-start'}`}>
           <div className="space-y-2">
-            <div className="flex items-center gap-2 px-1">
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-                {isUser ? '你' : '助理'}
-              </span>
-            </div>
+            {/* 角色标签：仅组首渲染 */}
+            {groupStart && (
+              <div className="flex items-center gap-2 px-1">
+                <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  {isUser ? '你' : '助理'}
+                </span>
+              </div>
+            )}
 
             <div
               className={`rounded-3xl border px-4 py-3 shadow-sm ${
@@ -1085,9 +1137,9 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
         />
         <div className="flex items-center justify-between px-3 pb-3">
           <div className="flex items-center gap-1">
-            {/* 语音按钮 */}
-            <button
-              type="button"
+            {/* 语音按钮（36px 圆形 IconBtn + tooltip） */}
+            <IconBtn
+              size="lg"
               title={
                 !voice.supported
                   ? voice.unsupportedReason || '当前环境不支持语音输入'
@@ -1095,15 +1147,20 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
                     ? '点击停止录音'
                     : '语音输入'
               }
-              className={`rounded-full p-2 text-lg leading-none transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                voice.recording ? 'animate-pulse bg-danger-light text-danger' : 'hover:bg-surface'
-              }`}
-              style={!voice.supported ? { color: 'var(--text-tertiary, #aaa)' } : undefined}
+              className={voice.recording ? 'animate-pulse' : ''}
+              style={{
+                borderRadius: '9999px',
+                ...(voice.recording
+                  ? { color: 'var(--danger-color)', backgroundColor: 'var(--danger-light)' }
+                  : !voice.supported
+                    ? { color: 'var(--text-tertiary, #aaa)' }
+                    : {}),
+              }}
               disabled={loading || !voice.supported || voice.transcribing}
               onClick={onToggleVoice}
             >
               {voice.recording ? <Square size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-            </button>
+            </IconBtn>
             {voice.recording && (
               <button
                 type="button"
@@ -1119,23 +1176,22 @@ const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Compose
             {docUploadEnabled && (
               <DocumentAttachButton onDocument={onAddDocument} disabled={busy} />
             )}
-            {/* 联网搜索开关 */}
-            <button
-              type="button"
+            {/* 联网搜索开关（36px 圆形 IconBtn + tooltip） */}
+            <IconBtn
+              size="lg"
               title={webSearchOn ? '联网搜索已开启，点击关闭' : '开启联网搜索（回答可能引用实时网络信息）'}
               aria-pressed={webSearchOn}
-              className={`flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                webSearchOn
-                  ? 'bg-accent-light text-accent'
-                  : 'hover:bg-surface'
-              }`}
-              style={!webSearchOn ? { color: 'var(--text-secondary)' } : undefined}
+              style={{
+                borderRadius: '9999px',
+                ...(webSearchOn
+                  ? { color: 'var(--accent-color)', backgroundColor: 'var(--accent-light)' }
+                  : {}),
+              }}
               disabled={busy}
               onClick={onToggleWebSearch}
             >
-              <Globe size={14} aria-hidden="true" />
-              联网
-            </button>
+              <Globe size={18} aria-hidden="true" />
+            </IconBtn>
           </div>
           {/* 停止生成 + 发送按钮 */}
           <div className="flex items-center gap-2">

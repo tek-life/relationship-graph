@@ -4,6 +4,7 @@ import {
   truncateBeforeMessage,
   findPrecedingUserMessage,
   isLastAssistantMessage,
+  isGroupStart,
 } from './chatMessageOps';
 import type { ChatDisplayMessage } from './useChat';
 
@@ -96,6 +97,46 @@ describe('findPrecedingUserMessage', () => {
   it('目标是首条消息时返回 null', () => {
     const messages = [msg('u1', 'user'), msg('a1', 'assistant')];
     expect(findPrecedingUserMessage(messages, 'u1')).toBeNull();
+  });
+});
+
+describe('isGroupStart', () => {
+  it('首条消息永远是组首', () => {
+    expect(isGroupStart([msg('u1', 'user')], 0)).toBe(true);
+  });
+
+  it('角色切换处为组首', () => {
+    const messages = [msg('u1', 'user'), msg('a1', 'assistant'), msg('u2', 'user')];
+    expect(isGroupStart(messages, 1)).toBe(true);
+    expect(isGroupStart(messages, 2)).toBe(true);
+  });
+
+  it('同角色连续消息只有首条为组首', () => {
+    const messages = [
+      msg('a1', 'assistant'),
+      msg('a2', 'assistant'),
+      msg('a3', 'assistant'),
+      msg('u1', 'user'),
+      msg('u2', 'user'),
+    ];
+    expect(isGroupStart(messages, 0)).toBe(true);
+    expect(isGroupStart(messages, 1)).toBe(false);
+    expect(isGroupStart(messages, 2)).toBe(false);
+    expect(isGroupStart(messages, 3)).toBe(true);
+    expect(isGroupStart(messages, 4)).toBe(false);
+  });
+
+  it('system 消息参与分组判定（前后角色不同即为组首）', () => {
+    const messages = [msg('a1', 'assistant'), msg('s1', 'system'), msg('a2', 'assistant')];
+    expect(isGroupStart(messages, 1)).toBe(true);
+    expect(isGroupStart(messages, 2)).toBe(true);
+  });
+
+  it('index 越界时返回 false', () => {
+    const messages = [msg('u1', 'user')];
+    expect(isGroupStart(messages, -1)).toBe(false);
+    expect(isGroupStart(messages, 1)).toBe(false);
+    expect(isGroupStart([], 0)).toBe(false);
   });
 });
 

@@ -53,6 +53,21 @@ export function findPrecedingUserMessage(
 }
 
 /**
+ * 判断某条消息是否为「同角色连续消息组」的首条。
+ * 用于消息分组渲染：仅组首条渲染头像与「你/助理」标签，
+ * 后续同角色消息收紧间距、省略头像，降低视觉噪声。
+ * index 越界时返回 false。
+ */
+export function isGroupStart(
+  messages: ChatDisplayMessage[],
+  index: number,
+): boolean {
+  if (index < 0 || index >= messages.length) return false;
+  if (index === 0) return true;
+  return messages[index].role !== messages[index - 1].role;
+}
+
+/**
  * 判断某条消息是否为列表中最后一条 assistant 消息。
  * 用于只在最后一条 assistant 消息上展示「重新生成」入口。
  */

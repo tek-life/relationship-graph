@@ -2,6 +2,7 @@
 // worker 与 wasm core 已本地化到 public/tesseract/，traineddata 走 jsdelivr CDN（首次识别需联网，之后走缓存）。
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Camera } from 'lucide-react';
+import { IconBtn } from './ui';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const OCR_LANGS = 'chi_sim+eng';
@@ -148,15 +149,15 @@ const ImageOcrButton = forwardRef<ImageOcrHandle | null, Props>(function ImageOc
           if (file) void processFile(file);
         }}
       />
-      <button
-        type="button"
+      <IconBtn
+        size="lg"
         title="上传图片识别文字（也可直接粘贴截图）"
-        className="inline-flex items-center justify-center rounded-full p-2 transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
+        style={{ borderRadius: '9999px' }}
         disabled={disabled || running}
         onClick={() => fileInputRef.current?.click()}
       >
         <Camera size={18} aria-hidden="true" />
-      </button>
+      </IconBtn>
 
       {panelVisible && (
         <div className="absolute bottom-full left-0 z-10 mb-2 w-64 rounded-lg border bg-card p-3 shadow-lg">
