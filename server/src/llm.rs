@@ -900,6 +900,8 @@ async fn cloud_agent_round_stream(
 
 struct AgentCtx {
     state: crate::state::SharedState,
+    /// 工具数据查询的归属用户（用户隔离：工具只能读到该用户的数据）
+    owner_id: String,
     messages: Vec<rig_core::completion::Message>,
     web_search: bool,
     max_turns: usize,
@@ -918,6 +920,7 @@ pub async fn cloud_agent_stream(
     query: String,
     web_search: bool,
     state: crate::state::SharedState,
+    owner_id: String,
     max_turns: usize,
 ) -> Result<AgentEventStream, String> {
     let messages = vec![
@@ -927,6 +930,7 @@ pub async fn cloud_agent_stream(
     let stream = cloud_agent_round_stream(messages.clone(), web_search).await?;
     let ctx = AgentCtx {
         state,
+        owner_id,
         messages,
         web_search,
         max_turns,
@@ -975,7 +979,7 @@ pub async fn cloud_agent_stream(
                         let output = match ctx.state.db.lock() {
                             Ok(guard) => match crate::db::get_conn(&guard) {
                                 Ok(conn) => {
-                                    crate::data_tools::execute_tool(conn, &call.name, &call.arguments)
+                                    crate::data_tools::execute_tool(conn, &ctx.owner_id, &call.name, &call.arguments)
                                 }
                                 Err(e) => {
                                     serde_json::json!({"error": format!("数据库未解锁: {}", e)}).to_string()
@@ -1091,10 +1095,11 @@ pub async fn cloud_chat_with_tools(
     query: String,
     web_search: bool,
     state: crate::state::SharedState,
+    owner_id: String,
     max_turns: usize,
 ) -> Result<String, String> {
     use futures::StreamExt;
-    let stream = cloud_agent_stream(system_prompt, query, web_search, state, max_turns).await?;
+    let stream = cloud_agent_stream(system_prompt, query, web_search, state, owner_id, max_turns).await?;
     futures::pin_mut!(stream);
     let mut text = String::new();
     let mut tool_rounds = 0usize;

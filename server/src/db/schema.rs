@@ -6,12 +6,16 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     let started = Instant::now();
     log::info!(target: "db", "schema_migrate_start");
     // 老库升级必须在 CREATE INDEX 之前完成：
-    // 老 users 表缺少 role 列会导致 idx_users_role 创建失败，整个迁移中止
+    // 老 users 表缺少 role 列会导致 idx_users_role 创建失败，
+    // 老 persons 表缺少 owner_id 列会导致 idx_persons_owner 创建失败，
+    // 任一项都会让整个迁移中止
     ensure_user_columns(conn)?;
+    ensure_person_columns(conn)?;
     let result = conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS persons (
             id TEXT PRIMARY KEY,
+            owner_id TEXT,
             name TEXT NOT NULL,
             aliases TEXT NOT NULL DEFAULT '[]',
             avatar TEXT,
@@ -78,6 +82,7 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_persons_name ON persons(name);
+        CREATE INDEX IF NOT EXISTS idx_persons_owner ON persons(owner_id);
         CREATE INDEX IF NOT EXISTS idx_persons_location ON persons(location);
         CREATE INDEX IF NOT EXISTS idx_persons_status ON persons(status);
         CREATE INDEX IF NOT EXISTS idx_persons_sensitivity ON persons(sensitivity_level);
@@ -191,7 +196,6 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     }
     result?;
     ensure_relationship_columns(conn)?;
-    ensure_person_columns(conn)?;
     ensure_agent_skills_columns(conn)?;
     repair_orphan_sessions(conn)?;
     agent_config::seed_defaults(conn)
@@ -264,7 +268,20 @@ fn ensure_user_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 /// 老库升级：为 persons 表补充学校/项目列（v1.4 推断规则扩展）
+/// 与 owner_id 列（用户数据隔离）：owner_id 为空的存量联系人
+/// 归属到首个用户（通常是 admin，与 repair_orphan_sessions 先例一致）。
+/// 必须在 CREATE INDEX 之前调用（老库无 owner_id 列时 idx_persons_owner
+/// 创建会失败）；全新库 persons 尚未创建，直接跳过。
 fn ensure_person_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let persons_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'persons')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !persons_exists {
+        return Ok(());
+    }
+
     let mut stmt = conn.prepare("PRAGMA table_info(persons)")?;
     let existing: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(1))?
@@ -273,11 +290,32 @@ fn ensure_person_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
     let columns = [
         ("school", "TEXT"),
         ("projects", "TEXT NOT NULL DEFAULT '[]'"),
+        ("owner_id", "TEXT"),
     ];
     for (name, ddl) in columns {
         if !existing.iter().any(|col| col == name) {
             conn.execute(&format!("ALTER TABLE persons ADD COLUMN {} {}", name, ddl), [])?;
             log::info!(target: "db", "schema_migrate_add_column table=persons column={}", name);
+        }
+    }
+
+    // 存量联系人归属回填：无主数据归到首个用户，不删除任何数据；
+    // 幂等：仅处理 owner_id 仍为空的行；无 users 表的极早期库跳过
+    let users_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users')",
+        [],
+        |row| row.get(0),
+    )?;
+    if users_exists {
+        let backfilled = conn.execute(
+            "UPDATE persons SET owner_id = (
+                 SELECT id FROM users ORDER BY created_at ASC LIMIT 1
+             )
+             WHERE owner_id IS NULL",
+            [],
+        )?;
+        if backfilled > 0 {
+            log::info!(target: "db", "schema_migrate_backfill_person_owner count={}", backfilled);
         }
     }
     Ok(())

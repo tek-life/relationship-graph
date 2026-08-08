@@ -123,6 +123,14 @@ relationship-graph/
 - 数据库使用 SQLCipher 加密，路径：`~/.local/share/relationship-graph/app.db`（Linux）。
 - 历史 Tauri 原型使用主密码 + Argon2id 派生密钥 + 系统密钥链（keyring），已被上述机制取代。
 
+**用户数据隔离（联系人数据私有，非系统共享）**：
+
+- `persons.owner_id` 归属用户；relationships / interactions / entity_mentions 的归属经由 person 外键 JOIN 派生，不加冗余列。
+- 所有数据层函数强制携带 `owner_id` 并在 **SQL 层 WHERE 过滤**（而非应用层后置过滤）；NLQ、图谱、关系推断、Agent 数据工具、Excel 导入均已接入。
+- 跨用户访问统一表现为「查无此数据」（404「数据不存在或无权访问」），不泄露存在性；越权写入由数据层抛 `InvalidQuery` 拒绝。
+- 数据端点从认证中间件提取 `AuthUser` user_id，取不到一律 401；chat 链路无用户会话时禁用数据工具、降级普通聊天。
+- 存量迁移：无 `owner_id` 的联系人回填到首个用户（`users ORDER BY created_at LIMIT 1`），幂等；补列必须先于建索引（`idx_persons_owner` 依赖新列）。
+
 ### 5.2 敏感级别访问控制
 
 - `low`：正常展示姓名与详情。

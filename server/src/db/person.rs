@@ -3,7 +3,12 @@ use chrono::Utc;
 use rusqlite::{params, Connection, Row};
 use uuid::Uuid;
 
-pub fn create(conn: &Connection, req: CreatePersonRequest) -> Result<Person, rusqlite::Error> {
+// 用户数据隔离约定：persons 以 owner_id 归属用户；relationships /
+// interactions / entity_mentions 的归属经由 person 外键派生，所有
+// 读写必须携带 owner_id 并在 SQL 层强制过滤（而非应用层后置过滤），
+// 跨用户访问统一表现为“查无此数据”（404/空集），不泄露存在性。
+
+pub fn create(conn: &Connection, owner_id: &str, req: CreatePersonRequest) -> Result<Person, rusqlite::Error> {
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let aliases_json = serde_json::to_string(&req.aliases).unwrap_or_else(|_| "[]".to_string());
@@ -13,12 +18,13 @@ pub fn create(conn: &Connection, req: CreatePersonRequest) -> Result<Person, rus
 
     conn.execute(
         "INSERT INTO persons (
-            id, name, aliases, avatar, phone, email, company, title, location, background,
+            id, owner_id, name, aliases, avatar, phone, email, company, title, location, background,
             relationship_strength, resource_tags, sensitivity_level, status, next_step, notes,
             school, projects, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             id,
+            owner_id,
             req.name,
             aliases_json,
             req.avatar,
@@ -41,10 +47,10 @@ pub fn create(conn: &Connection, req: CreatePersonRequest) -> Result<Person, rus
         ],
     )?;
 
-    get_by_id(conn, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+    get_by_id(conn, owner_id, &id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 
-pub fn update(conn: &Connection, id: &str, req: CreatePersonRequest) -> Result<Person, rusqlite::Error> {
+pub fn update(conn: &Connection, owner_id: &str, id: &str, req: CreatePersonRequest) -> Result<Person, rusqlite::Error> {
     let now = Utc::now().to_rfc3339();
     let aliases_json = serde_json::to_string(&req.aliases).unwrap_or_else(|_| "[]".to_string());
     let tags_json = serde_json::to_string(&req.resource_tags).unwrap_or_else(|_| "[]".to_string());
@@ -71,7 +77,7 @@ pub fn update(conn: &Connection, id: &str, req: CreatePersonRequest) -> Result<P
             school = ?16,
             projects = ?17,
             updated_at = ?18
-         WHERE id = ?19",
+         WHERE id = ?19 AND owner_id = ?20",
         params![
             req.name,
             aliases_json,
@@ -91,17 +97,18 @@ pub fn update(conn: &Connection, id: &str, req: CreatePersonRequest) -> Result<P
             req.school,
             projects_json,
             now,
-            id
+            id,
+            owner_id
         ],
     )?;
 
-    get_by_id(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+    get_by_id(conn, owner_id, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 
-pub fn get_by_id(conn: &Connection, id: &str) -> Result<Option<Person>, rusqlite::Error> {
-    let sql = PERSON_SELECT_SQL.to_owned() + " WHERE id = ?1";
+pub fn get_by_id(conn: &Connection, owner_id: &str, id: &str) -> Result<Option<Person>, rusqlite::Error> {
+    let sql = PERSON_SELECT_SQL.to_owned() + " WHERE id = ?1 AND owner_id = ?2";
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query(params![id])?;
+    let mut rows = stmt.query(params![id, owner_id])?;
     if let Some(row) = rows.next()? {
         Ok(Some(map_person(row)?))
     } else {
@@ -109,23 +116,23 @@ pub fn get_by_id(conn: &Connection, id: &str) -> Result<Option<Person>, rusqlite
     }
 }
 
-pub fn list_all(conn: &Connection) -> Result<Vec<Person>, rusqlite::Error> {
-    let mut stmt = conn.prepare(&(PERSON_SELECT_SQL.to_owned() + " ORDER BY updated_at DESC"))?;
-    let rows = stmt.query_map([], map_person)?;
+pub fn list_all(conn: &Connection, owner_id: &str) -> Result<Vec<Person>, rusqlite::Error> {
+    let mut stmt = conn.prepare(&(PERSON_SELECT_SQL.to_owned() + " WHERE owner_id = ?1 ORDER BY updated_at DESC"))?;
+    let rows = stmt.query_map(params![owner_id], map_person)?;
     rows.collect()
 }
 
-pub fn delete(conn: &Connection, id: &str) -> Result<(), rusqlite::Error> {
-    conn.execute("DELETE FROM persons WHERE id = ?1", params![id])?;
+pub fn delete(conn: &Connection, owner_id: &str, id: &str) -> Result<(), rusqlite::Error> {
+    conn.execute("DELETE FROM persons WHERE id = ?1 AND owner_id = ?2", params![id, owner_id])?;
     Ok(())
 }
 
-pub fn search_by_mention(conn: &Connection, mention: &str) -> Result<Vec<Person>, rusqlite::Error> {
+pub fn search_by_mention(conn: &Connection, owner_id: &str, mention: &str) -> Result<Vec<Person>, rusqlite::Error> {
     let pattern = format!("%{}%", mention);
     let mut stmt = conn.prepare(
-        &(PERSON_SELECT_SQL.to_owned() + " WHERE name LIKE ?1 OR aliases LIKE ?1 ORDER BY updated_at DESC")
+        &(PERSON_SELECT_SQL.to_owned() + " WHERE owner_id = ?2 AND (name LIKE ?1 OR aliases LIKE ?1) ORDER BY updated_at DESC")
     )?;
-    let rows = stmt.query_map(params![pattern], map_person)?;
+    let rows = stmt.query_map(params![pattern, owner_id], map_person)?;
     rows.collect()
 }
 

@@ -5,6 +5,8 @@
 //! relationships / interactions）。
 //!
 //! 安全约束（与 §5.2 敏感级别约定一致）：
+//! - 用户隔离：所有查询强制携带 owner_id 并在 SQL 层过滤，工具只能
+//!   读到归属当前用户的数据；
 //! - 脱敏在工具实现内部完成：medium / high 敏感联系人返回代称（aliases[0]），
 //!   high 额外标记 realNameHidden=true；模型从源头看不到真名；
 //! - phone / email 永不进入工具输出；
@@ -107,21 +109,21 @@ fn apply_output_budget(output: String, budget: usize) -> String {
     }
 }
 
-/// 工具执行入口：分发 → 锁内查询（脱敏在查询层完成）→ 预算截断。
+/// 工具执行入口：分发 → 锁内查询（归属过滤与脱敏在查询层完成）→ 预算截断。
 /// 返回字符串即回传给模型的 tool result（恒为合法 JSON 文本）。
-pub fn execute_tool(conn: &Connection, name: &str, args: &serde_json::Value) -> String {
+pub fn execute_tool(conn: &Connection, owner_id: &str, name: &str, args: &serde_json::Value) -> String {
     let result = match name {
         "search_contacts" => match serde_json::from_value::<SearchArgs>(args.clone()) {
-            Ok(a) => search_contacts(conn, &a),
+            Ok(a) => search_contacts(conn, owner_id, &a),
             Err(e) => Err(format!("参数解析失败: {}", e)),
         },
         "get_person_detail" => match serde_json::from_value::<DetailArgs>(args.clone()) {
-            Ok(a) => get_person_detail(conn, &a),
+            Ok(a) => get_person_detail(conn, owner_id, &a),
             Err(e) => Err(format!("参数解析失败: {}", e)),
         },
         "list_recent_interactions" => {
             match serde_json::from_value::<InteractionsArgs>(args.clone()) {
-                Ok(a) => list_recent_interactions(conn, &a),
+                Ok(a) => list_recent_interactions(conn, owner_id, &a),
                 Err(e) => Err(format!("参数解析失败: {}", e)),
             }
         }
@@ -148,8 +150,8 @@ pub fn execute_tool(conn: &Connection, name: &str, args: &serde_json::Value) -> 
 
 // ---------- 工具实现 ----------
 
-fn search_contacts(conn: &Connection, args: &SearchArgs) -> Result<serde_json::Value, String> {
-    let candidates = nlq::load_candidates(conn).map_err(|e| e.to_string())?;
+fn search_contacts(conn: &Connection, owner_id: &str, args: &SearchArgs) -> Result<serde_json::Value, String> {
+    let candidates = nlq::load_candidates(conn, owner_id).map_err(|e| e.to_string())?;
     let total = candidates.len();
 
     let location = args.location.as_deref().unwrap_or_default().trim();
@@ -215,7 +217,7 @@ fn search_contacts(conn: &Connection, args: &SearchArgs) -> Result<serde_json::V
     Ok(json!({ "total": total, "matched": contacts.len(), "contacts": contacts }))
 }
 
-fn get_person_detail(conn: &Connection, args: &DetailArgs) -> Result<serde_json::Value, String> {
+fn get_person_detail(conn: &Connection, owner_id: &str, args: &DetailArgs) -> Result<serde_json::Value, String> {
     let person_id: Option<String> = match (args.person_id.as_deref(), args.name.as_deref()) {
         (Some(id), _) if !id.trim().is_empty() => Some(id.trim().to_string()),
         _ => {
@@ -224,7 +226,7 @@ fn get_person_detail(conn: &Connection, args: &DetailArgs) -> Result<serde_json:
                 return Err("请提供 person_id 或 name 参数".to_string());
             }
             // 按真名或别名模糊搜索（别名即 medium/high 联系人对外展示的代称）
-            let candidates = nlq::search_persons_by_name(conn, name)?;
+            let candidates = nlq::search_persons_by_name(conn, owner_id, name)?;
             match candidates.len() {
                 0 => return Ok(json!({ "error": format!("未找到联系人：{}", name) })),
                 _ => Some(candidates[0].id.clone()),
@@ -233,7 +235,7 @@ fn get_person_detail(conn: &Connection, args: &DetailArgs) -> Result<serde_json:
     };
     let person_id = person_id.ok_or_else(|| "请提供 person_id 或 name 参数".to_string())?;
 
-    let candidates = nlq::load_candidates(conn).map_err(|e| e.to_string())?;
+    let candidates = nlq::load_candidates(conn, owner_id).map_err(|e| e.to_string())?;
     let c = candidates
         .iter()
         .find(|c| c.person_id == person_id)
@@ -241,25 +243,26 @@ fn get_person_detail(conn: &Connection, args: &DetailArgs) -> Result<serde_json:
 
     let background: Option<String> = conn
         .query_row(
-            "SELECT background FROM persons WHERE id = ?1",
-            params![person_id],
+            "SELECT background FROM persons WHERE id = ?1 AND owner_id = ?2",
+            params![person_id, owner_id],
             |row| row.get(0),
         )
         .ok()
         .flatten();
 
-    // 关系链（最多 10 条，对端同样脱敏）
+    // 关系链（最多 10 条，对端同样脱敏；仅限归属 owner 的关系）
     let mut stmt = conn
         .prepare(
             "SELECT r.relationship_type, r.strength, r.description, \
                     CASE WHEN r.from_person_id = ?1 THEN r.to_person_id ELSE r.from_person_id END AS other_id \
              FROM relationships r \
              WHERE (r.from_person_id = ?1 OR r.to_person_id = ?1) \
-               AND r.confirmation_status != 'rejected' LIMIT 10",
+               AND r.confirmation_status != 'rejected' \
+               AND r.from_person_id IN (SELECT id FROM persons WHERE owner_id = ?2) LIMIT 10",
         )
         .map_err(|e| e.to_string())?;
     let rel_rows: Vec<(String, String, Option<String>, String)> = stmt
-        .query_map(params![person_id], |row| {
+        .query_map(params![person_id, owner_id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .map_err(|e| e.to_string())?
@@ -343,6 +346,7 @@ fn get_person_detail(conn: &Connection, args: &DetailArgs) -> Result<serde_json:
 
 fn list_recent_interactions(
     conn: &Connection,
+    owner_id: &str,
     args: &InteractionsArgs,
 ) -> Result<serde_json::Value, String> {
     let days = args.days.unwrap_or(30).clamp(1, 365);
@@ -351,18 +355,20 @@ fn list_recent_interactions(
     let mut stmt = conn
         .prepare(
             "SELECT i.id, i.person_id, i.timestamp, COALESCE(i.summary, ''), i.content, i.topics \
-             FROM interactions i WHERE i.timestamp >= ?1 ORDER BY i.timestamp DESC LIMIT 40",
+             FROM interactions i WHERE i.timestamp >= ?1 \
+               AND i.person_id IN (SELECT id FROM persons WHERE owner_id = ?2) \
+             ORDER BY i.timestamp DESC LIMIT 40",
         )
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, String, String, String, Option<String>, Option<String>)> = stmt
-        .query_map(params![since], |row| {
+        .query_map(params![since, owner_id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
-    let candidates = nlq::load_candidates(conn).map_err(|e| e.to_string())?;
+    let candidates = nlq::load_candidates(conn, owner_id).map_err(|e| e.to_string())?;
 
     // 可选按联系人过滤（真名或代称匹配）
     let filter_person_id: Option<Option<String>> = args
@@ -477,6 +483,7 @@ mod tests {
 
     fn create_on(
         conn: &Connection,
+        owner_id: &str,
         name: &str,
         aliases: Vec<&str>,
         sensitivity: &str,
@@ -486,6 +493,7 @@ mod tests {
     ) -> String {
         let created = person::create(
             conn,
+            owner_id,
             CreatePersonRequest {
                 name: name.to_string(),
                 aliases: aliases.into_iter().map(String::from).collect(),
@@ -514,12 +522,13 @@ mod tests {
     #[test]
     fn search_contacts_masks_sensitive_names_and_never_leaks_phone() {
         let conn = in_memory_db();
-        create_on(&conn, "张低敏", vec![], "low", "上海", "某某地产集团", vec!["地产"]);
-        create_on(&conn, "李中敏", vec!["小李"], "medium", "上海", "某某地产集团", vec!["地产"]);
-        create_on(&conn, "王高敏", vec!["老王"], "high", "北京", "某某资本", vec!["融资"]);
+        create_on(&conn, "owner-a", "张低敏", vec![], "low", "上海", "某某地产集团", vec!["地产"]);
+        create_on(&conn, "owner-a", "李中敏", vec!["小李"], "medium", "上海", "某某地产集团", vec!["地产"]);
+        create_on(&conn, "owner-a", "王高敏", vec!["老王"], "high", "北京", "某某资本", vec!["融资"]);
 
         let out = execute_tool(
             &conn,
+            "owner-a",
             "search_contacts",
             &json!({"location": "上海"}),
         );
@@ -530,7 +539,7 @@ mod tests {
         assert!(!out.contains("13800000000"), "phone 永不输出");
         assert!(!out.contains("secret@example.com"), "email 永不输出");
 
-        let out_high = execute_tool(&conn, "search_contacts", &json!({}));
+        let out_high = execute_tool(&conn, "owner-a", "search_contacts", &json!({}));
         assert!(out_high.contains("老王"));
         assert!(out_high.contains("\"realNameHidden\":true"));
         assert!(!out_high.contains("王高敏"));
@@ -540,24 +549,49 @@ mod tests {
     #[test]
     fn search_contacts_keyword_and_days_filter() {
         let conn = in_memory_db();
-        create_on(&conn, "赵地产", vec![], "low", "上海", "某某地产集团", vec!["地产"]);
-        create_on(&conn, "钱设计", vec![], "low", "上海", "某某设计院", vec!["设计"]);
+        create_on(&conn, "owner-a", "赵地产", vec![], "low", "上海", "某某地产集团", vec!["地产"]);
+        create_on(&conn, "owner-a", "钱设计", vec![], "low", "上海", "某某设计院", vec!["设计"]);
 
-        let out = execute_tool(&conn, "search_contacts", &json!({"keyword": "地产"}));
+        let out = execute_tool(&conn, "owner-a", "search_contacts", &json!({"keyword": "地产"}));
         assert!(out.contains("赵地产"));
         assert!(!out.contains("钱设计"));
 
         // 从未联系 → 满足任意 N 天未联系
-        let out = execute_tool(&conn, "search_contacts", &json!({"min_days_no_contact": 30}));
+        let out = execute_tool(&conn, "owner-a", "search_contacts", &json!({"min_days_no_contact": 30}));
         assert!(out.contains("赵地产"));
         assert!(out.contains("钱设计"));
+    }
+
+    /// 用户隔离：其他用户的联系人不得出现在任何工具输出中
+    #[test]
+    fn tools_never_expose_other_users_contacts() {
+        let conn = in_memory_db();
+        create_on(&conn, "owner-a", "我的联系人", vec![], "low", "上海", "甲司", vec![]);
+        let other_id = create_on(&conn, "owner-b", "别人机密", vec!["代号X"], "high", "上海", "乙司", vec!["融资"]);
+
+        let out = execute_tool(&conn, "owner-a", "search_contacts", &json!({}));
+        assert!(out.contains("我的联系人"));
+        assert!(!out.contains("别人机密"));
+        assert!(!out.contains("代号X"));
+
+        // 用姓名直查他人联系人也应查无此人
+        let out = execute_tool(&conn, "owner-a", "get_person_detail", &json!({"name": "别人机密"}));
+        assert!(out.contains("未找到联系人"));
+
+        // 用他人 person_id 直查也应查无此人（不泄露存在性）
+        let out = execute_tool(&conn, "owner-a", "get_person_detail", &json!({"person_id": other_id}));
+        assert!(out.contains("未找到联系人"));
+
+        // 本人视角可正常读到自己的数据
+        let out = execute_tool(&conn, "owner-b", "search_contacts", &json!({}));
+        assert!(out.contains("代号X"));
     }
 
     /// 未知工具返回 error JSON（永不 panic）
     #[test]
     fn unknown_tool_returns_error_json() {
         let conn = in_memory_db();
-        let out = execute_tool(&conn, "no_such_tool", &json!({}));
+        let out = execute_tool(&conn, "owner-a", "no_such_tool", &json!({}));
         assert!(out.contains("未知工具"));
     }
 
@@ -569,6 +603,7 @@ mod tests {
         for i in 0..30 {
             create_on(
                 &conn,
+                "owner-a",
                 &format!("联系人{}", i),
                 vec![],
                 "low",
@@ -577,7 +612,7 @@ mod tests {
                 vec!["地产"],
             );
         }
-        let out = execute_tool(&conn, "search_contacts", &json!({}));
+        let out = execute_tool(&conn, "owner-a", "search_contacts", &json!({}));
         assert!(out.chars().count() > 200, "全量输出应远超 200 字符");
         let truncated = apply_output_budget(out, 200);
         assert!(truncated.contains("[输出超出字符预算已截断"));

@@ -15,6 +15,7 @@ mod tests {
         let conn = in_memory_db();
         let created = person::create(
             &conn,
+            "owner-a",
             CreatePersonRequest {
                 name: "张三".to_string(),
                 aliases: vec!["老张".to_string()],
@@ -37,13 +38,177 @@ mod tests {
         )
         .expect("create person");
 
-        let persons = person::list_all(&conn).expect("list persons");
+        let persons = person::list_all(&conn, "owner-a").expect("list persons");
         assert_eq!(persons.len(), 1);
         assert_eq!(persons[0].id, created.id);
         assert_eq!(persons[0].aliases, vec!["老张"]);
         assert_eq!(persons[0].resource_tags, vec!["地产", "融资"]);
         assert_eq!(persons[0].school.as_deref(), Some("某大学"));
         assert_eq!(persons[0].projects, vec!["某项目"]);
+    }
+
+    /// 用户隔离：联系人及其派生数据（互动/关系）严格归属 owner，
+    /// 跨用户读写一律表现为查无此数据或拒绝，不泄露存在性
+    #[test]
+    fn persons_are_isolated_between_users() {
+        use crate::db::{interaction, relationship};
+        use crate::types::{CreateInteractionRequest, CreateRelationshipRequest};
+
+        let conn = in_memory_db();
+        let req = |name: &str| CreatePersonRequest {
+            name: name.to_string(),
+            aliases: vec![],
+            avatar: None,
+            phone: None,
+            email: None,
+            company: None,
+            title: None,
+            location: None,
+            background: None,
+            relationship_strength: None,
+            resource_tags: vec![],
+            sensitivity_level: "low".to_string(),
+            status: None,
+            next_step: None,
+            notes: None,
+            school: None,
+            projects: vec![],
+        };
+
+        let a = person::create(&conn, "owner-a", req("甲")).unwrap();
+        let b = person::create(&conn, "owner-b", req("乙")).unwrap();
+
+        // 列表互不可见
+        assert_eq!(person::list_all(&conn, "owner-a").unwrap().len(), 1);
+        assert_eq!(person::list_all(&conn, "owner-b").unwrap().len(), 1);
+        assert!(person::get_by_id(&conn, "owner-b", &a.id).unwrap().is_none());
+        assert!(person::get_by_id(&conn, "owner-a", &b.id).unwrap().is_none());
+
+        // 跨用户更新/删除无效（update 回读失败报错；delete 静默无效）
+        assert!(person::update(&conn, "owner-b", &a.id, req("篡改")).is_err());
+        person::delete(&conn, "owner-b", &a.id).unwrap();
+        assert!(person::get_by_id(&conn, "owner-a", &a.id).unwrap().is_some());
+
+        // 跨用户建关系被拒（两端非同一 owner）
+        assert!(relationship::create(
+            &conn,
+            "owner-a",
+            CreateRelationshipRequest {
+                from_person_id: a.id.clone(),
+                to_person_id: b.id.clone(),
+                relationship_type: "friend".to_string(),
+                strength: None,
+                description: None,
+            },
+        )
+        .is_err());
+
+        // 跨用户写互动被拒
+        assert!(interaction::create(
+            &conn,
+            "owner-b",
+            CreateInteractionRequest {
+                person_id: a.id.clone(),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                content: "越权写入".to_string(),
+                summary: None,
+                topics: vec![],
+                action_items: vec![],
+            },
+        )
+        .is_err());
+
+        // owner-a 自己的关系与互动正常
+        let a2 = person::create(&conn, "owner-a", req("丙")).unwrap();
+        relationship::create(
+            &conn,
+            "owner-a",
+            CreateRelationshipRequest {
+                from_person_id: a.id.clone(),
+                to_person_id: a2.id.clone(),
+                relationship_type: "friend".to_string(),
+                strength: None,
+                description: None,
+            },
+        )
+        .unwrap();
+        interaction::create(
+            &conn,
+            "owner-a",
+            CreateInteractionRequest {
+                person_id: a.id.clone(),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                content: "正常互动".to_string(),
+                summary: None,
+                topics: vec![],
+                action_items: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(relationship::list_all(&conn, "owner-a").unwrap().len(), 1);
+        assert_eq!(relationship::list_all(&conn, "owner-b").unwrap().len(), 0);
+        assert_eq!(interaction::list_by_person(&conn, "owner-a", &a.id).unwrap().len(), 1);
+        assert_eq!(interaction::list_by_person(&conn, "owner-b", &a.id).unwrap().len(), 0);
+    }
+
+    /// 存量迁移：无 owner_id 列的老 persons 表，migrate 后补列并把
+    /// 无主联系人回填到首个用户（幂等：再次 migrate 不改变归属）
+    #[test]
+    fn migrates_legacy_persons_table_backfills_owner() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE persons (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                aliases TEXT NOT NULL DEFAULT '[]',
+                avatar TEXT,
+                phone TEXT,
+                email TEXT,
+                company TEXT,
+                title TEXT,
+                location TEXT,
+                background TEXT,
+                relationship_strength TEXT,
+                resource_tags TEXT NOT NULL DEFAULT '[]',
+                sensitivity_level TEXT NOT NULL DEFAULT 'low',
+                status TEXT NOT NULL DEFAULT 'active',
+                next_step TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO persons (id, name, created_at, updated_at)
+            VALUES ('p1', '存量联系人', '2026-01-01', '2026-01-01');
+            CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO users (id, username, password_hash, created_at, updated_at)
+            VALUES ('u1', 'admin', 'hash', '2026-01-01', '2026-01-01');",
+        )
+        .expect("legacy persons table");
+
+        schema::migrate(&conn).expect("schema migration on legacy db");
+
+        let owner: String = conn
+            .query_row("SELECT owner_id FROM persons WHERE id = 'p1'", [], |row| row.get(0))
+            .expect("owner_id backfilled");
+        assert_eq!(owner, "u1");
+
+        // 幂等：再次 migrate 不改变归属
+        schema::migrate(&conn).expect("second migration");
+        let owner: String = conn
+            .query_row("SELECT owner_id FROM persons WHERE id = 'p1'", [], |row| row.get(0))
+            .expect("owner_id stable");
+        assert_eq!(owner, "u1");
+
+        // 回填后归属用户可正常读到
+        let persons = person::list_all(&conn, "u1").expect("list after backfill");
+        assert_eq!(persons.len(), 1);
+        assert!(person::list_all(&conn, "u2").unwrap().is_empty());
     }
 
     /// 老库升级：早期版本的 users 表没有 role/profile_doc 等列，
@@ -143,6 +308,22 @@ mod tests {
     }
 
     // === agent_skills: skill_markdown ===
+
+    /// 临时验证：真实库 owner_id 回填检查（手动执行，默认 #[ignore]）
+    #[test]
+    #[ignore]
+    fn verify_real_db_owner_backfill() {
+        let data_dir = std::env::var("RG_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| dirs::data_dir().unwrap().join("relationship-graph"));
+        let key_hex = std::fs::read_to_string(data_dir.join("db.key")).expect("read db.key");
+        let conn = crate::db::crypto::open_encrypted_db(data_dir.join("app.db"), key_hex.trim()).expect("open db");
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM persons", [], |r| r.get(0)).unwrap();
+        let nulls: i64 = conn.query_row("SELECT COUNT(*) FROM persons WHERE owner_id IS NULL", [], |r| r.get(0)).unwrap();
+        let users: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap();
+        println!("TOTAL={} NULL_OWNER={} USERS={}", total, nulls, users);
+        assert_eq!(nulls, 0, "存在未回填归属的联系人");
+    }
 
     fn create_test_agent(conn: &Connection, mention: &str) -> String {
         let agent = agent_config::create_digital_agent(

@@ -83,7 +83,7 @@ struct ScoredCandidate {
     score: i64,
 }
 
-pub fn natural_language_query(conn: &Connection, req: NlqRequest) -> Result<Vec<NlqResult>, String> {
+pub fn natural_language_query(conn: &Connection, owner_id: &str, req: NlqRequest) -> Result<Vec<NlqResult>, String> {
     let query_len = req.query.chars().count();
     let reveal_sensitive = req.reveal_sensitive.unwrap_or(false);
     let intent = validate_query_intent(parse_query_intent(&req.query));
@@ -99,7 +99,7 @@ pub fn natural_language_query(conn: &Connection, req: NlqRequest) -> Result<Vec<
         safe_filter_summary(&intent.filters)
     );
 
-    let candidates = load_candidates(conn).map_err(|e| e.to_string())?;
+    let candidates = load_candidates(conn, owner_id).map_err(|e| e.to_string())?;
     let candidate_count = candidates.len();
     let mut scored = Vec::new();
 
@@ -198,7 +198,7 @@ fn validate_query_intent(mut intent: QueryIntent) -> QueryIntent {
     intent
 }
 
-pub fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>, rusqlite::Error> {
+pub fn load_candidates(conn: &Connection, owner_id: &str) -> Result<Vec<Candidate>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT
             p.id,
@@ -225,11 +225,12 @@ pub fn load_candidates(conn: &Connection) -> Result<Vec<Candidate>, rusqlite::Er
                 LIMIT 1
             ) AS last_interaction_summary
          FROM persons p
+         WHERE p.owner_id = ?1
          ORDER BY p.updated_at DESC
          LIMIT 500",
     )?;
 
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![owner_id], |row| {
         let aliases_json: String = row.get(2)?;
         let tags_json: String = row.get(8)?;
         Ok(Candidate {
@@ -477,20 +478,20 @@ pub fn classify_intent(query: &str) -> &'static str {
 
 // === 多意图处理器（供 api handler 调用） ===
 
-/// 按人名模糊搜索联系人（参数化 SQL，LIMIT 10）
-pub fn search_persons_by_name(conn: &Connection, name: &str) -> Result<Vec<Person>, String> {
+/// 按人名模糊搜索联系人（参数化 SQL，LIMIT 10，仅限归属 owner 的联系人）
+pub fn search_persons_by_name(conn: &Connection, owner_id: &str, name: &str) -> Result<Vec<Person>, String> {
     let pattern = format!("%{}%", name);
     let mut stmt = conn
         .prepare(
             "SELECT id, name, aliases, avatar, phone, email, company, title, location, background, \
              relationship_strength, resource_tags, sensitivity_level, status, next_step, notes, \
              school, projects, created_at, updated_at \
-             FROM persons WHERE name LIKE ?1 OR aliases LIKE ?1 LIMIT 10",
+             FROM persons WHERE owner_id = ?2 AND (name LIKE ?1 OR aliases LIKE ?1) LIMIT 10",
         )
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map(params![pattern], |row| {
+        .query_map(params![pattern, owner_id], |row| {
             let aliases_json: String = row.get(2)?;
             let tags_json: String = row.get(11)?;
             let projects_json: Option<String> = row.get(17)?;
@@ -528,10 +529,11 @@ pub fn search_persons_by_name(conn: &Connection, name: &str) -> Result<Vec<Perso
 /// update_person 意图：人名消歧 + 组装草稿
 pub fn handle_update_person_sync(
     conn: &Connection,
+    owner_id: &str,
     target_name: &str,
     changes: Vec<FieldChange>,
 ) -> Result<NlqResponse, String> {
-    let candidates = search_persons_by_name(conn, target_name)?;
+    let candidates = search_persons_by_name(conn, owner_id, target_name)?;
     let (target_person, error_hint, confidence) = if candidates.len() == 1 {
         (Some(candidates[0].clone()), None, 80u8)
     } else if candidates.is_empty() {
@@ -554,10 +556,11 @@ pub fn handle_update_person_sync(
 /// add_interaction 意图：人名消歧 + 组装草稿
 pub fn handle_add_interaction_sync(
     conn: &Connection,
+    owner_id: &str,
     mut draft: InteractionDraft,
 ) -> Result<NlqResponse, String> {
     if !draft.person_mention.is_empty() {
-        let candidates = search_persons_by_name(conn, &draft.person_mention)?;
+        let candidates = search_persons_by_name(conn, owner_id, &draft.person_mention)?;
         if candidates.len() == 1 {
             draft.resolved_person = Some(candidates[0].clone());
         }
@@ -567,8 +570,8 @@ pub fn handle_add_interaction_sync(
 }
 
 /// find_path 意图：查找与目标人的最短关系路径
-pub fn handle_find_path_sync(conn: &Connection, target_name: &str) -> Result<NlqResponse, String> {
-    let candidates = search_persons_by_name(conn, target_name)?;
+pub fn handle_find_path_sync(conn: &Connection, owner_id: &str, target_name: &str) -> Result<NlqResponse, String> {
+    let candidates = search_persons_by_name(conn, owner_id, target_name)?;
     if candidates.is_empty() {
         return Ok(NlqResponse::FindPath {
             path: PathData {
@@ -581,22 +584,23 @@ pub fn handle_find_path_sync(conn: &Connection, target_name: &str) -> Result<Nlq
         });
     }
     let target = &candidates[0];
-    let path = find_shortest_path(conn, &target.id)?;
+    let path = find_shortest_path(conn, owner_id, &target.id)?;
     Ok(NlqResponse::FindPath { path })
 }
 
-/// BFS 查找从图中最远可达节点到 target 的最短路径
-pub fn find_shortest_path(conn: &Connection, target_id: &str) -> Result<PathData, String> {
-    // 加载所有 relationships（参数化查询无需用户输入）
+/// BFS 查找从图中最远可达节点到 target 的最短路径（仅限归属 owner 的关系与联系人）
+pub fn find_shortest_path(conn: &Connection, owner_id: &str, target_id: &str) -> Result<PathData, String> {
+    // 加载归属 owner 的 relationships（参数化查询无需用户输入）
     let mut stmt = conn
         .prepare(
             "SELECT id, from_person_id, to_person_id, relationship_type, strength, confirmation_status \
-             FROM relationships WHERE confirmation_status != 'rejected'",
+             FROM relationships WHERE confirmation_status != 'rejected' \
+               AND from_person_id IN (SELECT id FROM persons WHERE owner_id = ?1)",
         )
         .map_err(|e| e.to_string())?;
 
     let edges: Vec<(String, String, String, String, Option<String>, String)> = stmt
-        .query_map([], |row| {
+        .query_map(params![owner_id], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -689,18 +693,18 @@ pub fn find_shortest_path(conn: &Connection, target_id: &str) -> Result<PathData
         }
     }
 
-    // 加载节点名称
+    // 加载节点名称（纵深防御：路径节点必属 owner，仍加归属过滤）
     let mut result_nodes: Vec<PathNode> = Vec::new();
     for nid in &path_node_ids {
         let name: String = conn
-            .query_row("SELECT name FROM persons WHERE id = ?1", params![nid], |row| {
+            .query_row("SELECT name FROM persons WHERE id = ?1 AND owner_id = ?2", params![nid, owner_id], |row| {
                 row.get(0)
             })
             .unwrap_or_else(|_| "未知".to_string());
         let company: Option<String> = conn
             .query_row(
-                "SELECT company FROM persons WHERE id = ?1",
-                params![nid],
+                "SELECT company FROM persons WHERE id = ?1 AND owner_id = ?2",
+                params![nid, owner_id],
                 |row| row.get(0),
             )
             .ok();
