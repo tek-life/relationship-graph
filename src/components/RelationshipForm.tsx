@@ -5,10 +5,12 @@ import type { Person, RelationshipStrength } from '../types';
 interface Props {
   persons: Person[];
   onCreated: () => void;
+  /** UX P1-8：详情页入口使用时，预选关系起点（当前联系人） */
+  initialFromId?: string;
 }
 
-export default function RelationshipForm({ persons, onCreated }: Props) {
-  const [fromPersonId, setFromPersonId] = useState('');
+export default function RelationshipForm({ persons, onCreated, initialFromId }: Props) {
+  const [fromPersonId, setFromPersonId] = useState(initialFromId ?? '');
   const [toPersonId, setToPersonId] = useState('');
   const [relationshipType, setRelationshipType] = useState('introduced');
   const [strength, setStrength] = useState<RelationshipStrength>('medium');

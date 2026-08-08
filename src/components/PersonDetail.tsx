@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { GitBranch, MessageSquarePlus } from 'lucide-react';
 import {
   deletePerson,
   getPerson,
@@ -7,8 +8,12 @@ import {
   updatePerson,
 } from '../services/db';
 import type { CreatePersonInput, Interaction, Person, Relationship } from '../types';
+import { Drawer } from './contacts/Drawer';
+import InteractionForm from './InteractionForm';
 import PersonForm from './PersonForm';
+import RelationshipForm from './RelationshipForm';
 import SensitivityGuard from './SensitivityGuard';
+import { ConfirmDialog } from './ui';
 
 interface Props {
   personId: string;
@@ -29,9 +34,14 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // UX P1-8：关系 / 互动表单抽屉化，收敛到详情页内
+  const [drawer, setDrawer] = useState<'relationship' | 'interaction' | null>(null);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+    }
     setError('');
     try {
       const [detail, interactionList, relationshipList] = await Promise.all([
@@ -67,17 +77,22 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
 
   const handleDelete = async () => {
     if (!person) return;
-    const label = person.sensitivityLevel === 'low' ? person.name : person.aliases[0] || '该联系人';
-    if (!window.confirm(`确定删除「${label}」吗？其互动记录与关系也会一并删除，且不可恢复。`)) {
-      return;
-    }
     try {
       await deletePerson(personId);
+      setConfirmDeleteOpen(false);
       onChanged();
       onBack();
     } catch (err) {
+      setConfirmDeleteOpen(false);
       setError(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  // 抽屉内表单创建成功：静默重拉本页数据并通知全局刷新，不打断阅读
+  const handleCreatedInDrawer = () => {
+    setDrawer(null);
+    void load(true);
+    onChanged();
   };
 
   if (loading) {
@@ -122,7 +137,7 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
           <button
             type="button"
             className="rounded bg-danger px-4 py-1.5 text-sm font-medium text-white hover:bg-danger-hover"
-            onClick={handleDelete}
+            onClick={() => setConfirmDeleteOpen(true)}
           >
             删除联系人
           </button>
@@ -182,7 +197,17 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="rounded-xl border p-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-          <h3 className="font-semibold">关系（{relationships.length}）</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold">关系（{relationships.length}）</h3>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-control border border-line px-2 py-1 text-auxiliary text-text-secondary transition-colors hover:bg-surface hover:text-text-primary"
+              onClick={() => setDrawer('relationship')}
+            >
+              <GitBranch size={12} aria-hidden="true" />
+              新增关系
+            </button>
+          </div>
           <div className="mt-3 space-y-2 text-sm">
             {relationships.length === 0 ? (
               <p style={{ color: 'var(--text-secondary)' }}>暂无关系记录。</p>
@@ -211,7 +236,17 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
         </div>
 
         <div className="rounded-xl border p-4 shadow-sm" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}>
-          <h3 className="font-semibold">互动记录（{interactions.length}）</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold">互动记录（{interactions.length}）</h3>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-control border border-line px-2 py-1 text-auxiliary text-text-secondary transition-colors hover:bg-surface hover:text-text-primary"
+              onClick={() => setDrawer('interaction')}
+            >
+              <MessageSquarePlus size={12} aria-hidden="true" />
+              记录互动
+            </button>
+          </div>
           <div className="mt-3 max-h-80 space-y-2 overflow-auto text-sm">
             {interactions.length === 0 ? (
               <p style={{ color: 'var(--text-secondary)' }}>暂无互动记录。</p>
@@ -229,6 +264,31 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
           </div>
         </div>
       </div>
+
+      {/* UX P1-8：关系 / 互动录入抽屉（关闭时不渲染，每次打开重新挂载表单） */}
+      <Drawer open={drawer === 'relationship'} title="新增关系" onClose={() => setDrawer(null)}>
+        <RelationshipForm
+          persons={Object.values(personsById)}
+          initialFromId={personId}
+          onCreated={handleCreatedInDrawer}
+        />
+      </Drawer>
+      <Drawer open={drawer === 'interaction'} title="记录互动" onClose={() => setDrawer(null)}>
+        <InteractionForm person={person} onCreated={handleCreatedInDrawer} />
+      </Drawer>
+
+      {/* UX P1-8：删除确认改走全局 ConfirmDialog，替代 window.confirm */}
+      {person && (
+        <ConfirmDialog
+          open={confirmDeleteOpen}
+          danger
+          title="删除联系人"
+          message={`确定删除「${person.sensitivityLevel === 'low' ? person.name : person.aliases[0] || '该联系人'}」吗？其互动记录与关系也会一并删除，且不可恢复。`}
+          confirmLabel="删除"
+          onConfirm={handleDelete}
+          onCancel={() => setConfirmDeleteOpen(false)}
+        />
+      )}
     </div>
   );
 }
