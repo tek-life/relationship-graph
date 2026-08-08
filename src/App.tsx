@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, Upload } from 'lucide-react';
 import AdminPanel from './components/AdminPanel';
 import ChatView from './components/ChatView';
 import GraphView from './components/GraphView';
@@ -11,9 +12,11 @@ import PersonList from './components/PersonList';
 import ProfileQA from './components/ProfileQA';
 import RelationshipForm from './components/RelationshipForm';
 import ThemeSelector from './components/ThemeSelector';
+import UserMenu from './components/UserMenu';
 import { useAuth } from './hooks/useAuth';
 import { useTheme } from './hooks/useTheme';
 import { createPerson, getGraphData, listInteractionsByPerson, listPersons } from './services/db';
+import { MAIN_NAV_ITEMS, isNavPathActive } from './services/mainNav';
 import type { CreatePersonInput, GraphData, Interaction, Person } from './types';
 
 function App() {
@@ -102,46 +105,36 @@ function App() {
     }
   };
 
-  // 导航栏 active 判断：路径匹配
-  const isHomeActive = location.pathname === '/';
-  const isPathActive = (path: string) => location.pathname.startsWith(path);
-
   return (
-    <div className="flex h-screen flex-col" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-      {/* 顶部导航栏 */}
-      <header
-        className="flex shrink-0 items-center justify-between border-b px-4 py-2"
-        style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)' }}
-      >
-        <div className="flex items-center gap-4">
-          <h1 className="text-base font-bold whitespace-nowrap">Personal AI Platform</h1>
-          <nav className="flex gap-1">
-            <TabButton active={isHomeActive} onClick={() => navigate('/')}>首页</TabButton>
-            <TabButton active={isPathActive('/profile-qa')} onClick={() => navigate('/profile-qa')}>内观画像</TabButton>
-            <TabButton active={isPathActive('/contacts')} onClick={() => navigate('/contacts')}>联系人</TabButton>
-            <TabButton active={isPathActive('/graph')} onClick={() => navigate('/graph')}>图谱</TabButton>
-            <TabButton active={isPathActive('/import')} onClick={() => navigate('/import')}>导入</TabButton>
-            {isAdmin && (
-              <TabButton active={isPathActive('/admin')} onClick={() => navigate('/admin')}>管理后台</TabButton>
-            )}
+    <div className="flex h-screen flex-col bg-primary text-text-primary">
+      {/* 顶部导航栏（UX P0-5：主导航收敛为 AI 助理 / 联系人 / 图谱，tabs 下划线化） */}
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-line bg-card px-4">
+        <div className="flex h-full items-center gap-6">
+          <h1 className="text-lead font-bold whitespace-nowrap">Personal AI Platform</h1>
+          <nav className="flex h-full items-stretch gap-1" aria-label="主导航">
+            {MAIN_NAV_ITEMS.map((item) => (
+              <TabButton
+                key={item.id}
+                active={isNavPathActive(location.pathname, item.path)}
+                onClick={() => navigate(item.path)}
+              >
+                {item.label}
+              </TabButton>
+            ))}
           </nav>
         </div>
 
         <div className="flex items-center gap-3">
-          {user && (
-            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-              {user.displayName || user.username}
-            </span>
-          )}
-          <button
-            type="button"
-            className="text-sm transition hover:opacity-80"
-            style={{ color: 'var(--text-muted)' }}
-            onClick={logout}
-          >
-            注销
-          </button>
           <ThemeSelector theme={theme} setTheme={setTheme} />
+          {user && (
+            <UserMenu
+              displayName={user.displayName || user.username}
+              isAdmin={isAdmin}
+              onProfile={() => navigate('/profile-qa')}
+              onAdmin={() => navigate('/admin')}
+              onLogout={logout}
+            />
+          )}
         </div>
       </header>
 
@@ -165,7 +158,18 @@ function App() {
                 <section className="space-y-4">
                   <div className="flex items-center justify-between">
                     <h2 className="text-xl font-semibold">联系人名片</h2>
-                    <span className="text-sm text-text-secondary">共 {persons.length} 人</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-body text-text-secondary">共 {persons.length} 人</span>
+                      {/* UX P0-5：「导入」从顶栏降级为联系人页工具栏按钮 */}
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1.5 rounded-control border border-line bg-card px-3 py-1.5 text-body font-medium text-text-primary transition-colors hover:bg-surface"
+                        onClick={() => navigate('/import')}
+                      >
+                        <Upload size={14} aria-hidden="true" />
+                        导入
+                      </button>
+                    </div>
                   </div>
                   <PersonList
                     persons={persons}
@@ -227,6 +231,14 @@ function App() {
 
           <Route path="/import" element={
             <div className="mx-auto h-full max-w-7xl overflow-y-auto p-6">
+              <button
+                type="button"
+                className="mb-4 inline-flex items-center gap-1.5 rounded-control border border-line bg-card px-3 py-1.5 text-body text-text-secondary transition-colors hover:bg-surface hover:text-text-primary"
+                onClick={() => navigate('/contacts')}
+              >
+                <ArrowLeft size={14} aria-hidden="true" />
+                返回联系人
+              </button>
               <ImportWizard onImported={loadData} />
             </div>
           } />
@@ -307,19 +319,24 @@ function GraphPage({ graphData, personsById, handleOpenDetail, loadData }: {
   );
 }
 
+// UX P0-5：下划线指示器式 tab（替代原 pill 实心样式），激活态以 accent 下划线标示
 function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="rounded-full px-3 py-1.5 text-sm font-medium transition"
-      style={
-        active
-          ? { backgroundColor: 'var(--accent-color)', color: '#fff' }
-          : { backgroundColor: 'var(--surface-hover)', color: 'var(--text-secondary)' }
-      }
+      aria-current={active ? 'page' : undefined}
+      className={`relative flex items-center px-3 text-body font-medium transition-colors ${
+        active ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'
+      }`}
     >
       {children}
+      <span
+        aria-hidden="true"
+        className={`absolute inset-x-2 bottom-0 h-0.5 rounded-full transition-colors ${
+          active ? 'bg-accent' : 'bg-transparent'
+        }`}
+      />
     </button>
   );
 }

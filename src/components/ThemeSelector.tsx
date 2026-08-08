@@ -36,7 +36,7 @@ export default function ThemeSelector({ theme, setTheme }: ThemeSelectorProps) {
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="flex items-center gap-1 rounded-full px-3 py-1.5 text-sm transition"
+        className="flex items-center gap-1 rounded-control px-3 py-1.5 text-body transition"
         style={{
           backgroundColor: 'var(--bg-card)',
           border: '1px solid var(--border-color)',
@@ -50,7 +50,7 @@ export default function ThemeSelector({ theme, setTheme }: ThemeSelectorProps) {
 
       {open && (
         <div
-          className="absolute right-0 top-full z-50 mt-1 min-w-[140px] overflow-hidden rounded-lg border shadow-lg"
+          className="absolute right-0 top-full z-50 mt-1 min-w-[140px] overflow-hidden rounded-card border shadow-pop"
           style={{
             backgroundColor: 'var(--bg-card)',
             borderColor: 'var(--border-color)',
