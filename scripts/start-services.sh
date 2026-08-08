@@ -49,6 +49,15 @@ else
   RUN_MODE="development"
 fi
 
+# 按命令行精确匹配检测本项目进程是否在运行（与 restart-services.sh stop_by_pattern
+# 同一方案）：非 root 下 lsof 无法列出 :80 等端口的持有进程（曾导致启动前检查
+# 误报「Caddy 已在运行」），故统一改用 pgrep -f 精确匹配本项目进程的命令行；
+# 模式均以 ^ 锚定命令行开头并包含项目专有标识，不会误匹配其它进程。
+running_by_pattern() {
+  local pattern="$1"
+  pgrep -f "${pattern}" >/dev/null 2>&1
+}
+
 mkdir -p "${APP_DATA_DIR}"
 
 # 后端托管探测：若 systemd 用户级 unit（relationship-graph.service）已安装，
@@ -141,7 +150,8 @@ if [ "${RG_SYSTEMD_BACKEND}" = "1" ]; then
   else
     echo "  [WARN] Axum 服务端启动中：journalctl --user -u relationship-graph -f 查看"
   fi
-elif ! lsof -i :8790 >/dev/null 2>&1; then
+elif ! running_by_pattern "^${PROJECT_DIR}/server/target/release/relationship-graph-server" \
+  && ! curl -s http://localhost:8790/api/health >/dev/null 2>&1; then
   cd "${PROJECT_DIR}/server"
   source "${HOME}/.cargo/env" 2>/dev/null || true
 
@@ -208,7 +218,10 @@ if [ "${RUN_MODE}" = "production" ]; then
 
   # 优先使用 Caddy 反向代理
   if command -v caddy &>/dev/null; then
-    if ! lsof -i :"${RG_WEB_PORT}" >/dev/null 2>&1; then
+    # 检测本项目 caddy 实例（专有 Caddyfile 路径）；curl 兜底覆盖端口已被
+    # 其它进程占用的情况（此时不应再拉起第二个 caddy）
+    if ! running_by_pattern "^caddy run --config /tmp/relationship-graph.Caddyfile" \
+      && ! curl -s "http://localhost:${RG_WEB_PORT}" >/dev/null 2>&1; then
       # 特权端口（<1024）绑定授权：非 root 用户需给 caddy 授 cap_net_bind_service
       if [ "${RG_WEB_PORT}" -lt 1024 ]; then
         CADDY_BIN="$(command -v caddy)"
@@ -259,7 +272,7 @@ if [ "${RUN_MODE}" = "production" ]; then
     fi
   else
     echo "  [提示] 未安装 Caddy，使用 Python http.server 作为静态文件服务兜底"
-    if ! lsof -i :8000 >/dev/null 2>&1; then
+    if ! running_by_pattern "^python3 -m http.server 8000"; then
       cd "${PROJECT_DIR}/dist"
       nohup python3 -m http.server 8000 >"${FRONTEND_LOG}" 2>&1 &
       cd "${PROJECT_DIR}"
@@ -283,7 +296,7 @@ if [ "${RUN_MODE}" = "production" ]; then
   fi
 else
   echo "==> 启动前端开发服务器（开发模式，Vite，端口 1420）"
-  if ! lsof -i :1420 >/dev/null 2>&1; then
+  if ! running_by_pattern "^node .*vite"; then
     if [ ! -d "${PROJECT_DIR}/node_modules" ]; then
       echo "  [ERROR] 前端依赖未安装，请先运行 npm install"
       exit 1
