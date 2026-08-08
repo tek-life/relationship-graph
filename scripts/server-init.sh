@@ -11,7 +11,7 @@ set -euo pipefail
 #     自动读取 ~/.config/rg-cloud-api-key
 #   - 两个服务均用 systemd **用户级** unit 托管（无需 root 发版）：
 #       relationship-graph.service  → Axum 后端（8790）
-#       rg-caddy.service            → Caddy 前端 + /api 反代（8080）
+#       rg-caddy.service            → Caddy 前端 + /api 反代（默认 80）
 #
 # 远端目录布局：
 #   ~/relationship-graph/
@@ -27,7 +27,7 @@ set -euo pipefail
 
 APP_DIR="${HOME}/relationship-graph"
 LOG_DIR="${APP_DIR}/logs"
-CADDY_PORT="${RG_CADDY_PORT:-8080}"
+CADDY_PORT="${RG_CADDY_PORT:-80}"   # 默认 Web 端口；绑定 80 需 root 或 CAP_NET_BIND_SERVICE，非 root 用户可 RG_CADDY_PORT=8080
 
 echo "==> 步骤 1/5: 安装基础运行时依赖"
 sudo apt update

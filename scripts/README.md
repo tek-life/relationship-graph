@@ -2,7 +2,7 @@
 
 本目录包含个人智能 AI 平台的部署、启动、重启、依赖安装与测试辅助脚本。
 
-**当前生产形态**：后端 Axum 服务（端口 8790）+ 前端静态资源（Caddy 8080），
+**当前生产形态**：后端 Axum 服务（端口 8790）+ 前端静态资源（Caddy：本机 8080 / 服务器默认 80），
 LLM 能力**默认使用阿里云百炼云端模型**（`RG_LLM_BACKEND=cloud`），无需本地 Ollama；
 Ollama（localhost:11434）仅本地开发走 legacy/rig 通道时需要。
 
@@ -183,7 +183,7 @@ RG_INIT_PASSWORD='你的管理员密码' ./scripts/deploy.sh
 ~/.local/share/relationship-graph/                # SQLCipher 数据库 + db.key（勿动）
 ~/.config/rg-cloud-api-key                        # 百炼 API Key（chmod 600）
 ~/.config/systemd/user/relationship-graph.service # Axum 后端（8790）
-~/.config/systemd/user/rg-caddy.service           # Caddy 前端 + /api 反代（8080）
+~/.config/systemd/user/rg-caddy.service           # Caddy 前端 + /api 反代（默认 80）
 ```
 
 ### 步骤 1：服务器一次性初始化（server-init.sh）
@@ -205,7 +205,7 @@ ssh <user>@<ip> "mkdir -p ~/.config && printf '%s' 'sk-xxx' > ~/.config/rg-cloud
 RG_HOST=<user>@<ip> ./scripts/release.sh
 
 # 首次部署后初始化数据库（创建 admin）
-curl -X POST http://<ip>:8080/api/auth/setup \
+curl -X POST http://<ip>/api/auth/setup \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"<至少8位密码>"}'
 ```
@@ -229,7 +229,7 @@ ssh <user>@<ip> 'systemctl --user status relationship-graph'
 ssh <user>@<ip> 'journalctl --user -u relationship-graph -f'   # 跟踪后端日志
 ```
 
-**前置条件**：阿里云安全组放行 8080/tcp（如需 HTTPS 另放行 80/443 并备案域名）。
+**前置条件**：阿里云安全组放行 80/tcp（如需 HTTPS 另放行 443 并备案域名）。
 
 ---
 

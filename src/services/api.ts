@@ -7,7 +7,7 @@
 // API_BASE 覆盖优先级（便于联调）：
 // 1. localStorage 'rg_api_base'（控制台执行 localStorage.setItem('rg_api_base', 'http://host:port') 即可切换）
 // 2. import.meta.env.VITE_API_BASE
-// 3. 页面经 Caddy 反代（端口 8080）服务时走同源（API_BASE=''，请求 /api/* 由 Caddy 转发到 8790，
+// 3. 页面经 Caddy 反代（端口 80/443/8080）服务时走同源（API_BASE=''，请求 /api/* 由 Caddy 转发到 8790，
 //    无需对外暴露 8790，ECS/公网部署必须走这条）
 // 4. 其余场景（Vite 开发 1420 / 无 Caddy 的静态回退）默认 http://{当前页面 host}:8790
 
@@ -24,7 +24,9 @@ function resolveApiBase(): string {
   if (envBase) {
     return envBase;
   }
-  if (window.location.port === '8080') {
+  // Caddy 反代模式走同源：8080（本机）与 80/443（服务器默认端口，浏览器返回空串）
+  const port = window.location.port;
+  if (port === '' || port === '80' || port === '443' || port === '8080') {
     return '';
   }
   return `http://${window.location.hostname}:8790`;

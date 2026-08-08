@@ -142,21 +142,32 @@ else
   exit 1
 fi
 
-if ${SSH} "curl -sf http://localhost:8080" >/dev/null 2>&1; then
-  log_info "前端健康检查通过（:8080）"
+# 前端监听端口：从远端 Caddyfile 监听行读取（服务器默认 80，老实例 8080）
+WEB_PORT=$(${SSH} "grep -oE '^:[0-9]+' ${REMOTE_DIR}/Caddyfile 2>/dev/null | head -1 | tr -dc '0-9'")
+if [ -z "${WEB_PORT}" ]; then
+  WEB_PORT=8080
+fi
+
+if ${SSH} "curl -sf http://localhost:${WEB_PORT}" >/dev/null 2>&1; then
+  log_info "前端健康检查通过（:${WEB_PORT}）"
 else
   log_warn "前端健康检查未通过，请检查：ssh ${RG_HOST} 'journalctl --user -u rg-caddy -n 30 --no-pager'"
 fi
 
 SERVER_IP="${RG_HOST#*@}"
+# 默认端口 80 时 URL 不带端口后缀
+WEB_SUFFIX=":${WEB_PORT}"
+if [ "${WEB_PORT}" = "80" ]; then
+  WEB_SUFFIX=""
+fi
 echo ""
 echo "============================================"
 echo "发版完成！"
-echo "  访问地址：http://${SERVER_IP}:8080"
-echo "  API 地址：http://${SERVER_IP}:8080/api（反代至 8790）"
+echo "  访问地址：http://${SERVER_IP}${WEB_SUFFIX}"
+echo "  API 地址：http://${SERVER_IP}${WEB_SUFFIX}/api（反代至 8790）"
 echo ""
 echo "首次部署？执行一次数据库初始化（创建 admin 账号）："
-echo "  curl -X POST http://${SERVER_IP}:8080/api/auth/setup \\"
+echo "  curl -X POST http://${SERVER_IP}${WEB_SUFFIX}/api/auth/setup \\"
 echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{\"username\":\"admin\",\"password\":\"<至少8位密码>\"}'"
 echo "============================================"
