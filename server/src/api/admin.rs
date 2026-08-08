@@ -554,25 +554,35 @@ pub struct UpdateCloudApiKeyRequest {
 
 /// 组装云端 API Key 配置摘要（掩码 + 是否已设置 + 生效来源）；
 /// 绝不回传明文。
-fn cloud_api_key_summary(conn: &rusqlite::Connection) -> Result<serde_json::Value, rusqlite::Error> {
-    let db_configured = setting::get_setting_value::<String>(conn, setting::KEY_CLOUD_API_KEY)?
+///
+/// 死锁防护红线：本函数是 `db_value` 的纯函数，不读 DB、不持 db 锁；
+/// 端点层必须先在锁内读出 settings 值并 drop 锁后再调用。
+/// （若在持锁路径中触发 llm 层 DB 读取器闭包，会对同一不可重入
+/// Mutex（AppState.db）二次加锁 → 确定性死锁。）
+fn cloud_api_key_summary(db_value: Option<String>) -> serde_json::Value {
+    let db_configured = db_value
+        .as_deref()
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
-    let (source, mask) = crate::llm::cloud_api_key_status();
-    Ok(serde_json::json!({
+    let (source, mask) = crate::llm::cloud_api_key_status(db_value);
+    serde_json::json!({
         "configured": source.is_some(),
         "source": source.map(|s| s.as_str()),
         "mask": mask,
         "dbConfigured": db_configured,
-    }))
+    })
 }
 
 /// GET /api/admin/config — 系统配置摘要（敏感值仅回掩码，绝不回传明文）
 pub async fn get_config(State(state): State<SharedState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
-    let conn = get_conn(&guard)?;
-    let summary = cloud_api_key_summary(conn)?;
-    drop(guard);
+    // 锁内只做 DB 读取，summary 构建在 drop(guard) 之后（防死锁，见
+    // cloud_api_key_summary 注释）
+    let db_value = {
+        let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+        let conn = get_conn(&guard)?;
+        setting::get_setting_value::<String>(conn, setting::KEY_CLOUD_API_KEY)?
+    };
+    let summary = cloud_api_key_summary(db_value);
     log::info!(target: "admin", "get_config");
     Ok(Json(serde_json::json!({ "cloudApiKey": summary })))
 }
@@ -589,11 +599,14 @@ pub async fn update_cloud_api_key(
     if api_key.is_empty() {
         return Err(ApiError::bad_request("API Key 不能为空，如需清除请使用 DELETE"));
     }
-    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
-    let conn = get_conn(&guard)?;
-    setting::set_setting(conn, setting::KEY_CLOUD_API_KEY, &api_key)?;
-    let summary = cloud_api_key_summary(conn)?;
-    drop(guard);
+    // 锁内完成写入与回读，summary 构建在 drop(guard) 之后（防死锁）
+    let db_value = {
+        let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+        let conn = get_conn(&guard)?;
+        setting::set_setting(conn, setting::KEY_CLOUD_API_KEY, &api_key)?;
+        setting::get_setting_value::<String>(conn, setting::KEY_CLOUD_API_KEY)?
+    };
+    let summary = cloud_api_key_summary(db_value);
 
     crate::llm::invalidate_cloud_client();
     // 日志脱敏：只记掩码与生效来源（env/file 优先级更高时 DB 值不会生效）
@@ -612,11 +625,14 @@ pub async fn update_cloud_api_key(
 pub async fn delete_cloud_api_key(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
-    let conn = get_conn(&guard)?;
-    setting::delete_setting(conn, setting::KEY_CLOUD_API_KEY)?;
-    let summary = cloud_api_key_summary(conn)?;
-    drop(guard);
+    // 锁内只做删除，summary 构建在 drop(guard) 之后（防死锁）；
+    // DB 值已清除，直接以 None 构建摘要
+    {
+        let guard = state.db.lock().map_err(|e| ApiError::internal(e.to_string()))?;
+        let conn = get_conn(&guard)?;
+        setting::delete_setting(conn, setting::KEY_CLOUD_API_KEY)?;
+    }
+    let summary = cloud_api_key_summary(None);
 
     crate::llm::invalidate_cloud_client();
     log::info!(
@@ -789,5 +805,44 @@ mod tests {
         assert!(skill_package::is_legacy_package_slug("legacy-abc"));
         assert!(!skill_package::is_legacy_package_slug("my-skill-1a2b"));
         assert!(!skill_package::is_legacy_package_slug(""));
+    }
+
+    /// 死锁回归（Critical）：summary 构建绝不触发 llm 层 DB 读取器闭包。
+    ///
+    /// 修复前：get/update/delete config 在持有 state.db 锁期间调用
+    /// cloud_api_key_summary(conn) → llm::cloud_api_key_status() →
+    /// read_db_cloud_api_key() → main.rs 注册的读取器闭包对同一个
+    /// 不可重入 Mutex（AppState.db）二次加锁 → 确定性死锁。
+    /// 修复后：summary 是传入 db_value 的纯函数，端点层先短持锁读出
+    /// settings 值、drop 锁后再构建。本测试注册一个「探针读取器」：
+    /// 若 summary 构建路径重入 DB 层，探针必被触发 → 断言失败。
+    #[test]
+    fn cloud_api_key_summary_does_not_invoke_db_reader() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static READER_INVOKED: AtomicBool = AtomicBool::new(false);
+        // OnceLock 仅首次注册生效；探针返回 None，与未注册时语义一致，
+        // 不影响其它测试
+        crate::llm::register_cloud_key_db_reader(Box::new(|| {
+            READER_INVOKED.store(true, Ordering::SeqCst);
+            None
+        }));
+        READER_INVOKED.store(false, Ordering::SeqCst);
+
+        let summary = cloud_api_key_summary(Some("sk-test-key-1234567890".to_string()));
+
+        assert!(
+            !READER_INVOKED.load(Ordering::SeqCst),
+            "summary 构建触发了 DB 读取器闭包：在持锁路径中调用会二次加锁导致死锁"
+        );
+        // db_value 非空 → dbConfigured=true，证明摘要确实基于传入值构建
+        assert_eq!(summary["dbConfigured"], serde_json::json!(true));
+
+        // None → dbConfigured=false（清除场景）
+        let empty = cloud_api_key_summary(None);
+        assert_eq!(empty["dbConfigured"], serde_json::json!(false));
+        assert!(
+            !READER_INVOKED.load(Ordering::SeqCst),
+            "None 分支同样不得触发 DB 读取器闭包"
+        );
     }
 }

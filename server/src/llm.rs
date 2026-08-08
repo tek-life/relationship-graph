@@ -826,11 +826,17 @@ fn cloud_api_key() -> Result<String, String> {
 
 /// 当前生效 Key 的摘要（供 admin 配置页 GET 展示）：只返回来源与
 /// 掩码，绝不返回明文。
-pub fn cloud_api_key_status() -> (Option<CloudApiKeySource>, Option<String>) {
+///
+/// 锁纪律（死锁防护红线）：`db_value` 必须由调用方在**短持锁内读出后
+/// 释放锁**再传入；本函数绝不在内部调用 DB 读取器闭包
+///（`read_db_cloud_api_key`）——该闭包会对同一个不可重入的
+/// `std::sync::Mutex`（AppState.db）再次加锁，在持锁路径中触发即
+/// 确定性死锁（线程永久挂起且永不释放 DB 锁）。
+pub fn cloud_api_key_status(db_value: Option<String>) -> (Option<CloudApiKeySource>, Option<String>) {
     match resolve_cloud_api_key(
         std::env::var("RG_CLOUD_API_KEY").ok(),
         &cloud_api_key_file(),
-        read_db_cloud_api_key(),
+        db_value,
     ) {
         Ok((key, source)) => (Some(source), Some(crate::db::setting::mask_secret(&key))),
         Err(_) => (None, None),
