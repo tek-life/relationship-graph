@@ -27,7 +27,7 @@ import DocumentAttachButton, { type DocumentAttachment } from './DocumentAttachB
 import { ConfirmDialog, IconBtn } from './ui';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { parseAgentMention, withAgentMentionPrefix } from '../services/agentMention';
-import { isLastAssistantMessage, isGroupStart } from '../hooks/chatMessageOps';
+import { isLastAssistantMessage, isGroupStart, splitUserAttachments } from '../hooks/chatMessageOps';
 import { DIGITAL_AGENTS, CONTACT_MANAGER_AGENT_ID, type DigitalAgent } from '../services/digitalAgents';
 import { resolveTextDisplay } from '../services/contentPolicy';
 import type { NlqResponse } from '../types';
@@ -209,19 +209,24 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
     // 构建 active agent IDs
     const activeIds = selectedAgentIds.length > 0 ? selectedAgentIds : undefined;
 
-    // 附件标记仅用于气泡展示与持久化（不注入后端 query）；文档正文以 documents 字段提交
+    // 附件仅用于气泡结构化展示与持久化（不注入后端 query，也不拼进消息正文）；
+    // 文档正文以 documents 字段提交，附件文件名以 userAttachments 结构化随行持久化
     const docs = attachments.length > 0 ? [...attachments] : undefined;
-    const displayText = docs
-      ? `${text}\n${docs.map((d) => `📎 ${d.fileName}`).join('\n')}`
-      : text;
 
     setQuery('');
     setAttachments([]);
     // 后端只收剥离后的正文（agents.md §11.2）；气泡展示与持久化用含 @mention 的原文
-    await sendMessage(cleanedQuery, agentId, activeIds, displayText, {
-      webSearch: webSearchOn || undefined,
-      documents: docs,
-    });
+    await sendMessage(
+      cleanedQuery,
+      agentId,
+      activeIds,
+      text,
+      {
+        webSearch: webSearchOn || undefined,
+        documents: docs,
+      },
+      docs?.map((d) => d.fileName),
+    );
   }, [query, loading, voice, selectedAgentIds, sendMessage, webSearchOn, attachments]);
 
   // Enter 发送，Shift+Enter 换行
@@ -592,14 +597,26 @@ function ChatBubble({
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
+  // user 消息：对旧版已落库正文中的「📎 文件名」/「附件：」行做渲染层归一（不改写数据库），
+  // 并与新版结构化附件字段（userAttachments）合并去重后统一用 Paperclip 图标展示
+  const userParts = isUser ? splitUserAttachments(message.content) : null;
+  const userBody = userParts ? userParts.body : message.content;
+  const attachmentFiles = isUser
+    ? Array.from(
+        new Set([...(message.userAttachments ?? []), ...(userParts?.attachments ?? [])]),
+      )
+    : [];
+  /** 气泡正文：user 消息用归一后的纯净正文，assistant 保持原样 */
+  const renderContent = isUser ? userBody : message.content;
+
   // user 消息编辑态：进入后替换气泡内容为 textarea，提交后走编辑重发
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
   const startEdit = useCallback(() => {
-    setDraft(message.content);
+    setDraft(userBody);
     setEditing(true);
-  }, [message.content]);
+  }, [userBody]);
 
   const submitEdit = useCallback(async () => {
     const text = draft.trim();
@@ -719,12 +736,28 @@ function ChatBubble({
               {isCollapsible ? (
                 <CollapsibleMarkdown content={message.content} />
               ) : (
-                message.content && (
+                renderContent && (
                   <MarkdownContent
-                    content={message.content}
+                    content={renderContent}
                     className={`text-[15px] leading-7 ${isUser ? 'text-right' : 'text-left'}`}
                   />
                 )
+              )}
+
+              {/* user 消息附件（结构化展示：Paperclip 图标 + 文件名，不污染正文） */}
+              {isUser && attachmentFiles.length > 0 && (
+                <div className="space-y-1">
+                  {attachmentFiles.map((name) => (
+                    <div
+                      key={name}
+                      className="flex items-center justify-end gap-1.5 text-xs"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      <Paperclip size={12} className="shrink-0" aria-hidden="true" />
+                      <span className="max-w-[16rem] truncate">{name}</span>
+                    </div>
+                  ))}
+                </div>
               )}
 
               {/* 流式生成中且暂无内容时的占位提示 */}

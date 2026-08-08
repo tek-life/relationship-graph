@@ -56,6 +56,8 @@ export interface ChatDisplayMessage {
   thinking?: ChatThinking;
   /** 本轮请求开启了联网搜索（仅前端本地标记，用于气泡提示） */
   webSearched?: boolean;
+  /** user 消息的附件文件名（结构化展示，不拼进 content；经 metadataJson 持久化） */
+  userAttachments?: string[];
   /** 流式生成中 */
   streaming?: boolean;
   /** 错误消息（带"重试"按钮） */
@@ -77,8 +79,9 @@ export interface UseChatReturn {
   streaming: boolean;
   /** 错误信息 */
   error: string;
-  /** 加载会话列表 */
-  loadSessions: () => Promise<void>;
+  /** 加载会话列表；传 { silent: true } 为静默刷新（不置 sessionsLoading，
+   * 避免骨架屏在每轮聊天落库后整体闪烁，仅首屏冷启动展示骨架屏） */
+  loadSessions: (options?: { silent?: boolean }) => Promise<void>;
   /** 创建新会话 */
   createSession: () => Promise<string>;
   /** 切换当前会话 */
@@ -88,13 +91,15 @@ export interface UseChatReturn {
   /** 更新会话标题 */
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
   /** 发送消息（text 为发给后端的正文；displayText 为含 @mention 前缀的原文，仅用于展示与持久化，缺省同 text；
-   * options 携带联网开关与文档附件，仅流式链路透传） */
+   * options 携带联网开关与文档附件，仅流式链路透传；
+   * userAttachments 为附件文件名列表，以结构化方式随用户消息持久化与展示，不拼进正文） */
   sendMessage: (
     text: string,
     agentId?: string | null,
     activeAgentIds?: string[],
     displayText?: string,
     options?: StreamChatOptions,
+    userAttachments?: string[],
   ) => Promise<ChatRouterResponse | null>;
   /** 停止流式生成（保留已生成内容） */
   stopGeneration: () => void;
@@ -199,6 +204,7 @@ function toDisplayMessage(msg: ChatMessage): ChatDisplayMessage {
     results: metadata?.results as NlqResult[] | undefined,
     response: metadata?.response as NlqResponse | undefined,
     thinking: metadata?.thinking as ChatThinking | undefined,
+    userAttachments: metadata?.userAttachments as string[] | undefined,
   };
 }
 
@@ -245,15 +251,18 @@ export function useChat(userId?: string | null): UseChatReturn {
   }, [userId, currentSessionId]);
 
   // 加载会话列表（复用 session.ts）
-  const loadSessions = useCallback(async () => {
-    setSessionsLoading(true);
+  // silent=true 为静默刷新：不置 sessionsLoading（骨架屏仅覆盖首屏冷启动），
+  // 且失败时保留现有列表，避免消息落库后的例行刷新导致列表闪动/清空
+  const loadSessions = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) setSessionsLoading(true);
     try {
       const list = await sessionApi.listSessions();
       setSessions(list);
     } catch {
-      setSessions([]);
+      if (!silent) setSessions([]);
     } finally {
-      setSessionsLoading(false);
+      if (!silent) setSessionsLoading(false);
     }
   }, []);
 
@@ -428,8 +437,8 @@ export function useChat(userId?: string | null): UseChatReturn {
         : undefined;
       await sessionApi.addMessage(sessionId, 'assistant', response.reply, metadata);
 
-      // 刷新会话列表（更新排序和标题）
-      await loadSessions();
+      // 静默刷新会话列表（更新排序和标题，不触发侧栏骨架屏）
+      await loadSessions({ silent: true });
 
       return response;
     },
@@ -576,7 +585,7 @@ export function useChat(userId?: string | null): UseChatReturn {
           ]);
           const metadata = thinking ? JSON.stringify({ thinking }) : undefined;
           await sessionApi.addMessage(sessionId, 'assistant', textBuf, metadata);
-          await loadSessions();
+          await loadSessions({ silent: true });
         }
         return;
       }
@@ -609,7 +618,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       // 落库：完整回复 + thinking 序列化进 metadataJson（中止时同样保留已生成内容）
       const metadata = thinking ? JSON.stringify({ thinking }) : undefined;
       await sessionApi.addMessage(sessionId, 'assistant', textBuf, metadata);
-      await loadSessions();
+      await loadSessions({ silent: true });
     },
     [loadSessions],
   );
@@ -622,6 +631,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       activeAgentIds?: string[],
       displayText?: string,
       options?: StreamChatOptions,
+      userAttachments?: string[],
     ): Promise<ChatRouterResponse | null> => {
       // 粘性 agentId：未显式 @ 时沿用该会话最近一次被 @ 的对话型数字人
       // （校验其仍存在；relationship 模式如联系人管家不参与粘性）
@@ -638,11 +648,12 @@ export function useChat(userId?: string | null): UseChatReturn {
       // 发给后端的 query 仍是剥离后的 text（agents.md §11.2）
       const displayContent = displayText ?? text;
 
-      // 添加用户消息到 UI
+      // 添加用户消息到 UI（附件以结构化字段展示，不拼进正文）
       const userMsg: ChatDisplayMessage = {
         id: `user-${Date.now()}`,
         role: 'user',
         content: displayContent,
+        userAttachments: userAttachments?.length ? userAttachments : undefined,
       };
       setLoading(true);
       setError('');
@@ -656,8 +667,12 @@ export function useChat(userId?: string | null): UseChatReturn {
           setCurrentSessionId(sessionId);
         }
         setMessages((prev) => [...prev, userMsg]);
-        // 持久化用户消息到后端（存含 mention 的原文，历史回显保留前缀）
-        await sessionApi.addMessage(sessionId!, 'user', displayContent);
+        // 持久化用户消息到后端（存含 mention 的原文，历史回显保留前缀；
+        // 附件文件名以 metadataJson 结构化持久化，不污染正文）
+        const userMeta = userAttachments?.length
+          ? JSON.stringify({ userAttachments })
+          : undefined;
+        await sessionApi.addMessage(sessionId!, 'user', displayContent, userMeta);
 
         // 更新该会话的粘性记录：
         // - 显式 @ 对话型数字人：写入新粘性；

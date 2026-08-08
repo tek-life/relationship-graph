@@ -3,6 +3,7 @@ import { apiGet, apiPut, apiDelete } from '../services/api';
 import { fetchDigitalAgentById, clearDigitalAgentsCache, type DigitalAgent } from '../services/digitalAgents';
 import { extractSkillDescription } from '../services/skillDoc';
 import SkillForm from './admin/SkillForm';
+import { ConfirmDialog } from './ui';
 import type { AgentSkill } from './admin/types';
 
 // ============================================================
@@ -110,6 +111,9 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
 
   // 技能编辑状态：null=列表模式；{ skill: null }=新增；{ skill }=编辑
   const [skillEdit, setSkillEdit] = useState<{ skill: AgentSkill | null } | null>(null);
+
+  /** 待删除技能（非空时渲染全局 ConfirmDialog，替代 window.confirm） */
+  const [pendingDeleteSkill, setPendingDeleteSkill] = useState<{ id: string; name: string } | null>(null);
 
   // ============================================================
   // 数据加载
@@ -235,10 +239,16 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
   // 技能删除（新增/编辑表单由共享组件 SkillForm 承担）
   // ============================================================
 
-  const handleDeleteSkill = async (skillId: string) => {
-    if (!confirm('确定要删除这个技能吗？')) return;
+  const handleDeleteSkill = (skill: AgentSkill) => {
+    setPendingDeleteSkill({ id: skill.id, name: skill.skillName });
+  };
+
+  const confirmDeleteSkill = async () => {
+    if (!pendingDeleteSkill) return;
+    const { id } = pendingDeleteSkill;
+    setPendingDeleteSkill(null);
     try {
-      await apiDelete(`/api/admin/agent-skills/${skillId}`);
+      await apiDelete(`/api/admin/agent-skills/${id}`);
       clearDigitalAgentsCache();
       await loadSkills();
     } catch (err) {
@@ -726,7 +736,7 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
                           编辑
                         </button>
                         <button
-                          onClick={() => handleDeleteSkill(skill.id)}
+                          onClick={() => handleDeleteSkill(skill)}
                           className="rounded px-2 py-1 text-xs transition hover:opacity-70"
                           style={{
                             color: 'var(--danger-color)',
@@ -745,6 +755,17 @@ export default function AgentDetailPage({ agentId, isAdmin, onBack }: AgentDetai
           </div>
         </>
       )}
+
+      {/* 删除技能确认弹窗（替代 window.confirm，danger 红键） */}
+      <ConfirmDialog
+        open={pendingDeleteSkill !== null}
+        danger
+        title="删除技能"
+        message={`确定要删除技能「${pendingDeleteSkill?.name ?? ''}」吗？删除后不可恢复。`}
+        confirmLabel="删除"
+        onConfirm={() => void confirmDeleteSkill()}
+        onCancel={() => setPendingDeleteSkill(null)}
+      />
     </div>
   );
 }

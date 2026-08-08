@@ -5,6 +5,7 @@ import {
   findPrecedingUserMessage,
   isLastAssistantMessage,
   isGroupStart,
+  splitUserAttachments,
 } from './chatMessageOps';
 import type { ChatDisplayMessage } from './useChat';
 
@@ -167,5 +168,40 @@ describe('isLastAssistantMessage', () => {
 
   it('空列表返回 false', () => {
     expect(isLastAssistantMessage([], 'a1')).toBe(false);
+  });
+});
+
+describe('splitUserAttachments', () => {
+  it('旧版「📎 文件名」尾部行被剥离为附件，正文保持干净', () => {
+    const { body, attachments } = splitUserAttachments('帮我看看这个文件\n📎 文档测试.pdf\n📎 备注.txt');
+    expect(body).toBe('帮我看看这个文件');
+    expect(attachments).toEqual(['文档测试.pdf', '备注.txt']);
+  });
+
+  it('「附件：文件名」纯文本前缀（全角/半角冒号）同样归一为附件', () => {
+    expect(splitUserAttachments('正文\n附件：报告.docx').attachments).toEqual(['报告.docx']);
+    expect(splitUserAttachments('正文\n附件:报告.docx').attachments).toEqual(['报告.docx']);
+  });
+
+  it('无附件行的正文原样返回，attachments 为空', () => {
+    const { body, attachments } = splitUserAttachments('@联系人管家 谁在上海做地产？');
+    expect(body).toBe('@联系人管家 谁在上海做地产？');
+    expect(attachments).toEqual([]);
+  });
+
+  it('正文中夹带的附件行也能被识别（渲染层归一不依赖行位置）', () => {
+    const { body, attachments } = splitUserAttachments('开头\n📎 a.md\n结尾');
+    expect(body).toBe('开头\n结尾');
+    expect(attachments).toEqual(['a.md']);
+  });
+
+  it('仅含附件行时正文为空字符串', () => {
+    const { body, attachments } = splitUserAttachments('📎 only.pdf');
+    expect(body).toBe('');
+    expect(attachments).toEqual(['only.pdf']);
+  });
+
+  it('空字符串安全返回空结果', () => {
+    expect(splitUserAttachments('')).toEqual({ body: '', attachments: [] });
   });
 });

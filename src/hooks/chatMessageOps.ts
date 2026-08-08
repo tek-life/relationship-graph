@@ -80,3 +80,38 @@ export function isLastAssistantMessage(
   }
   return false;
 }
+
+/** 用户消息正文拆分结果：纯净正文 + 附件文件名列表 */
+export interface UserContentParts {
+  /** 去除附件行后的正文（已 trim） */
+  body: string;
+  /** 从正文中识别出的附件文件名 */
+  attachments: string[];
+}
+
+/**
+ * 匹配历史遗留的附件行：「📎 文件名」（旧版拼接格式，含尾随空格）
+ * 或「附件：文件名」纯文本前缀（全角/半角冒号均兼容）。
+ */
+const ATTACHMENT_LINE_RE = /^(?:📎\s*|附件[：:]\s*)(.+)$/;
+
+/**
+ * 将用户消息正文拆分为纯净正文与附件文件名列表。
+ * 用于渲染层对已落库历史消息（旧版将「📎 文件名」拼进正文持久化）做归一展示：
+ * 附件行改由 Paperclip 图标渲染，不改写数据库内容；
+ * 新版消息正文不含附件行时原样返回（attachments 为空）。
+ */
+export function splitUserAttachments(content: string): UserContentParts {
+  const bodyLines: string[] = [];
+  const attachments: string[] = [];
+  for (const line of content.split('\n')) {
+    const matched = ATTACHMENT_LINE_RE.exec(line.trim());
+    if (matched) {
+      const name = matched[1].trim();
+      if (name) attachments.push(name);
+    } else {
+      bodyLines.push(line);
+    }
+  }
+  return { body: bodyLines.join('\n').trim(), attachments };
+}
