@@ -977,6 +977,137 @@ fn resolve_documents_prompt(
     (prompt, doc_count, doc_chars, truncated)
 }
 
+// ---------- 聊天历史组装（多轮对话） ----------
+
+/// 压缩摘要消息前缀（与 api/session.rs 压缩写入格式一致）
+const SUMMARY_PREFIX: &str = "[对话摘要]";
+
+/// 历史窗口一次取数上限（足够覆盖字符预算；压缩后每会话保留最近 10 条 + 摘要）
+const HISTORY_FETCH_LIMIT: i64 = 200;
+
+/// 聊天历史字符预算：env `RG_CHAT_HISTORY_CHARS`（默认 8000），非法/0 回退默认
+fn chat_history_budget_chars() -> usize {
+    std::env::var("RG_CHAT_HISTORY_CHARS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(8000)
+}
+
+fn strip_summary_prefix(content: &str) -> String {
+    content
+        .trim()
+        .strip_prefix(SUMMARY_PREFIX)
+        .unwrap_or(content.trim())
+        .trim()
+        .to_string()
+}
+
+/// 历史窗口选择（纯函数，可单测）：输入按时间升序的消息序列。
+/// 1. 提取最近一条 [对话摘要] system 消息（剥离前缀）作为 summary，不进入 turns；
+/// 2. user/assistant 轮次从新到旧按字符数累加，超出预算即止（不含溢出消息）；
+///    最近一条即使单独超预算也保留，避免长消息导致历史恒空；
+/// 3. 输出 turns 维持时间升序。
+fn select_history_window(
+    messages: &[crate::types::ChatMessage],
+    budget: usize,
+) -> (Option<String>, Vec<(String, String)>) {
+    let mut summary: Option<String> = None;
+    for m in messages.iter().rev() {
+        if m.role == "system" && m.content.starts_with(SUMMARY_PREFIX) {
+            summary = Some(strip_summary_prefix(&m.content));
+            break;
+        }
+    }
+    let mut picked: Vec<(String, String)> = Vec::new();
+    let mut used = 0usize;
+    for m in messages.iter().rev() {
+        if m.role != "user" && m.role != "assistant" {
+            continue;
+        }
+        let chars = m.content.chars().count();
+        if used + chars > budget && !picked.is_empty() {
+            break;
+        }
+        used += chars;
+        picked.push((m.role.clone(), m.content.clone()));
+    }
+    picked.reverse();
+    (summary, picked)
+}
+
+/// 聊天历史组装（调用方已完成会话归属校验）：
+/// 取严格早于 `before` 的最近消息（排除本轮刚落库的 user 消息）→
+/// 摘要提取（窗口内优先，否则补查 DB 最近摘要）→ 预算截取。
+fn resolve_chat_history(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    budget: usize,
+    before: &str,
+) -> Result<crate::types::ChatHistory, rusqlite::Error> {
+    let messages =
+        db_session::list_recent_messages_before(conn, session_id, before, HISTORY_FETCH_LIMIT)?;
+    let (summary, turns) = select_history_window(&messages, budget);
+    let summary = match summary {
+        Some(s) => Some(s),
+        None => db_session::get_latest_summary(conn, session_id)?
+            .map(|m| strip_summary_prefix(&m.content)),
+    };
+    Ok(crate::types::ChatHistory { summary, turns })
+}
+
+/// 读取并组装聊天历史（DB 锁约定：锁内取数 → 立即 drop guard → 再 await LLM）。
+/// 无 sessionId / 锁失败 / 库未解锁 / 查询失败一律降级为空历史（warn 日志
+/// 仅记元数据），历史读取故障永不阻断聊天。
+fn load_chat_history(
+    state: &SharedState,
+    session_id: Option<&str>,
+    before: &str,
+) -> crate::types::ChatHistory {
+    let session_id = match session_id {
+        Some(id) if !id.trim().is_empty() => id,
+        _ => return crate::types::ChatHistory::default(),
+    };
+    let budget = chat_history_budget_chars();
+    let guard = match state.db.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::warn!(target: "chat", "load_chat_history lock_failed err={}", e);
+            return crate::types::ChatHistory::default();
+        }
+    };
+    let outcome = match get_conn(&guard) {
+        Ok(conn) => {
+            resolve_chat_history(conn, session_id, budget, before).map_err(|e| e.to_string())
+        }
+        Err(e) => Err(e),
+    };
+    drop(guard);
+    match outcome {
+        Ok(history) => {
+            log::info!(
+                target: "chat",
+                "load_chat_history session_id={} turns={} history_chars={} summary_chars={} budget={}",
+                session_id,
+                history.turns.len(),
+                history.turns.iter().map(|(_, c)| c.chars().count()).sum::<usize>(),
+                history.summary.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+                budget
+            );
+            history
+        }
+        Err(e) => {
+            log::warn!(
+                target: "chat",
+                "load_chat_history_failed session_id={} err={} fallback=no_history",
+                session_id,
+                e
+            );
+            crate::types::ChatHistory::default()
+        }
+    }
+}
+
 /// 解析聊天注入的技能 prompt（注入 /api/chat 与 /api/chat/stream 两条链路）：
 /// 用户画像常驻段（user_id 有值且画像已完成时，永远注入、无需 agentId）
 /// 在前（最高优先级），数字人技能段（agent_id 有值时）在后；合并后整体走
@@ -1660,6 +1791,193 @@ mod session_ownership_tests {
         assert!(session_owned_by(Some(&session("u1")), "u1"));
         assert!(!session_owned_by(Some(&session("u2")), "u1"));
         assert!(!session_owned_by(None, "u1"));
+    }
+}
+
+#[cfg(test)]
+mod chat_history_tests {
+    use super::*;
+    use crate::types::ChatMessage;
+    use rusqlite::{params, Connection};
+
+    fn msg(role: &str, content: &str, created_at: &str) -> ChatMessage {
+        ChatMessage {
+            id: String::new(),
+            session_id: "s-1".to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            metadata_json: None,
+            created_at: created_at.to_string(),
+        }
+    }
+
+    fn in_memory_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        schema::migrate(&conn).expect("schema migration");
+        conn
+    }
+
+    fn seed_session(conn: &Connection, session_id: &str) {
+        // sessions.user_id 有外键约束（migrate 已启用 foreign_keys），先造用户
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO users (id, username, password_hash, role, created_at, updated_at)
+             VALUES ('u1', 'u1', 'x', 'user', 't', 't')",
+            [],
+        );
+        conn.execute(
+            "INSERT INTO sessions (id, user_id, title, created_at, updated_at) VALUES (?1, 'u1', NULL, 't', 't')",
+            params![session_id],
+        )
+        .expect("insert session");
+    }
+
+    fn seed_message(conn: &Connection, id: &str, session_id: &str, role: &str, content: &str, created_at: &str) {
+        conn.execute(
+            "INSERT INTO chat_messages (id, session_id, role, content, metadata_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+            params![id, session_id, role, content, created_at],
+        )
+        .expect("insert message");
+    }
+
+    /// 预算默认基线（仅在 env 未设置时断言，避免并发测试改 env 竞态）
+    #[test]
+    fn budget_default_baseline() {
+        if std::env::var("RG_CHAT_HISTORY_CHARS").is_ok() {
+            return;
+        }
+        assert_eq!(chat_history_budget_chars(), 8000);
+    }
+
+    /// 空消息序列 → 空窗口无摘要
+    #[test]
+    fn empty_window() {
+        let (summary, turns) = select_history_window(&[], 8000);
+        assert!(summary.is_none());
+        assert!(turns.is_empty());
+    }
+
+    /// 预算截取：从新到旧累加，超出即止，输出维持时间升序
+    #[test]
+    fn budget_truncates_newest_to_oldest() {
+        let messages = vec![
+            msg("user", "旧问题一", "t1"),       // 4 字
+            msg("assistant", "旧回答一", "t2"),   // 4 字
+            msg("user", "新问题二", "t3"),       // 4 字
+            msg("assistant", "新回答二", "t4"),   // 4 字
+        ];
+        // 预算 8：仅容纳最新两条（新回答二 + 新问题二）
+        let (summary, turns) = select_history_window(&messages, 8);
+        assert!(summary.is_none());
+        assert_eq!(
+            turns,
+            vec![
+                ("user".to_string(), "新问题二".to_string()),
+                ("assistant".to_string(), "新回答二".to_string()),
+            ]
+        );
+        // 预算恰容纳全部 → 全量保留且升序
+        let (_, turns) = select_history_window(&messages, 16);
+        assert_eq!(turns.len(), 4);
+        assert_eq!(turns[0].1, "旧问题一");
+        assert_eq!(turns[3].1, "新回答二");
+    }
+
+    /// 最近一条单独超预算也保留（避免长消息导致历史恒空）
+    #[test]
+    fn single_oversize_recent_message_kept() {
+        let messages = vec![
+            msg("user", "旧", "t1"),
+            msg("assistant", &"长".repeat(100), "t2"),
+        ];
+        let (_, turns) = select_history_window(&messages, 10);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].0, "assistant");
+    }
+
+    /// 摘要提取：最近一条 [对话摘要] system 消息剥离前缀后作为 summary，
+    /// 不进入 turns；多条取最近
+    #[test]
+    fn summary_extracted_and_excluded_from_turns() {
+        let messages = vec![
+            msg("system", "[对话摘要] 旧摘要", "t1"),
+            msg("user", "问题", "t2"),
+            msg("assistant", "回答", "t3"),
+            msg("system", "[对话摘要] 新摘要", "t4"),
+        ];
+        let (summary, turns) = select_history_window(&messages, 8000);
+        assert_eq!(summary.as_deref(), Some("新摘要"));
+        assert_eq!(turns.len(), 2);
+        assert!(turns.iter().all(|(role, _)| role != "system"));
+    }
+
+    /// 排除本轮消息：created_at 不早于 before 的消息不进入历史
+    ///（前端先 addMessage 落库本轮 user 消息再发聊天请求）
+    #[test]
+    fn resolve_excludes_current_turn_message() {
+        let conn = in_memory_db();
+        seed_session(&conn, "s-1");
+        seed_message(&conn, "m1", "s-1", "user", "上一轮问题", "2026-08-08T01:00:00+00:00");
+        seed_message(&conn, "m2", "s-1", "assistant", "上一轮回答", "2026-08-08T01:00:01+00:00");
+        // 本轮刚落库的 user 消息（时间戳晚于请求时刻 before）
+        seed_message(&conn, "m3", "s-1", "user", "本轮问题", "2026-08-08T01:00:05+00:00");
+
+        let history = resolve_chat_history(&conn, "s-1", 8000, "2026-08-08T01:00:04+00:00").unwrap();
+        assert_eq!(history.turns.len(), 2);
+        assert_eq!(history.turns[0].1, "上一轮问题");
+        assert_eq!(history.turns[1].1, "上一轮回答");
+        assert!(history.turns.iter().all(|(_, c)| c != "本轮问题"));
+    }
+
+    /// 空会话 → 空历史无摘要
+    #[test]
+    fn resolve_empty_session() {
+        let conn = in_memory_db();
+        seed_session(&conn, "s-empty");
+        let history = resolve_chat_history(&conn, "s-empty", 8000, "2026-08-08T23:59:59+00:00").unwrap();
+        assert!(history.is_empty());
+    }
+
+    /// 摘要落在取数窗口外（被更多新消息挤出）时补查 DB 最近摘要
+    #[test]
+    fn resolve_summary_outside_fetch_window() {
+        let conn = in_memory_db();
+        seed_session(&conn, "s-2");
+        seed_message(&conn, "m0", "s-2", "system", "[对话摘要] 历史摘要", "2026-08-08T00:00:00+00:00");
+        // 窗口预算极小：摘要虽在取数窗口内但被排除出 turns，仍应提取
+        seed_message(&conn, "m1", "s-2", "user", "问题", "2026-08-08T01:00:00+00:00");
+        seed_message(&conn, "m2", "s-2", "assistant", "回答", "2026-08-08T01:00:01+00:00");
+        let history = resolve_chat_history(&conn, "s-2", 8000, "2026-08-08T23:59:59+00:00").unwrap();
+        assert_eq!(history.summary.as_deref(), Some("历史摘要"));
+        assert_eq!(history.turns.len(), 2);
+
+        // 无窗口内摘要且 DB 也无 → summary=None
+        seed_session(&conn, "s-3");
+        seed_message(&conn, "m3", "s-3", "user", "问题", "2026-08-08T01:00:00+00:00");
+        let history = resolve_chat_history(&conn, "s-3", 8000, "2026-08-08T23:59:59+00:00").unwrap();
+        assert!(history.summary.is_none());
+    }
+
+    /// 摘要被超出取数窗口（HISTORY_FETCH_LIMIT 条更新消息挤出）时，
+    /// 回退补查 DB 最近摘要仍能注入
+    #[test]
+    fn resolve_summary_fallback_when_outside_fetch_window() {
+        let conn = in_memory_db();
+        seed_session(&conn, "s-4");
+        seed_message(&conn, "m0", "s-4", "system", "[对话摘要] 早期摘要", "2026-08-08T00:00:00+00:00");
+        // 在摘要后插入超出取数窗口上限的消息，把摘要挤出窗口
+        for i in 1..=(HISTORY_FETCH_LIMIT + 1) {
+            seed_message(
+                &conn,
+                &format!("w-{}", i),
+                "s-4",
+                if i % 2 == 1 { "user" } else { "assistant" },
+                "水",
+                &format!("2026-08-08T01:{:02}:00+00:00", (i % 60)),
+            );
+        }
+        let history = resolve_chat_history(&conn, "s-4", 8000, "2026-08-09T00:00:00+00:00").unwrap();
+        assert_eq!(history.summary.as_deref(), Some("早期摘要"));
     }
 }
 

@@ -102,6 +102,39 @@ pub fn delete_old_messages(conn: &Connection, session_id: &str, keep_count: i64)
     Ok(())
 }
 
+/// 取指定会话 created_at 严格早于 before 的最近 limit 条消息，按时间升序返回。
+/// RFC3339 时间戳同格式字典序比较；用于聊天历史组装时排除本轮刚落库的
+/// user 消息（前端先 addMessage 再发聊天请求，其 created_at 早于聊天请求时刻）。
+pub fn list_recent_messages_before(
+    conn: &Connection,
+    session_id: &str,
+    before: &str,
+    limit: i64,
+) -> Result<Vec<ChatMessage>, rusqlite::Error> {
+    let sql = MSG_SELECT.to_owned()
+        + " WHERE session_id = ?1 AND created_at < ?2 ORDER BY created_at DESC LIMIT ?3";
+    let mut stmt = conn.prepare(&sql)?;
+    let mut messages: Vec<ChatMessage> = stmt
+        .query_map(params![session_id, before, limit], map_message)?
+        .collect::<Result<Vec<_>, _>>()?;
+    messages.reverse();
+    Ok(messages)
+}
+
+/// 取指定会话最近一条压缩摘要消息（[对话摘要] 前缀的 system 消息）；无则 None。
+/// 聊天历史注入时作为 [对话摘要] system 段先于最近历史轮次注入。
+pub fn get_latest_summary(conn: &Connection, session_id: &str) -> Result<Option<ChatMessage>, rusqlite::Error> {
+    let sql = MSG_SELECT.to_owned()
+        + " WHERE session_id = ?1 AND role = 'system' AND content LIKE '[对话摘要]%' ORDER BY created_at DESC LIMIT 1";
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![session_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(map_message(row)?))
+    } else {
+        Ok(None)
+    }
+}
+
 // === helpers ===
 
 fn get_message(conn: &Connection, id: &str) -> Result<Option<ChatMessage>, rusqlite::Error> {

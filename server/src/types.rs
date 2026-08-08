@@ -33,6 +33,21 @@ pub struct ChatResponse {
     pub reply: String,
 }
 
+/// 多轮对话的聊天历史上下文（后端权威组装，前端只传 sessionId）：
+/// 压缩摘要（如有）+ 最近历史轮次（时间升序，role ∈ user/assistant）。
+/// 注入顺序：角色+技能+文档 → 摘要 → 最近历史轮次 → 本轮 query。
+#[derive(Debug, Clone, Default)]
+pub struct ChatHistory {
+    pub summary: Option<String>,
+    pub turns: Vec<(String, String)>,
+}
+
+impl ChatHistory {
+    pub fn is_empty(&self) -> bool {
+        self.summary.is_none() && self.turns.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
