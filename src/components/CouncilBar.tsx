@@ -36,10 +36,10 @@ export default function CouncilBar({ selectedAgentIds, onPickAgent }: CouncilBar
               type="button"
               onClick={() => onPickAgent(agent)}
               aria-label={`${agent.displayName}${isSelected ? '（已选中）' : ''}`}
-              className="flex items-center gap-1.5 rounded-full transition-all duration-200"
+              className="flex items-center gap-1.5 rounded-full transition-all"
             >
               <span
-                className={`block w-10 h-10 rounded-full overflow-hidden border-2 transition-all duration-200
+                className={`block w-10 h-10 rounded-full overflow-hidden border-2 transition-all
                   ${
                     isSelected
                       ? 'border-accent shadow-lg scale-110'

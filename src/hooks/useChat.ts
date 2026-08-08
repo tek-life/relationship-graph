@@ -65,6 +65,8 @@ export interface ChatDisplayMessage {
 export interface UseChatReturn {
   /** 所有会话列表 */
   sessions: Session[];
+  /** 会话列表是否加载中（UX P2-12：供会话侧栏展示骨架屏） */
+  sessionsLoading: boolean;
   /** 当前会话 ID */
   currentSessionId: string | null;
   /** 当前会话的消息列表 */
@@ -207,6 +209,8 @@ function toDisplayMessage(msg: ChatMessage): ChatDisplayMessage {
  */
 export function useChat(userId?: string | null): UseChatReturn {
   const [sessions, setSessions] = useState<Session[]>([]);
+  // UX P2-12：会话列表加载中标记（供会话侧栏骨架屏）
+  const [sessionsLoading, setSessionsLoading] = useState(true);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatDisplayMessage[]>([]);
   const [loading, setLoading] = useState(false);
@@ -242,11 +246,14 @@ export function useChat(userId?: string | null): UseChatReturn {
 
   // 加载会话列表（复用 session.ts）
   const loadSessions = useCallback(async () => {
+    setSessionsLoading(true);
     try {
       const list = await sessionApi.listSessions();
       setSessions(list);
     } catch {
       setSessions([]);
+    } finally {
+      setSessionsLoading(false);
     }
   }, []);
 
@@ -265,6 +272,7 @@ export function useChat(userId?: string | null): UseChatReturn {
       }
       if (cancelled) return;
       setSessions(list);
+      setSessionsLoading(false);
 
       const savedId = readLastSessionId(userId);
       const restored =
@@ -827,6 +835,7 @@ export function useChat(userId?: string | null): UseChatReturn {
 
   return {
     sessions,
+    sessionsLoading,
     currentSessionId,
     messages,
     loading,

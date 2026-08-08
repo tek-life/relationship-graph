@@ -49,6 +49,15 @@ export default {
         card: "0 1px 3px var(--shadow-color), 0 1px 2px var(--shadow-color)",
         pop: "0 10px 30px var(--shadow-color), 0 4px 10px var(--shadow-color)",
       },
+      // UX P2-11 动效统一：交互态过渡默认 150ms ease-out（与 index.css 的
+      // --motion-duration / --motion-ease 对齐）；transition / transition-colors 等
+      // 不带显式 duration/ease 的工具类自动套用该默认值。
+      transitionDuration: {
+        DEFAULT: "150ms",
+      },
+      transitionTimingFunction: {
+        DEFAULT: "ease-out",
+      },
       // 字体栈：保留 Inter 与西文系统回退，追加中文字体
       fontFamily: {
         sans: [

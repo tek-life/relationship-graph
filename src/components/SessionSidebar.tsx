@@ -8,10 +8,12 @@
 import { useState, useMemo } from 'react';
 import { PanelLeftClose, Search, X } from 'lucide-react';
 import type { Session } from '../types';
-import { IconBtn } from './ui';
+import { IconBtn, SessionListSkeleton } from './ui';
 
 interface SessionListHandlers {
   sessions: Session[];
+  /** UX P2-12：会话列表加载中时展示骨架屏（缺省 false，向后兼容） */
+  loading?: boolean;
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onNewSession: () => void;
@@ -27,6 +29,7 @@ interface SessionPanelContentProps extends SessionListHandlers {
 /** 会话面板内容（头部 + 新建 + 搜索 + 列表），抽屉与常驻形态共用 */
 function SessionPanelContent({
   sessions,
+  loading = false,
   currentSessionId,
   onSelectSession,
   onNewSession,
@@ -150,9 +153,11 @@ function SessionPanelContent({
         </p>
       )}
 
-      {/* 会话列表 */}
+      {/* 会话列表：加载中展示骨架屏 */}
       <div className="flex-1 overflow-y-auto space-y-1 -mx-1">
-        {filteredSessions.length === 0 ? (
+        {loading ? (
+          <SessionListSkeleton />
+        ) : filteredSessions.length === 0 ? (
           <div className="text-center py-8">
             <p className="text-sm" style={{ color: 'var(--text-tertiary, #aaa)' }}>
               {search ? '没有匹配的会话' : '暂无会话，点击上方按钮新建'}
@@ -162,7 +167,7 @@ function SessionPanelContent({
           filteredSessions.map((session) => (
             <div
               key={session.id}
-              className={`group flex items-center rounded-lg px-3 py-2.5 cursor-pointer transition-all duration-150
+              className={`group flex items-center rounded-lg px-3 py-2.5 cursor-pointer transition-all
                 ${
                   session.id === currentSessionId
                     ? 'bg-accent-light border-l-2 border-accent'

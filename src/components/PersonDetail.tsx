@@ -13,7 +13,7 @@ import InteractionForm from './InteractionForm';
 import PersonForm from './PersonForm';
 import RelationshipForm from './RelationshipForm';
 import SensitivityGuard from './SensitivityGuard';
-import { ConfirmDialog } from './ui';
+import { ConfirmDialog, PersonDetailSkeleton } from './ui';
 
 interface Props {
   personId: string;
@@ -96,7 +96,8 @@ export default function PersonDetail({ personId, personsById, onBack, onChanged,
   };
 
   if (loading) {
-    return <div className="rounded-xl border p-8 text-center" style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>加载联系人详情...</div>;
+    // UX P2-12：详情页加载态改用骨架屏（替代纯文字「加载联系人详情...」）
+    return <PersonDetailSkeleton />;
   }
 
   if (error || !person) {

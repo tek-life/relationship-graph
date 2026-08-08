@@ -20,3 +20,11 @@ export { Card } from './Card';
 export type { CardProps } from './Card';
 
 export { EmptyState, ErrorBanner, LoadingSpinner, StatusBadge } from './Feedback';
+
+export {
+  Skeleton,
+  PersonCardSkeleton,
+  PersonListSkeleton,
+  SessionListSkeleton,
+  PersonDetailSkeleton,
+} from './Skeleton';

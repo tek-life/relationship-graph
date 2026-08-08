@@ -480,9 +480,10 @@ function NetworkView({ data, personsById, onNodeClick, onRefresh, initialFocusId
       return value || fallback;
     };
     const buildGraphStyle = (): cytoscape.StylesheetJson => {
-      const accent = cssVar('--accent-color', '#3b82f6');
-      const accentHover = cssVar('--accent-hover', '#2563eb');
-      const accentLight = cssVar('--accent-light', '#eff6ff');
+      // UX P2-11：回退值同步 indigo 主色（正常情况下均从 CSS 变量读取）
+      const accent = cssVar('--accent-color', '#4f46e5');
+      const accentHover = cssVar('--accent-hover', '#4338ca');
+      const accentLight = cssVar('--accent-light', '#eef2ff');
       const danger = cssVar('--danger-color', '#dc2626');
       const warning = cssVar('--warning', '#d97706');
       const success = cssVar('--success', '#16a34a');

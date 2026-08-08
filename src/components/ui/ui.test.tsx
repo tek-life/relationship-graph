@@ -13,6 +13,13 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { IconBtn } from './IconBtn';
 import { Segmented } from './Segmented';
 import { ToastProvider, useToast } from './Toast';
+import {
+  Skeleton,
+  PersonCardSkeleton,
+  PersonListSkeleton,
+  SessionListSkeleton,
+  PersonDetailSkeleton,
+} from './Skeleton';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -297,5 +304,47 @@ describe('admin/shared re-export 兼容性', () => {
     expect(container.textContent).toContain('加载失败');
     render(<shared.StatusBadge active={false} />);
     expect(container.textContent).toContain('禁用');
+  });
+});
+
+describe('Skeleton（UX P2-12 骨架屏）', () => {
+  it('基础骨架条走令牌底色 + pulse 动画，且 aria-hidden', () => {
+    render(<Skeleton className="h-4 w-1/2" />);
+    const el = container.firstElementChild as HTMLElement;
+    expect(el.getAttribute('aria-hidden')).toBe('true');
+    expect(el.className).toContain('animate-pulse');
+    expect(el.style.backgroundColor).toBe('var(--surface-hover)');
+    expect(el.className).toContain('h-4');
+  });
+
+  it('PersonListSkeleton 按 count 渲染卡片骨架并声明加载语义', () => {
+    render(<PersonListSkeleton count={4} />);
+    const status = container.querySelector('[role="status"]');
+    expect(status?.getAttribute('aria-label')).toBe('联系人列表加载中');
+    // 每张卡片骨架内含一个圆形头像占位（rounded-full 头像宽 h-10）
+    expect(container.querySelectorAll('.h-10.w-10').length).toBe(4);
+  });
+
+  it('SessionListSkeleton 默认渲染 6 行骨架', () => {
+    render(<SessionListSkeleton />);
+    const status = container.querySelector('[role="status"]');
+    expect(status?.getAttribute('aria-label')).toBe('会话列表加载中');
+    expect(status?.children.length).toBe(6);
+  });
+
+  it('PersonDetailSkeleton 声明详情加载语义且不含真实文案', () => {
+    render(<PersonDetailSkeleton />);
+    const status = container.querySelector('[role="status"]');
+    expect(status?.getAttribute('aria-label')).toBe('联系人详情加载中');
+    expect(container.textContent).toBe('');
+  });
+
+  it('骨架组件从 ui/index 统一导出', async () => {
+    const ui = await import('./index');
+    expect(ui.Skeleton).toBe(Skeleton);
+    expect(ui.PersonCardSkeleton).toBe(PersonCardSkeleton);
+    expect(ui.PersonListSkeleton).toBe(PersonListSkeleton);
+    expect(ui.SessionListSkeleton).toBe(SessionListSkeleton);
+    expect(ui.PersonDetailSkeleton).toBe(PersonDetailSkeleton);
   });
 });

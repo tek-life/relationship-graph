@@ -60,6 +60,7 @@ interface ChatViewProps {
 export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
   const {
     sessions,
+    sessionsLoading,
     currentSessionId,
     messages,
     loading,
@@ -330,6 +331,7 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
         <aside className="hidden h-full lg:block">
           <DockedSessionSidebar
             sessions={sessions}
+            loading={sessionsLoading}
             currentSessionId={currentSessionId}
             onSelectSession={switchSession}
             onNewSession={createSession}
@@ -343,6 +345,7 @@ export default function ChatView({ onPersonClick, userId }: ChatViewProps) {
       {/* <lg 抽屉式会话侧边栏 */}
       <SessionSidebar
         sessions={sessions}
+        loading={sessionsLoading}
         currentSessionId={currentSessionId}
         onSelectSession={switchSession}
         onNewSession={createSession}

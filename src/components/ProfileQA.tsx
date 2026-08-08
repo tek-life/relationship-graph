@@ -219,7 +219,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
           {stages.map((stage, i) => (
             <div key={stage.id} className="flex items-center gap-2">
               <div
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium transition-all duration-300"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium transition-all"
                 style={{
                   backgroundColor:
                     i < stageIndex
@@ -301,10 +301,10 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
             </div>
 
             <div className="flex gap-3">
+              {/* UX P2-12：按钮收敛到全局 .btn-primary / .btn-secondary，保留胶囊形 */}
               <button
                 type="button"
-                className="rounded-full px-6 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
-                style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
+                className="btn-primary rounded-full px-6 py-2.5"
                 onClick={handleRestart}
               >
                 重新作答更新内观画像
@@ -312,11 +312,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
               {onComplete && (
                 <button
                   type="button"
-                  className="rounded-full px-6 py-2.5 text-sm transition"
-                  style={{
-                    color: 'var(--text-secondary, #64748b)',
-                    border: '1px solid var(--border-color, #e2e8f0)',
-                  }}
+                  className="btn-secondary rounded-full px-6 py-2.5"
                   onClick={onComplete}
                 >
                   返回首页
@@ -352,13 +348,13 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
                 <button
                   type="button"
                   disabled={saving}
-                  className="rounded-full px-6 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-                  style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
+                  className="btn-primary rounded-full px-6 py-2.5"
                   onClick={handleSave}
                 >
                   {saving ? '保存中…' : '确认保存内观画像'}
                 </button>
               ) : (
+                /* UX P2-12：成功态统一走 --success 语义令牌 */
                 <span
                   className="flex items-center gap-1 text-sm font-medium"
                   style={{ color: 'var(--success)' }}
@@ -369,11 +365,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
               {onComplete && (
                 <button
                   type="button"
-                  className="rounded-full px-6 py-2.5 text-sm transition"
-                  style={{
-                    color: 'var(--text-secondary, #64748b)',
-                    border: '1px solid var(--border-color, #e2e8f0)',
-                  }}
+                  className="btn-secondary rounded-full px-6 py-2.5"
                   onClick={onComplete}
                 >
                   返回首页
@@ -390,7 +382,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
               <div className="flex gap-3">
                 <div
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs text-white"
-                  style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
+                  style={{ backgroundColor: 'var(--accent-color)' }}
                 >
                   练
                 </div>
@@ -409,7 +401,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
               <div className="flex justify-end gap-3">
                 <div
                   className="max-w-[75%] rounded-2xl rounded-tr-sm px-4 py-3 text-sm leading-relaxed text-white"
-                  style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
+                  style={{ backgroundColor: 'var(--accent-color)' }}
                 >
                   <div className="whitespace-pre-wrap">{exchange.answer}</div>
                 </div>
@@ -431,7 +423,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
             <div className="flex gap-3">
               <div
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs text-white"
-                style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
+                style={{ backgroundColor: 'var(--accent-color)' }}
               >
                 练
               </div>
@@ -453,7 +445,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
             <div className="flex gap-3">
               <div
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs text-white"
-                style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
+                style={{ backgroundColor: 'var(--accent-color)' }}
               >
                 练
               </div>
@@ -510,8 +502,7 @@ export default function ProfileQA({ onComplete, initialProfileDoc, initialComple
               type="button"
               onClick={handleSubmit}
               disabled={!answer.trim() || loading}
-              className="self-end rounded-xl px-5 py-3 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
-              style={{ backgroundColor: 'var(--accent-color, #3b82f6)' }}
+              className="btn-primary self-end rounded-xl px-5 py-3"
             >
               发送
             </button>

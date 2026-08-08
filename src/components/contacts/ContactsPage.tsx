@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { Upload, UserPlus } from 'lucide-react';
 import PersonForm from '../PersonForm';
 import PersonList from '../PersonList';
+import { PersonListSkeleton } from '../ui';
 import { createPerson } from '../../services/db';
 import type { CreatePersonInput, Person } from '../../types';
 import { Drawer } from './Drawer';
@@ -18,11 +19,13 @@ import { Drawer } from './Drawer';
 interface Props {
   /** 联系人列表（由 App 全局加载，图谱页 / 导入刷新共用同一份数据） */
   persons: Person[];
+  /** UX P2-12：首次加载中时列表区展示骨架屏（仅在列表为空时生效） */
+  loading?: boolean;
   /** 新建 / 导入后刷新全局数据 */
   onRefresh: () => Promise<void> | void;
 }
 
-export default function ContactsPage({ persons, onRefresh }: Props) {
+export default function ContactsPage({ persons, loading = false, onRefresh }: Props) {
   const navigate = useNavigate();
   const [createOpen, setCreateOpen] = useState(false);
   const [error, setError] = useState('');
@@ -74,9 +77,13 @@ export default function ContactsPage({ persons, onRefresh }: Props) {
         <div className="mt-3 rounded-control bg-danger-light p-2 text-body text-danger">{error}</div>
       )}
 
-      {/* 列表：点击卡片直接跳详情页（交互单一化，无选中态） */}
+      {/* 列表：点击卡片直接跳详情页（交互单一化，无选中态）；首次加载展示骨架屏 */}
       <div className="mt-4">
-        <PersonList persons={persons} onSelect={(person) => navigate(`/contacts/${person.id}`)} />
+        {loading && persons.length === 0 ? (
+          <PersonListSkeleton />
+        ) : (
+          <PersonList persons={persons} onSelect={(person) => navigate(`/contacts/${person.id}`)} />
+        )}
       </div>
 
       {/* 新建联系人抽屉 */}

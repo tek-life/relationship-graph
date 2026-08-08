@@ -34,6 +34,8 @@ function App() {
   const [persons, setPersons] = useState<Person[]>([]);
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
   const [error, setError] = useState('');
+  // UX P2-12：首次加载中标记，供联系人列表展示骨架屏（仅在列表为空时生效）
+  const [personsLoading, setPersonsLoading] = useState(true);
 
   const personsById = useMemo(
     () => Object.fromEntries(persons.map((person) => [person.id, person])),
@@ -46,6 +48,8 @@ function App() {
       setGraphData(await getGraphData());
     } catch (err) {
       setError(String(err));
+    } finally {
+      setPersonsLoading(false);
     }
   };
 
@@ -66,7 +70,27 @@ function App() {
       {/* 顶部导航栏（UX P0-5：主导航收敛为 AI 助理 / 联系人 / 图谱，tabs 下划线化） */}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-line bg-card px-4">
         <div className="flex h-full items-center gap-6">
-          <h1 className="text-lead font-bold whitespace-nowrap">Personal AI Platform</h1>
+          {/* UX P2-11 品牌字标：logo mark（关系网络节点图形，取 accent 令牌）+ 加粗英文字标 */}
+          <div className="flex items-center gap-2 whitespace-nowrap" aria-label="Personal AI Platform">
+            <span
+              aria-hidden="true"
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-line bg-accent-light"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path
+                  d="M4.5 11.5 8 4.5l3.5 7M4.5 11.5h7"
+                  stroke="var(--accent-color)"
+                  strokeWidth="1.3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <circle cx="8" cy="4.5" r="1.8" fill="var(--accent-color)" />
+                <circle cx="4.5" cy="11.5" r="1.8" fill="var(--accent-color)" />
+                <circle cx="11.5" cy="11.5" r="1.8" fill="var(--accent-color)" />
+              </svg>
+            </span>
+            <h1 className="text-lead font-bold tracking-tight">Personal AI Platform</h1>
+          </div>
           <nav className="flex h-full items-stretch gap-1" aria-label="主导航">
             {MAIN_NAV_ITEMS.map((item) => (
               <TabButton
@@ -104,7 +128,7 @@ function App() {
           <Route path="/" element={<ChatView onPersonClick={handleOpenDetail} userId={user?.id} />} />
 
           {/* UX P1-8：联系人页抽离为 ContactsPage（表单抽屉化 + 列表点击直达详情） */}
-          <Route path="/contacts" element={<ContactsPage persons={persons} onRefresh={loadData} />} />
+          <Route path="/contacts" element={<ContactsPage persons={persons} loading={personsLoading} onRefresh={loadData} />} />
 
           <Route path="/contacts/:personId" element={
             <ContactDetailPage
