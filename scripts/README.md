@@ -329,6 +329,7 @@ RG_WEB_ROOT=~/relationship-graph/web caddy run --config scripts/Caddyfile   # �
 | `RG_LLM_BACKEND` | 脚本默认 `cloud` | 通道开关：`legacy`（本地 Ollama）/ `rig`（rig 框架）/ `cloud`（百炼全量）。legacy 下可用 `RG_LLM_CLOUD_FNS` 做函数级灰度 |
 | `RG_CLOUD_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 兼容端点，一般无需改 |
 | `RG_CLOUD_CHAT_MODEL` | `qwen3.7-plus` | 聊天/画像模型（流式开思考，SSE 带 thinking_delta） |
+| `RG_CLOUD_SEARCH_MODEL` | `qwen-plus` | 联网搜索模型：qwen3.7-plus 平台侧已忽略 enable_search（2026-08-08 实测），web_search 请求路由到本模型 |
 | `RG_CLOUD_EXTRACT_MODEL` | `qwen-flash` | 抽取/压缩模型（关思考 + json_object，低延迟低成本） |
 | `RG_CLOUD_TIMEOUT_SECS` | `120` | 云端调用超时（秒） |
 | `RG_CLOUD_API_KEY` | 无 | API Key。**优先 env**；缺省由服务端自动读取 `~/.config/rg-cloud-api-key` |

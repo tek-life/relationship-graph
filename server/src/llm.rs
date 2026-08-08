@@ -113,6 +113,13 @@ fn cloud_chat_model() -> String {
     std::env::var("RG_CLOUD_CHAT_MODEL").unwrap_or_else(|_| "qwen3.7-plus".to_string())
 }
 
+/// 云端联网搜索模型：实测（2026-08-08）qwen3.7-plus 平台侧已静默忽略
+/// enable_search（流式/非流式、turbo/max 均无效），qwen-plus 正常，
+/// 故 web_search 请求路由到本模型（RG_CLOUD_SEARCH_MODEL 可覆盖）
+fn cloud_search_model() -> String {
+    std::env::var("RG_CLOUD_SEARCH_MODEL").unwrap_or_else(|_| "qwen-plus".to_string())
+}
+
 /// 云端抽取首选模型（无思考开销，json_object 正常）
 fn cloud_extract_model() -> String {
     std::env::var("RG_CLOUD_EXTRACT_MODEL").unwrap_or_else(|_| "qwen-flash".to_string())
@@ -570,7 +577,12 @@ async fn call_cloud(
     web_search: bool,
 ) -> Result<String, String> {
     let client = cloud_client()?;
-    let model_name = cloud_model_for(fn_name);
+    // 聊天类函数开联网搜索时路由到搜索可用模型，其余按 fn 类别选模型
+    let model_name = if web_search && is_cloud_chat_fn(fn_name) {
+        cloud_search_model()
+    } else {
+        cloud_model_for(fn_name)
+    };
     let started = Instant::now();
     info!(
         target: "llm",
@@ -666,7 +678,12 @@ async fn cloud_chat_stream(
     String,
 > {
     let client = cloud_client()?;
-    let model_name = cloud_chat_model();
+    // web_search 路由到搜索可用模型（qwen3.7-plus 平台侧已忽略 enable_search）
+    let model_name = if web_search {
+        cloud_search_model()
+    } else {
+        cloud_chat_model()
+    };
     // 超时对齐聊天超时语义（默认 120s，RG_CLOUD_TIMEOUT_SECS 可覆盖）：
     // 同时覆盖建流阶段与流消费阶段每次 stream.next() 的兑底，
     // 避免云端公网链路中途 stall 时 SSE 无限挂起
@@ -854,7 +871,12 @@ async fn cloud_agent_round_stream(
     web_search: bool,
 ) -> Result<AgentRoundStream, String> {
     let client = cloud_client()?;
-    let model_name = cloud_chat_model();
+    // web_search 路由到搜索可用模型（与 cloud_chat_stream 同策略）
+    let model_name = if web_search {
+        cloud_search_model()
+    } else {
+        cloud_chat_model()
+    };
     let timeout = cloud_timeout();
     info!(
         target: "llm",
@@ -1159,13 +1181,22 @@ pub fn general_chat_backend() -> &'static str {
     }
 }
 
-/// 当前对话模型名，供 SSE 端点发 llm_call 事件（cloud 通道返回云端聊天模型名）
-pub fn general_chat_model() -> String {
+/// 当前对话模型名，供 SSE 端点发 llm_call 事件：cloud 通道且 web_search
+/// 时返回搜索模型（实际路由），其余返回聊天模型
+pub fn general_chat_model_for(web_search: bool) -> String {
     if llm_channel("general_chat") == Channel::Cloud {
-        cloud_chat_model()
+        if web_search {
+            cloud_search_model()
+        } else {
+            cloud_chat_model()
+        }
     } else {
         ollama_model()
     }
+}
+
+pub fn general_chat_model() -> String {
+    general_chat_model_for(false)
 }
 
 pub async fn general_chat(query: &str, skills: &str, web_search: bool, documents: &str) -> Result<String, String> {

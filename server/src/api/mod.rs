@@ -1085,6 +1085,7 @@ async fn poll_agent_event(
 enum ChatStreamPhase {
     Routing,
     WebSearchStep,
+    ToolLoopStep,
     LlmCallStep,
     Init,
     Rig(RigEventStream),
@@ -1146,11 +1147,12 @@ async fn chat_stream_handler(
     let skills = resolve_skills_prompt(&state, req.agent_id.as_deref(), user_id.as_deref());
 
     let backend = crate::llm::general_chat_backend();
-    let model_name = crate::llm::general_chat_model();
     // 联网搜索：请求开关 AND env 总闸 AND 云端通道；非 cloud 发降级
     // step 后置 false 继续，永不阻断
     let (web_search, web_search_step) =
         resolve_web_search(req.web_search.unwrap_or(false), backend);
+    // 模型名在 web_search 决议后计算：联网请求实际路由到搜索模型，llm_call step 展示真实模型
+    let model_name = crate::llm::general_chat_model_for(web_search);
     // 文档上下文注入（预算 RG_DOC_CONTEXT_CHARS）
     let (documents_prompt, doc_count, doc_chars, doc_truncated) =
         resolve_documents_prompt(req.documents);
@@ -1215,31 +1217,38 @@ async fn chat_stream_handler(
                         Ok(sse_step("routing", &format!("backend={}", backend))),
                         (ChatStreamPhase::WebSearchStep, agent_stream),
                     )),
-                    ChatStreamPhase::WebSearchStep => match (web_search_step, tools_step) {
-                        // 有联网搜索 step 先发，工具/llm step 留给下一轮次
-                        (Some(detail), _) => Some((
+                    ChatStreamPhase::WebSearchStep => match web_search_step {
+                        // 有联网搜索 step 先发，工具/llm step 留给后续轮次
+                        Some(detail) => Some((
                             Ok(sse_step("web_search", detail)),
-                            (ChatStreamPhase::LlmCallStep, agent_stream),
+                            (ChatStreamPhase::ToolLoopStep, agent_stream),
                         )),
-                        (None, Some(detail)) => Some((
-                            Ok(sse_step("tool_loop", detail)),
-                            (ChatStreamPhase::Init, agent_stream),
-                        )),
-                        (None, None) => Some((
-                            Ok(sse_step("llm_call", &format!("model={}", model_name))),
-                            (ChatStreamPhase::Init, agent_stream),
-                        )),
+                        None => match tools_step {
+                            Some(detail) => Some((
+                                Ok(sse_step("tool_loop", detail)),
+                                (ChatStreamPhase::LlmCallStep, agent_stream),
+                            )),
+                            None => Some((
+                                Ok(sse_step("llm_call", &format!("model={}", model_name))),
+                                (ChatStreamPhase::Init, agent_stream),
+                            )),
+                        },
                     },
-                    ChatStreamPhase::LlmCallStep => match tools_step {
+                    ChatStreamPhase::ToolLoopStep => match tools_step {
                         Some(detail) => Some((
                             Ok(sse_step("tool_loop", detail)),
-                            (ChatStreamPhase::Init, agent_stream),
+                            (ChatStreamPhase::LlmCallStep, agent_stream),
                         )),
                         None => Some((
                             Ok(sse_step("llm_call", &format!("model={}", model_name))),
                             (ChatStreamPhase::Init, agent_stream),
                         )),
                     },
+                    // llm_call 恒发（展示真实路由模型），不再被 tool_loop 吃掉
+                    ChatStreamPhase::LlmCallStep => Some((
+                        Ok(sse_step("llm_call", &format!("model={}", model_name))),
+                        (ChatStreamPhase::Init, agent_stream),
+                    )),
                     ChatStreamPhase::Init => {
                         // Agent 工具循环优先（仅 cloud 且建流成功时）；
                         // 其余 rig / cloud 走普通流式，legacy 降级非流式一次性调用
