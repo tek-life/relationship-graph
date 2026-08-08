@@ -172,3 +172,28 @@ export type TriggerScenario = (typeof TRIGGER_SCENARIOS)[number];
 /** 路由模式选项 */
 export const ROUTE_MODES = ['relationship', 'chat'] as const;
 export type RouteMode = (typeof ROUTE_MODES)[number];
+
+/** 云端 API Key 生效来源（优先级 env > file > db）；未配置为 null */
+export type CloudApiKeySource = 'env' | 'file' | 'db';
+
+/** 云端 API Key 配置摘要（只回掩码，服务端绝不回传明文） */
+export interface CloudApiKeyStatus {
+  /** 是否有生效 Key（任一层来源命中） */
+  configured: boolean;
+  /** 生效来源；未配置为 null */
+  source: CloudApiKeySource | null;
+  /** 掩码展示（如 sk-…abcd）；未配置为 null */
+  mask: string | null;
+  /** settings 表（db 层）是否已保存 Key */
+  dbConfigured: boolean;
+}
+
+/** GET /api/admin/config 响应 */
+export interface SystemConfig {
+  cloudApiKey: CloudApiKeyStatus;
+}
+
+/** PUT /api/admin/config/cloud-api-key 请求体 */
+export interface UpdateCloudApiKeyRequest {
+  apiKey: string;
+}
